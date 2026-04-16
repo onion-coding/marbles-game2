@@ -46,6 +46,23 @@ static func derive_spawn_slots(
 		slots.append(slot)
 	return slots
 
+# Derive per-marble RGBA colors from the same hash as the slot. See docs/fairness.md §Color derivation.
+# Bytes 4/5/6 → R/G/B, alpha fixed 0xFF. Returns an Array[Color].
+static func derive_marble_colors(
+	server_seed: PackedByteArray,
+	round_id: int,
+	client_seeds: Array,
+) -> Array:
+	var colors: Array = []
+	for i in range(client_seeds.size()):
+		var raw := _hash_marble(server_seed, round_id, String(client_seeds[i]), i)
+		colors.append(Color8(raw[4], raw[5], raw[6], 0xFF))
+	return colors
+
+# Pack a Color into the replay's u32 rgba field (R << 24 | G << 16 | B << 8 | A).
+static func color_to_rgba32(c: Color) -> int:
+	return (int(round(c.r * 255.0)) << 24) | (int(round(c.g * 255.0)) << 16) | (int(round(c.b * 255.0)) << 8) | int(round(c.a * 255.0))
+
 static func _hash_marble(
 	server_seed: PackedByteArray,
 	round_id: int,

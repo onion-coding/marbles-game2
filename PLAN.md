@@ -102,10 +102,10 @@ marbles-game/
 │   ├── fairness/              # Seed derivation, hash helpers (shared)
 │   ├── tick_schema/           # Wire format definitions (shared)
 │   └── export_presets.cfg     # Dedicated Server + Web presets
-├── server/                    # Backend glue (Node or Go) — round SM, seed mgmt, replay store, WS fan-out
-│   ├── state-machine/
-│   ├── fairness/              # commit/reveal, seed mgmt (server-side source of truth)
-│   ├── replay-store/
+├── server/                    # Backend glue (Go) — round SM, seed mgmt, replay store, WS fan-out
+│   ├── round/                 # pure round state machine (WAITING/BUY_IN/RACING/SETTLE)
+│   ├── sim/                   # Godot headless invoker — subprocess + JSON spec/status glue
+│   ├── replay/                # replay store (per-round audit trail on disk)
 │   ├── rtp/                   # house-edge config hook (stubbed payout calc)
 │   └── api/                   # WS for clients, internal REST for sim trigger
 ├── ops/                       # Dockerfiles, local compose, CI

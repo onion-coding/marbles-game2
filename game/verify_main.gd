@@ -45,6 +45,17 @@ func _verify(replay: Dictionary) -> bool:
 			return false
 	print("  slots OK: %d marbles across %d slots" % [header.size(), slot_count])
 
+	# 2b. Re-derive marble colors and compare. A tampered color (e.g. server swapping
+	# which marble is "the winner's color") would slip past the slot check.
+	var derived_colors := FairSeed.derive_marble_colors(server_seed, round_id, client_seeds)
+	for i in range(header.size()):
+		var want_rgba := FairSeed.color_to_rgba32(derived_colors[i])
+		var got_rgba := int(header[i]["rgba"])
+		if want_rgba != got_rgba:
+			push_error("color mismatch at marble %d: recorded=0x%08x derived=0x%08x" % [i, got_rgba, want_rgba])
+			return false
+	print("  colors OK: %d marbles" % header.size())
+
 	# 3. Check recorded first-frame positions match what SpawnRail would produce.
 	# Physics hasn't ticked on frame 0 yet, so the state equals the spawn state.
 	var frames: Array = replay["frames"]

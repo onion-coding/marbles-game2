@@ -2,29 +2,120 @@ extends Node3D
 
 const MARBLE_COUNT := 20
 
+var _status_path: String = ""  # if non-empty, write status JSON on race completion
+var _round_id: int = 0
+var _server_seed_hash: PackedByteArray = PackedByteArray()
+var _replay_path: String = ""
+
 func _ready() -> void:
 	_build_environment()
 	add_child(RampTrack.new())
 
-	var round_id := int(Time.get_unix_time_from_system())
-	var server_seed := FairSeed.generate_server_seed()
+	# Two modes:
+	# (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>). Used
+	#     by the Go server (server/sim) to drive deterministic rounds with supplied seeds.
+	# (b) Interactive mode: no args → generate a fresh random seed. Used from the editor.
+	var spec := _load_spec_from_cli()
+	var round_id: int
+	var server_seed: PackedByteArray
+	var client_seeds: Array
+	var client_count: int
+	if spec.is_empty():
+		round_id = int(Time.get_unix_time_from_system())
+		server_seed = FairSeed.generate_server_seed()
+		client_seeds = []
+		client_count = MARBLE_COUNT
+		for i in range(client_count):
+			client_seeds.append("")  # MVP: no per-player seed mixing yet
+	else:
+		round_id = int(spec["round_id"])
+		server_seed = FairSeed.from_hex(String(spec["server_seed_hex"]))
+		client_seeds = spec["client_seeds"]
+		client_count = client_seeds.size()
+		_status_path = String(spec.get("status_path", ""))
+		_replay_path = String(spec.get("replay_path", ""))
+
 	var server_seed_hash := FairSeed.hash_server_seed(server_seed)
-	var client_seeds: Array = []
-	for i in range(MARBLE_COUNT):
-		client_seeds.append("")  # MVP: no per-player seed mixing yet
+	_round_id = round_id
+	_server_seed_hash = server_seed_hash
 
 	print("COMMIT: round_id=%d server_seed_hash=%s" % [round_id, FairSeed.to_hex(server_seed_hash)])
 
 	var slots := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, SpawnRail.SLOT_COUNT)
-	var marbles := MarbleSpawner.spawn(self, slots)
+	var colors := FairSeed.derive_marble_colors(server_seed, round_id, client_seeds)
+	var marbles := MarbleSpawner.spawn(self, slots, colors)
 
 	var finish := FinishLine.new()
 	add_child(finish)
 	var recorder := TickRecorder.new()
-	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots)
+	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors)
+	if not _replay_path.is_empty():
+		recorder.override_output_path(_replay_path)
+	# If the spec requested live streaming, try to connect before track(): track()
+	# immediately emits the HEADER message when a streamer is set.
+	var stream_addr := String(spec.get("live_stream_addr", "")) if not spec.is_empty() else ""
+	if not stream_addr.is_empty():
+		var colon := stream_addr.find(":")
+		if colon > 0:
+			var host := stream_addr.substr(0, colon)
+			var port := int(stream_addr.substr(colon + 1))
+			var streamer := TickStreamer.new()
+			if streamer.connect_to(host, port, round_id):
+				recorder.set_streamer(streamer)
+				print("STREAM: connected to %s:%d" % [host, port])
+			else:
+				print("STREAM: connect to %s:%d failed, continuing without live stream" % [host, port])
 	recorder.track(marbles, finish)
 	add_child(recorder)
+	if not _status_path.is_empty():
+		recorder.finalized.connect(_on_finalized.bind(finish))
 	add_child(FixedCamera.new())
+
+# Parse "--key=value" pairs from the user-args portion of the command line.
+func _load_spec_from_cli() -> Dictionary:
+	var args := OS.get_cmdline_user_args()
+	var spec_path := ""
+	for a in args:
+		if a.begins_with("--round-spec="):
+			spec_path = a.substr("--round-spec=".length())
+			break
+	if spec_path.is_empty():
+		return {}
+	var f := FileAccess.open(spec_path, FileAccess.READ)
+	if f == null:
+		push_error("could not open round-spec %s (err=%d)" % [spec_path, FileAccess.get_open_error()])
+		return {}
+	var text := f.get_as_text()
+	f.close()
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		push_error("round-spec %s is not a JSON object" % spec_path)
+		return {}
+	return parsed
+
+func _on_finalized(_path: String, finish: FinishLine) -> void:
+	var winner := finish.get_winner()
+	var winner_idx := -1
+	var finish_tick := -1
+	if winner != null:
+		winner_idx = int(String(winner.name).trim_prefix("Marble_"))
+		finish_tick = int(finish.get_crossings().get(winner, -1))
+	var status := {
+		"round_id": _round_id,
+		"ok": winner != null,
+		"winner_marble_index": winner_idx,
+		"finish_tick": finish_tick,
+		"replay_path": _replay_path,
+		"server_seed_hash_hex": FairSeed.to_hex(_server_seed_hash),
+		"tick_rate_hz": TickRecorder.TICK_RATE_HZ,
+	}
+	var f := FileAccess.open(_status_path, FileAccess.WRITE)
+	if f == null:
+		push_error("could not write status %s (err=%d)" % [_status_path, FileAccess.get_open_error()])
+	else:
+		f.store_string(JSON.stringify(status))
+		f.close()
+	get_tree().quit(0)
 
 func _build_environment() -> void:
 	var light := DirectionalLight3D.new()

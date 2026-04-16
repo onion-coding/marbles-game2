@@ -1,0 +1,356 @@
+{
+  "protocol_version": 2,
+  "spec": "docs/fairness.md",
+  "reference_impl": "scripts/gen_fairness_vectors.py",
+  "notes": [
+    "hash_marble_hex is the 32-byte SHA-256 output, lowercase hex.",
+    "server_seed_hash_hex is SHA-256(server_seed), the commit value.",
+    "Byte order: round_id and marble_index are serialized BIG-endian into the hash. The replay FILE format is little-endian \u2014 see docs/tick-schema.md \u00a7Byte order.",
+    "Marble order: entries in per_marble_hashes and spawn_slots are in ascending marble_index order. Linear probing requires this ordering \u2014 see fairness.md \u00a7Order invariant.",
+    "Color: color_rgba_u32 = (h[4]<<24)|(h[5]<<16)|(h[6]<<8)|0xFF where h is the _hash_marble output. color_rgba_hex is the same value as 8-char lowercase hex. See fairness.md \u00a7Color derivation."
+  ],
+  "vectors": [
+    {
+      "name": "minimal_zero_seed",
+      "description": "All-zero server_seed, round_id=1, three single-char client seeds. Sanity baseline \u2014 a Python/JS/Go port hashing this differently is off-spec.",
+      "inputs": {
+        "server_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "round_id": 1,
+        "client_seeds": [
+          "a",
+          "b",
+          "c"
+        ],
+        "slot_count": 24
+      },
+      "expected": {
+        "server_seed_hash_hex": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+        "per_marble_hashes": [
+          {
+            "marble_index": 0,
+            "client_seed": "a",
+            "hash_marble_hex": "7b9e1bc542c88becf2a5d1d35ef5ab2cd35d82f2b1f015a194c20d91caf9bc25",
+            "color_rgba_u32": 1120439295,
+            "color_rgba_hex": "42c88bff"
+          },
+          {
+            "marble_index": 1,
+            "client_seed": "b",
+            "hash_marble_hex": "18930c4ede2a586d8b5ca0e734706b8700d52f5000dbb011a584246d9c3f6e10",
+            "color_rgba_u32": 3727317247,
+            "color_rgba_hex": "de2a58ff"
+          },
+          {
+            "marble_index": 2,
+            "client_seed": "c",
+            "hash_marble_hex": "1e89b88407be6da34043cbaed61bffd274817ca5b97cd6b50a91420b4bd204d4",
+            "color_rgba_u32": 129920511,
+            "color_rgba_hex": "07be6dff"
+          }
+        ],
+        "spawn_slots": [
+          13,
+          6,
+          12
+        ]
+      }
+    },
+    {
+      "name": "empty_client_seeds",
+      "description": "Empty client_seed on every marble exercises the zero-length-buffer guard in _hash_marble. Hash must equal SHA-256(server_seed || round_id_u64_be || marble_index_u32_be) with NO bytes written for the empty seed.",
+      "inputs": {
+        "server_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "round_id": 1,
+        "client_seeds": [
+          "",
+          "",
+          ""
+        ],
+        "slot_count": 24
+      },
+      "expected": {
+        "server_seed_hash_hex": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+        "per_marble_hashes": [
+          {
+            "marble_index": 0,
+            "client_seed": "",
+            "hash_marble_hex": "5430dfc9c0a729db4f9409f336f5398b88bac9fe70f1d82890ecde22eac0e97a",
+            "color_rgba_u32": 3232180735,
+            "color_rgba_hex": "c0a729ff"
+          },
+          {
+            "marble_index": 1,
+            "client_seed": "",
+            "hash_marble_hex": "c108d12a67676a712ddcf6afbd147e0792cfc62caa28e632f1de2637244be8c3",
+            "color_rgba_u32": 1734830847,
+            "color_rgba_hex": "67676aff"
+          },
+          {
+            "marble_index": 2,
+            "client_seed": "",
+            "hash_marble_hex": "968c1eceeac5ee2852084ce64cff73373fadac183b9dd64f88083aab41ef3f0f",
+            "color_rgba_u32": 3938840319,
+            "color_rgba_hex": "eac5eeff"
+          }
+        ],
+        "spawn_slots": [
+          1,
+          2,
+          22
+        ]
+      }
+    },
+    {
+      "name": "forced_collision_small_slot_count",
+      "description": "slot_count=4 with 4 marbles forces the linear-probe path at least once (pigeonhole unless every hash maps to a distinct slot). Catches order-invariant bugs and off-by-one probe errors.",
+      "inputs": {
+        "server_seed_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "round_id": 1,
+        "client_seeds": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "slot_count": 4
+      },
+      "expected": {
+        "server_seed_hash_hex": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+        "per_marble_hashes": [
+          {
+            "marble_index": 0,
+            "client_seed": "a",
+            "hash_marble_hex": "7b9e1bc542c88becf2a5d1d35ef5ab2cd35d82f2b1f015a194c20d91caf9bc25",
+            "color_rgba_u32": 1120439295,
+            "color_rgba_hex": "42c88bff"
+          },
+          {
+            "marble_index": 1,
+            "client_seed": "b",
+            "hash_marble_hex": "18930c4ede2a586d8b5ca0e734706b8700d52f5000dbb011a584246d9c3f6e10",
+            "color_rgba_u32": 3727317247,
+            "color_rgba_hex": "de2a58ff"
+          },
+          {
+            "marble_index": 2,
+            "client_seed": "c",
+            "hash_marble_hex": "1e89b88407be6da34043cbaed61bffd274817ca5b97cd6b50a91420b4bd204d4",
+            "color_rgba_u32": 129920511,
+            "color_rgba_hex": "07be6dff"
+          },
+          {
+            "marble_index": 3,
+            "client_seed": "d",
+            "hash_marble_hex": "8f6eafcf9aa0e661a980d7b96f09645c0ff12f82ff31e31238673f02f1e07c2d",
+            "color_rgba_u32": 2594236159,
+            "color_rgba_hex": "9aa0e6ff"
+          }
+        ],
+        "spawn_slots": [
+          1,
+          2,
+          0,
+          3
+        ]
+      }
+    },
+    {
+      "name": "realistic_20_marbles",
+      "description": "Full-size round: 20 marbles over 24 slots, non-zero server_seed, real-ish round_id. Mirrors production shape; a regression here means a production round would change.",
+      "inputs": {
+        "server_seed_hex": "deadbeefcafebabe0123456789abcdeffedcba98765432101122334455667788",
+        "round_id": 1234567,
+        "client_seeds": [
+          "player_00",
+          "player_01",
+          "player_02",
+          "player_03",
+          "player_04",
+          "player_05",
+          "player_06",
+          "player_07",
+          "player_08",
+          "player_09",
+          "player_10",
+          "player_11",
+          "player_12",
+          "player_13",
+          "player_14",
+          "player_15",
+          "player_16",
+          "player_17",
+          "player_18",
+          "player_19"
+        ],
+        "slot_count": 24
+      },
+      "expected": {
+        "server_seed_hash_hex": "c923fc40d0d036fd415b8ccf1e5c3cb7951c8c7ac027dcbdd6ab9b73ef0be4af",
+        "per_marble_hashes": [
+          {
+            "marble_index": 0,
+            "client_seed": "player_00",
+            "hash_marble_hex": "e822d1258c9be1bfaec946b9fcc6ed1b27045f6480ff7845d0c547923f721c04",
+            "color_rgba_u32": 2359026175,
+            "color_rgba_hex": "8c9be1ff"
+          },
+          {
+            "marble_index": 1,
+            "client_seed": "player_01",
+            "hash_marble_hex": "1b5cef5a34f848a485f5f183bc4016fe10fb6a70ed4491c8e44a285dcf0afe02",
+            "color_rgba_u32": 888686847,
+            "color_rgba_hex": "34f848ff"
+          },
+          {
+            "marble_index": 2,
+            "client_seed": "player_02",
+            "hash_marble_hex": "6dbfc0db8f66e976a82d8a172a1ba58d36105ed1487049aca5a6eb3ad47fcf9c",
+            "color_rgba_u32": 2405886463,
+            "color_rgba_hex": "8f66e9ff"
+          },
+          {
+            "marble_index": 3,
+            "client_seed": "player_03",
+            "hash_marble_hex": "03f7590454b9c21cbc5a15c8f7fbd0a1ef2e6201b9594faaaa2da5c0fe571c5e",
+            "color_rgba_u32": 1421460223,
+            "color_rgba_hex": "54b9c2ff"
+          },
+          {
+            "marble_index": 4,
+            "client_seed": "player_04",
+            "hash_marble_hex": "b3fe050b199588b4617d4c2253b75292f494bdc55bf853e15a4f212d2c202d44",
+            "color_rgba_u32": 429230335,
+            "color_rgba_hex": "199588ff"
+          },
+          {
+            "marble_index": 5,
+            "client_seed": "player_05",
+            "hash_marble_hex": "50933b67a4842688f42a6a30c0eba7d1beeff34f0ba63326b744ee2efad49ea8",
+            "color_rgba_u32": 2760124159,
+            "color_rgba_hex": "a48426ff"
+          },
+          {
+            "marble_index": 6,
+            "client_seed": "player_06",
+            "hash_marble_hex": "4b9db08816b7eb4a3487f3012c2dc7efef85ce254b28831d8214fc10adb154b1",
+            "color_rgba_u32": 381152255,
+            "color_rgba_hex": "16b7ebff"
+          },
+          {
+            "marble_index": 7,
+            "client_seed": "player_07",
+            "hash_marble_hex": "27bb5a3cdac5faed04ec53011bfd42b5a00627d0e7ed835699753e7165db6586",
+            "color_rgba_u32": 3670407935,
+            "color_rgba_hex": "dac5faff"
+          },
+          {
+            "marble_index": 8,
+            "client_seed": "player_08",
+            "hash_marble_hex": "6efe4d239c4bf37157d6eee6acbf2621f4c16cbdc68e5b0d9f8d4a82d44c33c5",
+            "color_rgba_u32": 2622223359,
+            "color_rgba_hex": "9c4bf3ff"
+          },
+          {
+            "marble_index": 9,
+            "client_seed": "player_09",
+            "hash_marble_hex": "ec165cf8aad824b6b6282110f189e1aa3185d5468fd85fb72d24519384998f5e",
+            "color_rgba_u32": 2866291967,
+            "color_rgba_hex": "aad824ff"
+          },
+          {
+            "marble_index": 10,
+            "client_seed": "player_10",
+            "hash_marble_hex": "e9ba05821cb7a349f239d27465a0bca735628d7f637a5ff9020a11960cc847b5",
+            "color_rgba_u32": 481797119,
+            "color_rgba_hex": "1cb7a3ff"
+          },
+          {
+            "marble_index": 11,
+            "client_seed": "player_11",
+            "hash_marble_hex": "7022bf17bdd4d256d4e23e6150e7785d07898c741ae85d12421643a8fe93f640",
+            "color_rgba_u32": 3184841471,
+            "color_rgba_hex": "bdd4d2ff"
+          },
+          {
+            "marble_index": 12,
+            "client_seed": "player_12",
+            "hash_marble_hex": "7a0436e2a880f78bdfab4590dcb9dbb050234f47e077ef0e0c3a3b1ca98d5e9b",
+            "color_rgba_u32": 2827024383,
+            "color_rgba_hex": "a880f7ff"
+          },
+          {
+            "marble_index": 13,
+            "client_seed": "player_13",
+            "hash_marble_hex": "8725f747d3b1e1aefb70c6717483152a4274459a4d3c094acb5691ab86686e90",
+            "color_rgba_u32": 3551650303,
+            "color_rgba_hex": "d3b1e1ff"
+          },
+          {
+            "marble_index": 14,
+            "client_seed": "player_14",
+            "hash_marble_hex": "95656e201626848d085506a8a3bab24753c03f16943a50fc1c79855bbd2500b9",
+            "color_rgba_u32": 371623167,
+            "color_rgba_hex": "162684ff"
+          },
+          {
+            "marble_index": 15,
+            "client_seed": "player_15",
+            "hash_marble_hex": "02f9d6e1ab5cc765c3b8590bcbb43d3435b5ba1531bc44306f803d321fcad709",
+            "color_rgba_u32": 2874984447,
+            "color_rgba_hex": "ab5cc7ff"
+          },
+          {
+            "marble_index": 16,
+            "client_seed": "player_16",
+            "hash_marble_hex": "aa2da3ce5c902b2b674c85a36cef63fa0b56c7c2399b10d972acd1d621ec7d2e",
+            "color_rgba_u32": 1552952319,
+            "color_rgba_hex": "5c902bff"
+          },
+          {
+            "marble_index": 17,
+            "client_seed": "player_17",
+            "hash_marble_hex": "c7fcc60fe02552fa5440b98f7bb94469b5b9e59498bd9db860a5f7a131da27ca",
+            "color_rgba_u32": 3760542463,
+            "color_rgba_hex": "e02552ff"
+          },
+          {
+            "marble_index": 18,
+            "client_seed": "player_18",
+            "hash_marble_hex": "d66bb5efdc141d102f0a41d129bf90448d2b3c229e68cd48d50e5c51c6c617d2",
+            "color_rgba_u32": 3692305919,
+            "color_rgba_hex": "dc141dff"
+          },
+          {
+            "marble_index": 19,
+            "client_seed": "player_19",
+            "hash_marble_hex": "1d38a6528f278f0c245b673ee3ceb77d46cefff758726a6f8eb0fc053be75464",
+            "color_rgba_u32": 2401734655,
+            "color_rgba_hex": "8f278fff"
+          }
+        ],
+        "spawn_slots": [
+          5,
+          10,
+          3,
+          4,
+          11,
+          23,
+          16,
+          6,
+          12,
+          17,
+          2,
+          15,
+          13,
+          7,
+          8,
+          9,
+          14,
+          18,
+          19,
+          20
+        ]
+      }
+    }
+  ]
+}

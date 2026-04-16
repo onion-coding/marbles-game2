@@ -8,13 +8,26 @@ var _winner: RigidBody3D = null
 var _crossed: Dictionary = {}
 
 func _ready() -> void:
-	# Ramp rotates -ANGLE_DEG about X, so its downhill end sits near world (0, -5, -14).
-	# Slab is world-aligned so marbles falling off the deck still register.
-	position = Vector3(0, -3.0, -13.0)
+	# Park the slab just past the last segment's downhill edge. The slab is
+	# oriented to match the last segment's frame so its "crossing plane" is
+	# perpendicular to the segment's forward direction — otherwise a curving
+	# track ending with a yaw would have marbles missing an axis-aligned slab.
+	var last := RampTrack.segment_count() - 1
+	var meta := RampTrack.segment_meta(last)
+	var forward: Vector3 = meta["forward"]
+	var up: Vector3 = meta["up"]
+	var length: float = meta["length"]
+
+	# Surface point at the downhill edge, plus a small forward offset so the slab
+	# sits just past the edge and catches balls that fall off.
+	var edge := RampTrack.segment_surface_point(last, length * 0.5 + 0.5)
+	position = edge + up * 2.0
+	basis = meta["basis"]
 
 	var shape := CollisionShape3D.new()
 	var box := BoxShape3D.new()
-	box.size = Vector3(RampTrack.WIDTH + 2.0, 12.0, 0.4)
+	# Wide and tall in the segment's cross-track / vertical axes, thin along its forward axis.
+	box.size = Vector3(RampTrack.WIDTH + 4.0, 12.0, 0.4)
 	shape.shape = box
 	add_child(shape)
 

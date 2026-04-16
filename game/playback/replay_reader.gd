@@ -8,7 +8,11 @@ static func read(path: String) -> Dictionary:
 		return {}
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
+	return read_bytes(bytes)
 
+# Same as read() but takes bytes directly — used by the web client which
+# fetches replay.bin over HTTP instead of reading from the local filesystem.
+static func read_bytes(bytes: PackedByteArray) -> Dictionary:
 	var b := StreamPeerBuffer.new()
 	b.big_endian = false
 	b.data_array = bytes

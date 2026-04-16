@@ -31,6 +31,21 @@ spawn_slot = h[0..4] interpreted as u32 BE, mod SLOT_COUNT
 
 `SLOT_COUNT` is a track-specific constant (e.g. 24 slots across the spawn rail). If two marbles hash to the same slot, advance to the next free slot deterministically by scanning `(spawn_slot + 1) mod SLOT_COUNT` until one is free. This resolution rule is part of the protocol — document any change loudly.
 
+## Color derivation
+
+The same 32-byte `h = _hash_marble(...)` also produces the marble's display color, reusing bytes that the slot derivation doesn't touch:
+
+```
+R = h[4]
+G = h[5]
+B = h[6]
+A = 0xFF
+```
+
+Packed as a big-endian u32 (`R << 24 | G << 16 | B << 8 | A`) in the replay header's `rgba` field. No floating-point, no HSV, no palette mapping — a verifier in any language checks the packing directly. Some marbles can come out dark or muddy by chance; this is acceptable for MVP, and a cosmetic palette remap can be added later *without* changing the canonical bytes.
+
+**Order invariant (load-bearing):** marbles MUST be assigned slots in strictly ascending `marble_index` order (0, 1, 2, …, N-1). Because linear probing's outcome depends on which slots are already taken when each marble is processed, re-ordering the input list produces a *different* valid-looking assignment and a verifier will reject the round. Any implementation — server, client verifier, third-party audit tool — that iterates the marble list in a different order is **wrong**, not just "a different convention". If the need to process marbles out of order ever arises (e.g. parallel per-marble verification), switch the whole protocol to a seeded Fisher-Yates shuffle and bump `PROTOCOL_VERSION` — do not try to "fix" linear probing to be order-independent, it can't be.
+
 ## Round lifecycle
 
 1. **WAITING:** server generates `server_seed`, stores it securely, publishes `server_seed_hash` and the track id.
