@@ -13,6 +13,8 @@ config_version=5
 config/name="Marbles Game"
 run/main_scene="res://launcher.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
+boot_splash/show_image=false
+boot_splash/bg_color=Color(0, 0, 0, 1)
 
 [physics]
 

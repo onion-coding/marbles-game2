@@ -2,7 +2,7 @@
 
 3D physics marble race game, designed for online casino integration (crypto-first). First-to-finish wins the pot.
 
-See [PLAN.md](PLAN.md) for the full development plan, [PROGRESS.md](PROGRESS.md) for what's done. Current status: **M5 mostly done** — archive HTTP API serves completed rounds, a browser client (Godot Web export of `web_main.tscn`) fetches and renders them, and live WebSocket streaming is wired up end-to-end: sim streams over TCP → server hub → WS subscribers. Remaining: a Godot "live client" scene that decodes the live WS feed and renders it frame-by-frame.
+See [PLAN.md](PLAN.md) for the full development plan, [PROGRESS.md](PROGRESS.md) for what's done. Current status: **M5 done** — archive HTTP API serves completed rounds, `web_main.tscn` (Godot Web export) fetches and renders them, live WebSocket streaming is wired end-to-end (sim → TCP → hub → WS subscribers), and `live_main.tscn` is the Godot live client that subscribes to `/live/{id}` and renders tick-by-tick. Next candidates: M6 polish (boot-splash branding, cinematic camera, juice) or M2.5 tick quantization.
 
 ## Repo layout
 
@@ -45,6 +45,7 @@ Three end-to-end scenes, all runnable headlessly:
 | `res://verify_main.tscn` | Headless verifier: re-derive spawn slots from the revealed seed and confirm they match the recording |
 | `res://test_vectors_main.tscn` | Regression test: load [docs/fairness-vectors.json](docs/fairness-vectors.json) and confirm `FairSeed` matches the independent Python reference byte-for-byte |
 | `res://web_main.tscn` | Network-sourced playback: fetches the latest round from `replayd` over HTTP and renders it. Runs on desktop today; same scene is intended for Web export once the HTML5 templates are installed. Pass `++ --api-base=http://host:port` to point at a non-default replayd. |
+| `res://live_main.tscn` | Live playback: polls `replayd /live`, WebSocket-subscribes to the newest active round, decodes the streaming protocol, and renders frame-by-frame. Launcher routes here when `++ --live` (desktop) or `?live=1` (web URL) is set. Same `--api-base` override applies. |
 
 In the editor: press **F5** and pick the scene. Headless:
 
@@ -162,6 +163,20 @@ GET /live/{id}  (WebSocket)  → binary frames: type(u8)+len(u32)+payload
 ```
 
 Dev smoke client: `../tmp/streamtest.exe --api-base=http://127.0.0.1:8087` polls `/live`, subscribes to the first active round, and prints a message tally until DONE.
+
+### Live Godot client (M5.3)
+
+`live_main.tscn` is the Godot-side counterpart to `streamtest` — it polls `/live`, subscribes to the newest active round over WebSocket, and renders tick-by-tick via `PlaybackPlayer`.
+
+```bash
+# desktop: pass --live via the launcher, point at the replayd above
+"C:\Users\sergi\Godot\Godot_v4.6.2-stable_win64.exe" --path game ++ --live --api-base=http://127.0.0.1:8087
+
+# or skip the launcher and run the scene directly
+"C:\Users\sergi\Godot\Godot_v4.6.2-stable_win64.exe" --path game res://live_main.tscn ++ --api-base=http://127.0.0.1:8087
+```
+
+On Web, append `?live=1` to the URL served by `replayd`. The launcher reads `window.location.search` and routes to `live_main.tscn`; `--api-base` defaults to the current origin so no override is needed.
 
 ### Godot Web export templates
 

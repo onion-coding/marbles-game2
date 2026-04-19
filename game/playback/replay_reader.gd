@@ -17,6 +17,37 @@ static func read_bytes(bytes: PackedByteArray) -> Dictionary:
 	b.big_endian = false
 	b.data_array = bytes
 
+	var header_dict := _read_header_into(b)
+	if header_dict.is_empty():
+		return {}
+	var marble_count: int = (header_dict["header"] as Array).size()
+
+	var frame_count := b.get_u32()
+	var frames: Array = []
+	for i in range(frame_count):
+		frames.append(_read_frame_into(b, marble_count))
+
+	header_dict["frames"] = frames
+	return header_dict
+
+# Decode just the HEADER payload from the live-stream protocol (same byte
+# layout as the replay-file header, minus the trailing frame count). Returns
+# {} on failure.
+static func decode_header_bytes(bytes: PackedByteArray) -> Dictionary:
+	var b := StreamPeerBuffer.new()
+	b.big_endian = false
+	b.data_array = bytes
+	return _read_header_into(b)
+
+# Decode one TICK payload: tick(u32) + flags(u8) + marble_count × (pos+quat).
+# Caller supplies marble_count from the previously-decoded header.
+static func decode_frame_bytes(bytes: PackedByteArray, marble_count: int) -> Dictionary:
+	var b := StreamPeerBuffer.new()
+	b.big_endian = false
+	b.data_array = bytes
+	return _read_frame_into(b, marble_count)
+
+static func _read_header_into(b: StreamPeerBuffer) -> Dictionary:
 	var protocol_version := b.get_u8()
 	if protocol_version != 2:
 		push_error("unsupported replay protocol_version=%d" % protocol_version)
@@ -48,21 +79,6 @@ static func read_bytes(bytes: PackedByteArray) -> Dictionary:
 			"slot": slot,
 		})
 
-	var frame_count := b.get_u32()
-	var frames: Array = []
-	for i in range(frame_count):
-		var tick := b.get_u32()
-		var flags := b.get_u8()
-		var states: Array = []
-		for _j in range(marble_count):
-			var px := b.get_float(); var py := b.get_float(); var pz := b.get_float()
-			var qx := b.get_float(); var qy := b.get_float(); var qz := b.get_float(); var qw := b.get_float()
-			states.append({
-				"pos": Vector3(px, py, pz),
-				"rot": Quaternion(qx, qy, qz, qw),
-			})
-		frames.append({"tick": tick, "flags": flags, "states": states})
-
 	return {
 		"protocol_version": protocol_version,
 		"round_id": round_id,
@@ -71,5 +87,17 @@ static func read_bytes(bytes: PackedByteArray) -> Dictionary:
 		"server_seed_hash": server_seed_hash,
 		"slot_count": slot_count,
 		"header": header,
-		"frames": frames,
 	}
+
+static func _read_frame_into(b: StreamPeerBuffer, marble_count: int) -> Dictionary:
+	var tick := b.get_u32()
+	var flags := b.get_u8()
+	var states: Array = []
+	for _j in range(marble_count):
+		var px := b.get_float(); var py := b.get_float(); var pz := b.get_float()
+		var qx := b.get_float(); var qy := b.get_float(); var qz := b.get_float(); var qw := b.get_float()
+		states.append({
+			"pos": Vector3(px, py, pz),
+			"rot": Quaternion(qx, qy, qz, qw),
+		})
+	return {"tick": tick, "flags": flags, "states": states}

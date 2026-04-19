@@ -4,7 +4,7 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M5 — Web client + replay streaming.** Started 2026-04-16. M5.0 (archive HTTP API) landed: `GET /rounds`, `GET /rounds/{id}`, `GET /rounds/{id}/replay.bin` with ETag + immutable Cache-Control + Range support. Next: M5.1 Godot Web export + client scene that fetches from the archive API; M5.2 live WebSocket streaming (requires making the sim emit ticks in real-time vs. batch-writing at end).
+**M5 — Web client + replay streaming.** Started 2026-04-16. M5.0–M5.3 landed: archive HTTP API, Web export of the archive client, live TCP→WS streaming infrastructure, and a Godot live-playback scene that WS-subscribes to `/live/{id}` and renders frame-by-frame. Next: M5 is effectively complete; candidates are M6 polish (splash, camera cuts, juice), bundle-size audit, or M2.5 quantization.
 
 ## Done
 
@@ -87,15 +87,18 @@ Bug surfaced watching the first windowed race: spawns overlapped, balls fell fro
   - **Glue:** [server/sim/invoker.go](server/sim/invoker.go) `Request.LiveStreamAddr` → spec file `live_stream_addr` → [game/main.gd](game/main.gd) reads and hands to `TickStreamer`. [server/cmd/roundd/main.go](server/cmd/roundd/main.go) gains `--live-stream-addr`. [server/cmd/replayd/main.go](server/cmd/replayd/main.go) gains `--stream-tcp` and two new routes (`/live`, `/live/{id}`).
   - **Dev smoke tool:** [server/cmd/streamtest/main.go](server/cmd/streamtest/main.go) — tiny Go WS client that polls `/live`, subscribes, counts messages. End-to-end run (replayd + roundd + streamtest) delivered 1 HEADER / 795 TICK / 1 DONE messages to the WS client for a ~13s round.
 
-## In progress
-
-- **M5.3 — Godot live client scene.** Needs a new `.tscn` that WebSocket-subscribes to `/live/{id}`, decodes the binary protocol (reuse `ReplayReader`-style logic or a new `LiveStreamClient` class), feeds a `PlaybackPlayer` variant that accepts streaming frames (vs. the current all-at-once `load_replay`). Also should pick "the round with the newest start time" from `/live` to mirror the archive client's UX.
+- **M5.3 — Godot live client scene** done (2026-04-17). New [game/live_main.tscn](game/live_main.tscn) + [game/live_main.gd](game/live_main.gd) scene polls `/live` for active rounds, picks the numerically-largest ID (round IDs are unix-nanos, so largest = newest), opens a WebSocket to `/live/{id}`, and renders tick-by-tick via `PlaybackPlayer`.
+  - **LiveStreamClient:** [game/playback/live_stream_client.gd](game/playback/live_stream_client.gd) wraps `WebSocketPeer`, decodes the wire protocol (`u8 type + u32 len + payload`) into `header_received` / `tick_received` / `done_received` signals. Reuses `ReplayReader.decode_header_bytes` / `decode_frame_bytes` so the decoder is shared with the archive-replay path.
+  - **Streaming PlaybackPlayer:** [game/playback/playback_player.gd](game/playback/playback_player.gd) gains `begin_stream(header)` / `append_frame(frame)` / `end_stream()`. In streaming mode, hitting the tail of the frame buffer is treated as "next frame hasn't arrived yet" (hold) instead of "end of replay" (emit finished) — the finished signal only fires after `end_stream()` flips the flag.
+  - **ReplayReader refactor:** [game/playback/replay_reader.gd](game/playback/replay_reader.gd) split the old monolithic `read_bytes` into `_read_header_into(buf)` and `_read_frame_into(buf, marble_count)` helpers, exposed as standalone `decode_header_bytes` / `decode_frame_bytes` for the live client.
+  - **Launcher routing:** [game/launcher.gd](game/launcher.gd) picks `live_main.tscn` when `++ --live` (desktop) or `?live=1` / `?--live` (web query string) is present; otherwise falls back to the existing archive/sim routing.
+  - **Gotchas captured:** (a) WebSocketPeer defaults to 64 KiB inbound buffer and 2048 queued packets — a full round streams ~500 KiB of back-to-back TICK frames, so `LiveStreamClient` bumps both to 4 MiB / 16384 to avoid dropping the tail. (b) The `_process` drain must run unconditionally — if we only drained while `STATE_OPEN`, packets already sitting in the peer's queue at the moment the server closes the socket would be silently discarded. (c) DONE can still race the close under load, so `_on_ws_closed` treats "close after HEADER seen" as implicit `end_stream()` — playback always terminates cleanly.
+  - **Smoke test (2026-04-17):** replayd (`:8097` http + `:8098` tcp) + live_main headless + roundd with `--live-stream-addr=127.0.0.1:8098`. Round produced 837 frames; live client received 836 TICKs (1-frame tail race with close, within tolerance) and emitted `playback done tick=836` with the first-marble pos at the finish-line area. Exit 0.
 
 ## Not started
 
 - **M2.5 — quantization pass (optional)** — swap raw floats for i24 mm + smallest-three quat per [docs/tick-schema.md:39-42](docs/tick-schema.md#L39-L42). Defer unless file size matters.
-- **M5** — Godot Web client + WebSocket replay streaming.
-- **M6** — track library (3–5 tracks) + polish / juice.
+- **M6** — track library (3–5 tracks) + polish / juice (boot-splash branding, camera cuts, trails, sound).
 
 ## Decisions locked in (since PLAN.md was rewritten)
 
