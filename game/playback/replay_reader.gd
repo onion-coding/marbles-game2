@@ -49,8 +49,8 @@ static func decode_frame_bytes(bytes: PackedByteArray, marble_count: int) -> Dic
 
 static func _read_header_into(b: StreamPeerBuffer) -> Dictionary:
 	var protocol_version := b.get_u8()
-	if protocol_version != 2:
-		push_error("unsupported replay protocol_version=%d" % protocol_version)
+	if protocol_version != 3:
+		push_error("unsupported replay protocol_version=%d (expected 3 — see docs/tick-schema.md)" % protocol_version)
 		return {}
 	var round_id := b.get_u64()
 	var tick_rate_hz := b.get_u32()
@@ -60,6 +60,7 @@ static func _read_header_into(b: StreamPeerBuffer) -> Dictionary:
 	var hash_len := b.get_u8()
 	var server_seed_hash: PackedByteArray = b.get_data(hash_len)[1]
 	var slot_count := b.get_u32()
+	var track_id := b.get_u8()
 
 	var marble_count := b.get_u32()
 	var header: Array = []
@@ -86,6 +87,7 @@ static func _read_header_into(b: StreamPeerBuffer) -> Dictionary:
 		"server_seed": server_seed,
 		"server_seed_hash": server_seed_hash,
 		"slot_count": slot_count,
+		"track_id": track_id,
 		"header": header,
 	}
 

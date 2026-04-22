@@ -1,5 +1,5 @@
 class_name RampTrack
-extends Node3D
+extends Track
 
 # Multi-segment curving track. Each segment is a flat tilted box with walls;
 # segments chain end-to-end with yaw offsets between them, producing an S-curve
@@ -30,9 +30,10 @@ const SEGMENTS := [
 	{"length": 18.0, "yaw_deg":  18.0, "tilt_deg": 14.0},
 ]
 
-# Cached segment metadata computed once per run. Each entry: {center: Vector3,
-# basis: Basis, forward: Vector3, right: Vector3, up: Vector3, length: float}.
-static var _meta: Array = []
+# Per-instance segment metadata. Computed lazily on first access so the verifier
+# can use a RampTrack without adding it to the tree. Each entry:
+# {center: Vector3, basis: Basis, forward: Vector3, right: Vector3, up: Vector3, length: float}.
+var _meta: Array = []
 
 func _ready() -> void:
 	_ensure_meta()
@@ -69,21 +70,22 @@ func _make_box_body(node_name: String, size: Vector3, pos: Vector3, basis: Basis
 	body.physics_material_override = PhysicsMaterials.track()
 	return body
 
-# ─── Public accessors used by SpawnRail / FinishLine / FixedCamera ─────
+# ─── Track overrides ───────────────────────────────────────────────────
 
-static func segment_count() -> int:
+func get_width() -> float:
+	return WIDTH
+
+func segment_count() -> int:
 	_ensure_meta()
 	return _meta.size()
 
-# Basis and center of segment i — used by SpawnRail and FinishLine to place
-# themselves in the correct local frame without reimplementing the chain math.
-static func segment_meta(i: int) -> Dictionary:
+func segment_meta(i: int) -> Dictionary:
 	_ensure_meta()
 	return _meta[i]
 
 # World position of a point on segment i's top surface, offset `forward_offset`
 # meters along the segment's local forward axis (positive = further downhill).
-static func segment_surface_point(i: int, forward_offset: float) -> Vector3:
+func segment_surface_point(i: int, forward_offset: float) -> Vector3:
 	_ensure_meta()
 	var m: Dictionary = _meta[i]
 	var center: Vector3 = m["center"]
@@ -93,7 +95,7 @@ static func segment_surface_point(i: int, forward_offset: float) -> Vector3:
 
 # Axis-aligned bounding box of the whole track in world coords (deck + walls,
 # approx). Used by the camera to frame everything.
-static func track_bounds() -> AABB:
+func track_bounds() -> AABB:
 	_ensure_meta()
 	var bb := AABB()
 	var first := true
@@ -117,7 +119,7 @@ static func track_bounds() -> AABB:
 						bb = bb.expand(corner)
 	return bb
 
-static func _ensure_meta() -> void:
+func _ensure_meta() -> void:
 	if not _meta.is_empty():
 		return
 	var cursor := Vector3.ZERO

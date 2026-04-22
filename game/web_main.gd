@@ -32,8 +32,9 @@ var _player: PlaybackPlayer
 
 func _ready() -> void:
 	_build_environment()
-	add_child(RampTrack.new())
-	add_child(FixedCamera.new())
+	# Track is instantiated *after* we read the replay header (which carries
+	# track_id in v3). Building env-only now keeps the first frame black
+	# instead of flashing the wrong track before the fetch completes.
 
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--api-base="):
@@ -91,7 +92,13 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 		push_error("replay parse failed (%d bytes)" % body.size())
 		get_tree().quit(1)
 		return
-	print("WEB_CLIENT: playing %d frames for %d marbles" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size()])
+	var track_id := int(replay.get("track_id", TrackRegistry.RAMP))
+	var track := TrackRegistry.instance(track_id)
+	add_child(track)
+	var cam := FixedCamera.new()
+	cam.track = track
+	add_child(cam)
+	print("WEB_CLIENT: playing %d frames for %d marbles (track=%s)" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size(), TrackRegistry.name_of(track_id)])
 	_player.load_replay(replay)
 
 func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:

@@ -2,7 +2,9 @@
 
 Binary format streamed from server to client over WebSocket. One message per physics tick (or batched).
 
-Status: **v2 implemented** (M2 + M3, 2026-04-15) in [game/recorder/replay_writer.gd](../game/recorder/replay_writer.gd) / [game/playback/replay_reader.gd](../game/playback/replay_reader.gd). v0/v1 of this sketch was extended to v2 in M3 to carry the fairness block (`server_seed`, hash, per-marble `client_seed` + `spawn_slot`). Quantization (§Quantization below) is **not** yet implemented — current writer uses raw f32 pos + quat (~28 B/marble/tick instead of the planned ~15 B). Tracked as M2.5; deferred until bandwidth pressure is real.
+Status: **v3 implemented** (M6.0, 2026-04-23). v3 added a `track_id: u8` to the header so playback and verification know which Track subclass to instantiate (see [track_registry.gd](../game/tracks/track_registry.gd)). v2 (M3, 2026-04-15) added the fairness block (`server_seed`, hash, per-marble `client_seed` + `spawn_slot`). Writer: [game/recorder/replay_writer.gd](../game/recorder/replay_writer.gd). Reader: [game/playback/replay_reader.gd](../game/playback/replay_reader.gd). Quantization (§Quantization below) is **not** yet implemented — current writer uses raw f32 pos + quat (~28 B/marble/tick instead of the planned ~15 B). Tracked as M2.5; deferred until bandwidth pressure is real.
+
+Reader is strict: pre-v3 replays are rejected. A future bump (e.g. M2.5 quantization) will need multi-version decode if we need to keep old archives readable, but as of M6.0 all archived replays are wiped between format bumps — this is dev data, not production.
 
 ## Constraints
 
@@ -21,29 +23,40 @@ The format uses **two different byte orders on purpose**. A verifier in another 
 
 Rule of thumb: **if it goes into a hash, it's big-endian; if it goes into a file or wire frame, it's little-endian.**
 
-## Frame structure (v0 sketch)
+## Frame structure (v3, current)
 
 ```
 header (once per round):
-  u8   protocol_version            # 1
+  u8   protocol_version             # 3
   u64  round_id
-  u32  tick_rate_hz                # 60 for now
-  u32  marble_count                # N
+  u32  tick_rate_hz                 # 60 for now
+  u8   seed_len; bytes[seed_len]    # server_seed (typically 32 bytes)
+  u8   hash_len; bytes[hash_len]    # server_seed_hash (SHA-256 = 32 bytes)
+  u32  slot_count                   # SpawnRail.SLOT_COUNT (24)
+  u8   track_id                     # see game/tracks/track_registry.gd
+  u32  marble_count                 # N
   for each marble:
     u32 marble_id
-    u32 rgba                       # marble color
-    u8  name_len; bytes[name_len]  # UTF-8 player label
+    u32 rgba                        # marble color (big-endian RGBA in hash output)
+    u8  name_len;  bytes[name_len]  # UTF-8 player label
+    u8  cseed_len; bytes[cseed_len] # UTF-8 client_seed (may be empty)
+    u32 spawn_slot                  # index into SpawnRail
 
-tick frame (repeated):
+tick frame (repeated marble_count × frame_count times):
   u32  tick_index
-  u8   event_flags                 # bit 0: finish-line crossing this tick
+  u8   event_flags                  # bit 0: finish-line crossing this tick
   for each marble (N):
-    i24  x, y, z                   # quantized position (see below)
-    i16  qx, qy, qz                # compressed quaternion (smallest-3 or similar)
-  if event_flags & 0x1:
-    u32  marble_id                 # who crossed
-    u32  crossing_tick
+    f32  px, py, pz                 # raw world-space position (M2.5 will quantize to i24 mm)
+    f32  qx, qy, qz, qw             # raw rotation quaternion (M2.5 will smallest-three to 48 bits)
+
+trailer (archive-file only — omitted from live-stream HEADER payload):
+  u32  frame_count                  # precedes the tick-frame stream
 ```
+
+### Change log
+- **v3 (M6.0, 2026-04-23):** +`track_id: u8` after `slot_count`.
+- **v2 (M3, 2026-04-15):** +fairness block (server_seed, hash, slot_count), +per-marble client_seed + spawn_slot.
+- **v1 / v0:** pre-fairness, raw pos+rot only. No production data.
 
 ## Quantization
 

@@ -35,6 +35,7 @@ var _client_seeds: Array = []
 var _slots: Array = []
 var _colors: Array = []
 var _slot_count: int = 0
+var _track_id: int = 0
 
 var _pending_flags: int = 0
 var _stop_tick: int = -1
@@ -46,6 +47,7 @@ func set_round_context(
 	client_seeds: Array,
 	slots: Array,
 	colors: Array = [],
+	track_id: int = 0,
 ) -> void:
 	_round_id = round_id
 	_server_seed = server_seed
@@ -54,6 +56,7 @@ func set_round_context(
 	_slots = slots
 	_colors = colors
 	_slot_count = SpawnRail.SLOT_COUNT
+	_track_id = track_id
 
 func track(marble_list: Array[RigidBody3D], line: FinishLine) -> void:
 	marbles = marble_list
@@ -80,6 +83,7 @@ func track(marble_list: Array[RigidBody3D], line: FinishLine) -> void:
 			"server_seed": _server_seed,
 			"server_seed_hash": _server_seed_hash,
 			"slot_count": _slot_count,
+			"track_id": _track_id,
 			"header": header,
 		})
 		_streamer.send_header(header_bytes)
@@ -122,6 +126,7 @@ func _finalize() -> void:
 		"server_seed": _server_seed,
 		"server_seed_hash": _server_seed_hash,
 		"slot_count": _slot_count,
+		"track_id": _track_id,
 		"header": header,
 		"frames": frames,
 	})

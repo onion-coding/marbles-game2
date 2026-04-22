@@ -148,11 +148,13 @@ Notes on the single-project choice:
 - Basic HUD, marble-name labels, winner screen.
 - Bar: open browser → watch live rounds with no desync.
 
-### M6 — Track library + polish
-- Finish 3–5 tracks, tune each.
-- Cinematic camera cuts on key moments (near-finish, lead changes).
-- Juice: trails, impact FX, sound.
-- Bar: MVP demo-ready for a pretend operator.
+### M6 — Casino-game track library + polish
+- **Master plan:** [docs/m6-tracks.md](docs/m6-tracks.md). Per-track stubs under [docs/tracks/](docs/tracks/).
+- 5 tracks, each is a real casino game at marble scale: **Roulette / Craps / Poker / Slots / Plinko**. See [docs/m6-tracks.md §2](docs/m6-tracks.md#2-track-list).
+- Selection policy: deterministic-random (`hash(round_id) mod 5`) with no back-to-back repeats.
+- Replay format v3 adds a `track_id` header field so the verifier knows which track to re-derive against.
+- Polish focus: graphics + physics feel per track. Per-player free-cam in the Web client (fallback: cinematic cuts). Sound is user-sourced.
+- Scope and acceptance bar in [docs/m6-tracks.md §9](docs/m6-tracks.md#9-acceptance-bar). Timeline: take-time-until-satisfying, not a deadline.
 
 ## 6. Post-MVP (what this scaffolding is setting up)
 

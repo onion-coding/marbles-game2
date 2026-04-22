@@ -61,10 +61,17 @@ Given an archived round, a verifier:
 2. Re-derives spawn slots from the inputs. Must match the recorded spawn positions.
 3. (Optional, harder) Re-runs the sim with those spawns and confirms the recorded tick data is consistent. This requires the same Godot/Jolt build and is **not bit-deterministic across platforms** — see the determinism note in [../PLAN.md](../PLAN.md). Visual/outcome match is the bar, not bit-exactness.
 
+## Track selection (non-fairness, v3)
+
+The track a round uses (`track_id` in the replay header, see [tick-schema.md](tick-schema.md) §v3) is **not** part of the fairness derivation as of M6.0. It's picked by the server with a deterministic hash of `round_id` (see [`roundd.selectTrack`](../server/cmd/roundd/main.go)), plus a "no back-to-back repeats" rule applied between rounds. Verifiers trust the manifest's `track_id` to know which `Track` subclass to re-instantiate when re-deriving spawn positions.
+
+Making track selection fairness-chained (derive from `server_seed || round_id`) is a future hardening — probably a PROTOCOL_VERSION bump beyond v3. The reason it's not in MVP: the operator commits `server_seed_hash` **before buy-in**, so even a malicious operator can't pick a player-advantageous track *in reaction to* specific bets. They could in principle bias the rotation ahead of time, but that attack is strictly weaker than seed-choice (which the threat model below already addresses). Revisit when integrating with a real RGS that has tighter certification requirements.
+
 ## Threat model — what this protocol does NOT protect against
 
 - Server colluding with a specific player to **choose which `server_seed`** from many pre-generated candidates to commit to. Mitigation: commit to a chain of future seeds in advance (hash chain), or mix in a public beacon (e.g. future Bitcoin block hash) that the server can't predict.
 - Server withholding buy-ins after seeing the seed. Mitigation: seed hash published **before** buy-in opens (not just before it closes).
+- Server biasing the track rotation pre-commit (track selection is not yet fairness-chained — see above). Mitigation: fold `server_seed` into `track_id` derivation in a future protocol version.
 - Client-side cheating. Not applicable — clients are passive replay viewers.
 
 ## Open questions

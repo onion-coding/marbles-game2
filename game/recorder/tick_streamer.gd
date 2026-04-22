@@ -68,9 +68,14 @@ func send_tick(payload: PackedByteArray) -> void:
 
 func send_done() -> void:
 	_send_msg(MSG_DONE, PackedByteArray())
-	if _peer:
-		_peer.disconnect_from_host()
-	_peer = null
+	# Do NOT disconnect_from_host() here. The DONE bytes just went into the OS
+	# send buffer; Godot's disconnect calls close() on the socket, which can
+	# race the kernel's TCP flush and drop the tail under load — the server
+	# then misses either DONE *or the final TICK* and the live client terminates
+	# via the close-after-HEADER fallback, one frame short of the recorded
+	# replay. The server's ingest loop already drives a clean shutdown: MsgDone
+	# → return → defer round.Done() → conn.Close() (FIN back to us). The sim's
+	# socket naturally tears down when the sim process exits in spec mode.
 	_ok = false
 
 func is_streaming() -> bool:

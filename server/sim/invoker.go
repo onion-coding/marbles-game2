@@ -30,6 +30,11 @@ type Request struct {
 	RoundID     uint64
 	ServerSeed  [32]byte
 	ClientSeeds []string
+	// TrackID identifies which Track subclass the sim should instantiate
+	// (see game/tracks/track_registry.gd). Recorded in the replay header
+	// (v3) so the verifier and all playback paths know which geometry to
+	// re-derive against. 0 = RampTrack (default through M5).
+	TrackID uint8
 	// Timeout: hard cap on the subprocess. 0 means no timeout (not recommended).
 	Timeout time.Duration
 	// Stderr: if non-nil, Godot's combined stdout+stderr is also streamed here.
@@ -66,6 +71,7 @@ type specFile struct {
 	RoundID        uint64   `json:"round_id"`
 	ServerSeedHex  string   `json:"server_seed_hex"`
 	ClientSeeds    []string `json:"client_seeds"`
+	TrackID        uint8    `json:"track_id"`
 	ReplayPath     string   `json:"replay_path"`
 	StatusPath     string   `json:"status_path"`
 	LiveStreamAddr string   `json:"live_stream_addr,omitempty"`
@@ -105,6 +111,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		RoundID:       req.RoundID,
 		ServerSeedHex: hex.EncodeToString(req.ServerSeed[:]),
 		ClientSeeds:   req.ClientSeeds,
+		TrackID:       req.TrackID,
 		// Godot reads these paths with forward slashes — normalize so a Windows
 		// backslash path doesn't turn into an escape sequence in JSON.
 		ReplayPath:     filepath.ToSlash(replayPath),

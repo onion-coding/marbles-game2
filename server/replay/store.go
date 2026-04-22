@@ -43,13 +43,14 @@ type Winner struct {
 }
 
 // Manifest is the server's ground-truth record of one round. A verifier can
-// re-derive everything in here from ServerSeedHex + Participants + the track
-// constants, and compare against the stored replay.bin.
+// re-derive everything in here from ServerSeedHex + Participants + TrackID +
+// the track constants, and compare against the stored replay.bin.
 type Manifest struct {
 	RoundID           uint64        `json:"round_id"`
 	CreatedAt         time.Time     `json:"created_at"`
 	ProtocolVersion   int           `json:"protocol_version"`
 	TickRateHz        int           `json:"tick_rate_hz"`
+	TrackID           uint8         `json:"track_id"`
 	ServerSeedHashHex string        `json:"server_seed_hash_hex"`
 	ServerSeedHex     string        `json:"server_seed_hex"`
 	Participants      []Participant `json:"participants"`

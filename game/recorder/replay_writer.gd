@@ -1,8 +1,10 @@
 class_name ReplayWriter
 extends RefCounted
 
-# Binary replay format v2 per docs/tick-schema.md + fairness.md.
-# v2 adds the fairness block (server_seed, hash, per-marble slot + client_seed).
+# Binary replay format v3 per docs/tick-schema.md + fairness.md.
+# v3 adds `track_id: u8` after `slot_count` so the playback/verify paths know
+# which Track class to re-instantiate (see game/tracks/track_registry.gd).
+# v2 added the fairness block (server_seed, hash, per-marble slot + client_seed).
 # v0 raw f32 for pos + quat; quantization deferred to M2.5.
 #
 # The same byte encoding is reused by the live stream (server/stream): the
@@ -10,7 +12,7 @@ extends RefCounted
 # carries what `encode_frame()` produces. Clients get one decoder for both
 # archive-replay and live-stream paths.
 
-const PROTOCOL_VERSION := 2
+const PROTOCOL_VERSION := 3
 
 static func write(path: String, replay: Dictionary) -> Error:
 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
@@ -38,6 +40,7 @@ static func encode_header(replay: Dictionary) -> PackedByteArray:
 	b.put_u8(server_seed_hash.size())
 	b.put_data(server_seed_hash)
 	b.put_u32(int(replay["slot_count"]))
+	b.put_u8(int(replay["track_id"]) & 0xFF)
 
 	var header: Array = replay["header"]
 	b.put_u32(header.size())

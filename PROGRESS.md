@@ -4,7 +4,9 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M5 — Web client + replay streaming.** Started 2026-04-16. M5.0–M5.3 landed: archive HTTP API, Web export of the archive client, live TCP→WS streaming infrastructure, and a Godot live-playback scene that WS-subscribes to `/live/{id}` and renders frame-by-frame. Next: M5 is effectively complete; candidates are M6 polish (splash, camera cuts, juice), bundle-size audit, or M2.5 quantization.
+**M6.** Casino-game track library + polish; master plan in [docs/m6-tracks.md](docs/m6-tracks.md). **M6.0 scaffolding** landed 2026-04-23 — replay format v3 (`track_id` header field), `TrackRegistry`, and deterministic-with-no-repeat track selection in `roundd`. Next: **M6.1 Roulette** (first casino track, establishes the scene template the rest copy).
+
+Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
 ## Done
 
@@ -22,9 +24,9 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 - [game/project.godot](game/project.godot) — Jolt physics, 60Hz fixed tick, Forward+ renderer.
 - [game/main.tscn](game/main.tscn) + [game/main.gd](game/main.gd) — programmatically builds:
   - Directional light + procedural sky.
-  - Tilted ramp (-20° X) with side walls (static bodies, physics material with moderate friction and bounce).
-  - 20 color-randomized marbles spawned at the uphill end so they roll the full length. Spawn-rail geometry is now derived from `RampTrack` constants (see "Game-feel hardening" below) rather than hardcoded.
-  - Fixed camera framing the ramp from behind the high end.
+  - Track geometry: originally a single tilted ramp; upgraded to a 5-segment S-curve (14° tilt, ±18° yaw snakes) during development — see [game/tracks/ramp_track.gd](game/tracks/ramp_track.gd) §SEGMENTS. Each segment is a deck + two walls, all StaticBody3D with friction/bounce materials.
+  - 20 marbles (deterministic slot + color) spawned at the uphill end of segment 0 via `SpawnRail` (instance-based since the Track abstraction — see 2026-04-22 entry).
+  - Fixed camera frames the whole track from the AABB.
 - Headless `--import` and headless run smoke-tested: no script errors.
 
 ### M2 progress
@@ -95,10 +97,65 @@ Bug surfaced watching the first windowed race: spawns overlapped, balls fell fro
   - **Gotchas captured:** (a) WebSocketPeer defaults to 64 KiB inbound buffer and 2048 queued packets — a full round streams ~500 KiB of back-to-back TICK frames, so `LiveStreamClient` bumps both to 4 MiB / 16384 to avoid dropping the tail. (b) The `_process` drain must run unconditionally — if we only drained while `STATE_OPEN`, packets already sitting in the peer's queue at the moment the server closes the socket would be silently discarded. (c) DONE can still race the close under load, so `_on_ws_closed` treats "close after HEADER seen" as implicit `end_stream()` — playback always terminates cleanly.
   - **Smoke test (2026-04-17):** replayd (`:8097` http + `:8098` tcp) + live_main headless + roundd with `--live-stream-addr=127.0.0.1:8098`. Round produced 837 frames; live client received 836 TICKs (1-frame tail race with close, within tolerance) and emitted `playback done tick=836` with the first-marble pos at the finish-line area. Exit 0.
 
+### Live-stream tail drop fixed (pre-M6, 2026-04-22)
+The M5.3 smoke note ("836 TICKs vs 837 frames, within tolerance") was actually a real bug: the sim's [TickStreamer.send_done](game/recorder/tick_streamer.gd) wrote the DONE bytes into the TCP send buffer and then *immediately* called `StreamPeerTCP.disconnect_from_host()`. Godot's disconnect issues a plain `close()` which can RST-drop whatever's still in the OS send queue, so the server (depending on scheduling) lost either the DONE frame or the final TICK, forcing live clients into the close-after-HEADER fallback path one frame short of disk.
+
+Fix: the sim-side disconnect is redundant — [server/stream/ingest.go](server/stream/ingest.go) already drives a clean teardown (`MsgDone → return → defer round.Done() → conn.Close()`). Removed `disconnect_from_host()` from `send_done()`; the socket naturally tears down when the sim process exits (spec mode) or when the server closes its end first.
+
+Smoke test (2026-04-22): replayd (`:8097` http + `:8098` tcp) + roundd (`--live-stream-addr=127.0.0.1:8098`) + streamtest WS subscriber on the same round. Disk replay = **826 frames**; streamtest reported `HEADER=1 TICK=826 DONE=1` — perfect match, no tail drop.
+
+### Web bundle compression (pre-M6, 2026-04-22)
+[PLAN.md:170](PLAN.md#L170) targeted <20 MB for casino iframes; raw Godot Web export was 35.95 MB (of which `index.wasm` alone was 37.7 MB, dominating everything else by 100×). Rather than a custom engine build (M6-scale), shipped precompressed sidecars + content-negotiation:
+- [scripts/compress-web-bundle.sh](scripts/compress-web-bundle.sh) — post-export step that emits `index.wasm.br`, `index.wasm.gz`, `index.js.br`, `index.js.gz` alongside the originals. Run after every Web export; the serve path silently falls back to the 37 MB raw if sidecars are missing.
+- [server/cmd/replayd/main.go](server/cmd/replayd/main.go) `servePrecompressed` — checks `Accept-Encoding`, prefers `br` → `gz` → raw, sets `Content-Type: application/wasm` (from the uncompressed extension) + `Content-Encoding` + `Vary: Accept-Encoding`. Gated to `.wasm` / `.js` only; smaller assets (pck, images, audio worklets) fall through to `http.FileServer` unchanged. Range responses disabled on compressed paths (clients ask for ranges of uncompressed bytes, which a precompressed file can't honor — browsers don't range-request `.wasm` anyway).
+
+**Measurements (2026-04-22):**
+| Encoding | `index.wasm` | Total bundle |
+| --- | --- | --- |
+| raw | 37.70 MB | 35.95 MB |
+| gzip -9 | 9.40 MB | ~9.6 MB |
+| brotli -q 11 | **6.49 MB** | **6.35 MB** |
+
+6.35 MB wire — 5.6× under the 20 MB target. Verified end-to-end with curl (`Accept-Encoding: br, gzip` → br; `Accept-Encoding: gzip` → gz; no header → raw). Archive `/rounds` and live `/live` endpoints unchanged.
+
+### Track abstraction (pre-M6, 2026-04-22)
+Pre-M6 refactor: `RampTrack` was a static singleton (`class_name RampTrack extends Node3D`, all methods `static func`, class-level `static var _meta`). A 3–5 track library can't coexist with a singleton, so:
+- New [game/tracks/track.gd](game/tracks/track.gd) base class defining the five geometry accessors every track must implement: `get_width()`, `segment_count()`, `segment_meta(i)`, `segment_surface_point(i, offset)`, `track_bounds()`.
+- [game/tracks/ramp_track.gd](game/tracks/ramp_track.gd) now `extends Track`. `_meta` is per-instance with a lazy `_ensure_meta()` guard, so the verifier can instantiate a `RampTrack` as a plain math object (not added to the tree, no bodies built) purely to re-derive spawn positions. Segment constants and the S-curve layout are unchanged — fairness protocol is untouched.
+- [game/sim/spawn_rail.gd](game/sim/spawn_rail.gd) is instance-based: `SpawnRail.new(track)` → `rail.slot_position(slot, drop_order)`. `SLOT_COUNT` stays a class-level const (fairness-protocol-relevant, not track-dependent).
+- [game/sim/finish_line.gd](game/sim/finish_line.gd) and [game/cameras/fixed_camera.gd](game/cameras/fixed_camera.gd) get a `var track: Track` field the caller sets before `add_child`.
+- [game/sim/marble_spawner.gd](game/sim/marble_spawner.gd) takes `rail: SpawnRail` instead of statically calling `SpawnRail.slot_position`.
+- Scene glue ([main.gd](game/main.gd), [playback_main.gd](game/playback_main.gd), [live_main.gd](game/live_main.gd), [web_main.gd](game/web_main.gd), [verify_main.gd](game/verify_main.gd)) creates the track + rail and wires them into downstream nodes.
+- **Smoke tests (2026-04-22):** all passed against Godot 4.6.2-stable. (a) `test_vectors_main.tscn` → 4/4 fairness vectors. (b) sim in spec mode → 825-frame replay for seed `…0042`, commit `aa796dee…`. (c) verifier → commit + slots + colors + first-frame positions all match (instance-based `SpawnRail` produces byte-identical Vector3s to the old static API). (d) `playback_main.tscn` → 833 frames and self-terminates. No leaked objects.
+- **No wire format bump.** `PROTOCOL_VERSION` stays at 2 — the replay still doesn't encode a track_id. The verifier hardcodes `RampTrack.new()`. M6 will bump to v3 when it introduces multiple tracks and needs the replay to say which one.
+
+### M6.0 — scaffolding done (2026-04-23)
+Plumbing for the casino track library is in place. No new tracks yet — `RampTrack` stays `track_id=0`, selection pool is a single entry until M6.1 (Roulette) lands.
+- [game/tracks/track_registry.gd](game/tracks/track_registry.gd) — `track_id ↔ Track` factory with a `SELECTABLE` pool that `roundd` picks from. Adding a track = append one const + one match arm. IDs are wire-format-visible; never renumber.
+- **Replay format v3:** `PROTOCOL_VERSION` bumped 2 → 3, header gains a `track_id: u8` after `slot_count`. [game/recorder/replay_writer.gd](game/recorder/replay_writer.gd), [game/playback/replay_reader.gd](game/playback/replay_reader.gd), [game/recorder/tick_recorder.gd](game/recorder/tick_recorder.gd) updated. Reader rejects non-v3 — dev archives wiped at the bump (doc says so). [docs/tick-schema.md](docs/tick-schema.md) rewritten with the real v3 layout (the prior "v0 sketch" was 4 versions stale).
+- **Scene wire-up:** [main.gd](game/main.gd) reads `track_id` from spec.json (default 0 in interactive mode) and instantiates via `TrackRegistry.instance()`. Playback-side scenes ([playback_main](game/playback_main.gd), [web_main](game/web_main.gd), [live_main](game/live_main.gd), [verify_main](game/verify_main.gd)) defer track instantiation until they've read the replay header / WS HEADER, then pick the class matching its `track_id`. This unblocks the moment where different rounds use different tracks.
+- **Server wire-up:** [server/sim/invoker.go](server/sim/invoker.go) Request + specFile gained `TrackID`. [server/replay/store.go](server/replay/store.go) Manifest gained `TrackID`. [server/cmd/roundd/main.go](server/cmd/roundd/main.go) gained `selectTrack(round_id, previousTrack, pool)` — FNV64 hash of the round ID mod pool size, with a back-to-back-repeat guard, threaded across rounds via an in-process `previousTrack` int. `ProtocolVersion` in the saved manifest bumped to 3.
+- **Fairness docs:** [docs/fairness.md](docs/fairness.md) documents that track selection is **not** fairness-chained in v3 (server_seed is committed before buy-in so operators can't retarget per-bet, but biased rotation is a future hardening). Flagged as a future PROTOCOL bump.
+- **Smoke tests (2026-04-23):** all green.
+  - test_vectors: 4/4 (fairness untouched).
+  - sim spec-mode with seed `…0042`: same winner (Marble_10 tick 765) and same 825 frames as pre-v3; file size +1 byte (the new `track_id` u8). Commit hash identical.
+  - verifier: PASS, prints `track: RampTrack (id=0)` from the replay's header.
+  - playback: 825 frames, self-terminates.
+  - roundd+replayd+streamtest (2 rounds with live stream): manifests stamp `"protocol_version": 3, "track_id": 0`; streamtest reports `HEADER=1 TICK=812 DONE=1`, matching disk.
+
+Next: **M6.1 — Roulette.**
+
+### M6 — planning landed (2026-04-22)
+Scope aligned with user 2026-04-22: the MVP track library is **5 casino games at marble scale** (Roulette, Craps, Poker, Slots, Plinko), not themed-environment variations of the S-curve. Polish focus is graphics + physics feel per track. Per-player free-cam in the Web client preferred; cinematic cuts are the fallback. Sound is user-sourced.
+- [docs/m6-tracks.md](docs/m6-tracks.md) — master plan. Track list, selection policy, replay format v3, track abstraction evolution, build order (M6.0 scaffolding → M6.1 Roulette → … → M6.5 Plinko → M6.6 camera → M6.7 final polish), acceptance bar, open questions.
+- [docs/tracks/](docs/tracks/) — one stub per track ([roulette](docs/tracks/roulette.md), [craps](docs/tracks/craps.md), [poker](docs/tracks/poker.md), [slots](docs/tracks/slots.md), [plinko](docs/tracks/plinko.md)). Each fills in during its sub-milestone.
+- [PLAN.md §M6](PLAN.md) updated to link out.
+
+Next concrete step: **M6.0 scaffolding** — bump `PROTOCOL_VERSION` to 3 with a `track_id` header field, add a `TrackRegistry`, add the deterministic-with-no-repeat selection policy to `roundd`. No new tracks yet; `RampTrack` becomes `track_id=0` until it's retired.
+
 ## Not started
 
 - **M2.5 — quantization pass (optional)** — swap raw floats for i24 mm + smallest-three quat per [docs/tick-schema.md:39-42](docs/tick-schema.md#L39-L42). Defer unless file size matters.
-- **M6** — track library (3–5 tracks) + polish / juice (boot-splash branding, camera cuts, trails, sound).
 
 ## Decisions locked in (since PLAN.md was rewritten)
 

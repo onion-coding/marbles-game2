@@ -29,8 +29,7 @@ var _poll_deadline_ms: int = 0
 
 func _ready() -> void:
 	_build_environment()
-	add_child(RampTrack.new())
-	add_child(FixedCamera.new())
+	# Track is instantiated in _on_header once we know track_id from the stream.
 
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--api-base="):
@@ -107,7 +106,13 @@ func _subscribe(round_id: String) -> void:
 
 func _on_header(header: Dictionary) -> void:
 	var marbles: int = (header["header"] as Array).size()
-	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"])])
+	var track_id := int(header.get("track_id", TrackRegistry.RAMP))
+	var track := TrackRegistry.instance(track_id)
+	add_child(track)
+	var cam := FixedCamera.new()
+	cam.track = track
+	add_child(cam)
+	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])
 	_player.begin_stream(header)
 
 var _tick_count: int = 0

@@ -9,7 +9,6 @@ var _replay_path: String = ""
 
 func _ready() -> void:
 	_build_environment()
-	add_child(RampTrack.new())
 
 	# Two modes:
 	# (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>). Used
@@ -20,6 +19,7 @@ func _ready() -> void:
 	var server_seed: PackedByteArray
 	var client_seeds: Array
 	var client_count: int
+	var track_id: int
 	if spec.is_empty():
 		round_id = int(Time.get_unix_time_from_system())
 		server_seed = FairSeed.generate_server_seed()
@@ -27,6 +27,7 @@ func _ready() -> void:
 		client_count = MARBLE_COUNT
 		for i in range(client_count):
 			client_seeds.append("")  # MVP: no per-player seed mixing yet
+		track_id = TrackRegistry.RAMP
 	else:
 		round_id = int(spec["round_id"])
 		server_seed = FairSeed.from_hex(String(spec["server_seed_hex"]))
@@ -34,6 +35,11 @@ func _ready() -> void:
 		client_count = client_seeds.size()
 		_status_path = String(spec.get("status_path", ""))
 		_replay_path = String(spec.get("replay_path", ""))
+		track_id = int(spec.get("track_id", TrackRegistry.RAMP))
+
+	var track := TrackRegistry.instance(track_id)
+	add_child(track)
+	var rail := SpawnRail.new(track)
 
 	var server_seed_hash := FairSeed.hash_server_seed(server_seed)
 	_round_id = round_id
@@ -43,12 +49,13 @@ func _ready() -> void:
 
 	var slots := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, SpawnRail.SLOT_COUNT)
 	var colors := FairSeed.derive_marble_colors(server_seed, round_id, client_seeds)
-	var marbles := MarbleSpawner.spawn(self, slots, colors)
+	var marbles := MarbleSpawner.spawn(self, rail, slots, colors)
 
 	var finish := FinishLine.new()
+	finish.track = track
 	add_child(finish)
 	var recorder := TickRecorder.new()
-	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors)
+	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
 	if not _replay_path.is_empty():
 		recorder.override_output_path(_replay_path)
 	# If the spec requested live streaming, try to connect before track(): track()
@@ -69,7 +76,9 @@ func _ready() -> void:
 	add_child(recorder)
 	if not _status_path.is_empty():
 		recorder.finalized.connect(_on_finalized.bind(finish))
-	add_child(FixedCamera.new())
+	var cam := FixedCamera.new()
+	cam.track = track
+	add_child(cam)
 
 # Parse "--key=value" pairs from the user-args portion of the command line.
 func _load_spec_from_cli() -> Dictionary:
