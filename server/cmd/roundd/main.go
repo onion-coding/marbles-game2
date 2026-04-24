@@ -28,8 +28,10 @@ import (
 
 // selectableTrackIDs mirrors TrackRegistry.SELECTABLE in
 // game/tracks/track_registry.gd. Grows as casino tracks ship (M6.1+).
-// Until then, only RampTrack (id=0) is in the rotation pool.
-var selectableTrackIDs = []uint8{0}
+// Must stay in sync with the Godot side — a mismatched pool here would
+// either skip a track the client can render, or (worse) pick an ID the
+// client maps to its fallback (RampTrack) with the wrong physics.
+var selectableTrackIDs = []uint8{0, 1}
 
 // selectTrack picks the next track_id using a deterministic hash of the
 // round_id, skipping the previous round's id to avoid back-to-back repeats.

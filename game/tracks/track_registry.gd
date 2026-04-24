@@ -13,8 +13,8 @@ extends Object
 # tracks land at IDs 1–5 in M6.1–M6.5.
 
 const RAMP := 0
+const ROULETTE := 1
 # Reserved, added as each casino track ships:
-# const ROULETTE := 1
 # const CRAPS    := 2
 # const POKER    := 3
 # const SLOTS    := 4
@@ -23,7 +23,7 @@ const RAMP := 0
 # Track IDs currently available for selection by roundd. Grows as casino
 # tracks ship. The live/playback paths accept any registered ID — this is
 # just the "rotation pool" the server picks from.
-const SELECTABLE := [RAMP]
+const SELECTABLE := [RAMP, ROULETTE]
 
 static func count() -> int:
 	return SELECTABLE.size()
@@ -32,7 +32,7 @@ static func is_valid_id(id: int) -> bool:
 	# Any ID ever shipped is valid for decode. Only SELECTABLE are picked
 	# by the server for new rounds.
 	match id:
-		RAMP:
+		RAMP, ROULETTE:
 			return true
 		_:
 			return false
@@ -41,6 +41,8 @@ static func instance(id: int) -> Track:
 	match id:
 		RAMP:
 			return RampTrack.new()
+		ROULETTE:
+			return RouletteTrack.new()
 		_:
 			push_error("TrackRegistry: unknown track_id=%d — falling back to RampTrack" % id)
 			return RampTrack.new()
@@ -49,5 +51,7 @@ static func name_of(id: int) -> String:
 	match id:
 		RAMP:
 			return "RampTrack"
+		ROULETTE:
+			return "RouletteTrack"
 		_:
 			return "unknown(%d)" % id

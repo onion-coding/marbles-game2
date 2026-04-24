@@ -12,7 +12,7 @@ func _ready() -> void:
 	# distance. Tilt down to look at the AABB center. Tuned against the current
 	# 5-segment S-curve; if segments change radically, this may need re-tuning
 	# rather than being a pure function of bounds.
-	var bb := track.track_bounds()
+	var bb := track.camera_bounds()
 	var center := bb.get_center()
 	var extent := bb.size
 	var horizontal_span: float = maxf(extent.x, extent.z)

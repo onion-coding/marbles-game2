@@ -1,20 +1,23 @@
 class_name RampTrack
 extends Track
 
-# Multi-segment curving track. Each segment is a flat tilted box with walls;
-# segments chain end-to-end with yaw offsets between them, producing an S-curve
-# for test purposes. The cleanest way to think about this: a "snake" made of
-# N tilted boxes, each yawed relative to the previous, all tilted the same
-# amount so the whole path goes downhill.
+# Multi-segment curving test track. Each segment is a flat tilted box with
+# walls; segments chain end-to-end with yaw offsets between them, producing an
+# S-curve. Kept as the default track_id=0 after M6 introduced the casino
+# library — it's useful as a "dev/tutorial" track and as the reference
+# implementation of how to adapt non-scene-based geometry to the Track API.
 #
 # Seams between segments: the floors meet at an edge where yaw changes. Jolt
 # handles this OK with continuous-CD on the marbles, but marbles can jitter a
-# bit at junctions. That's acceptable for an MVP test track; a real track (M6)
-# would use a single swept mesh or spline-based geometry.
+# bit at junctions. Acceptable for this test track; real casino tracks use
+# purpose-built geometry instead of chained boxes.
 
 const WIDTH := 6.0
 const DECK_THICKNESS := 0.5
 const WALL_HEIGHT := 3.0
+
+const EDGE_MARGIN := 0.4       # keep spawn points off the side walls
+const UPHILL_MARGIN := 4.0     # distance from segment 0's uphill edge so marbles have runway
 
 # Segment list. Each entry:
 #   length: meters along the segment's local -Z (downhill direction)
@@ -30,8 +33,8 @@ const SEGMENTS := [
 	{"length": 18.0, "yaw_deg":  18.0, "tilt_deg": 14.0},
 ]
 
-# Per-instance segment metadata. Computed lazily on first access so the verifier
-# can use a RampTrack without adding it to the tree. Each entry:
+# Per-instance segment metadata. Computed lazily on first access so the
+# verifier can use a RampTrack without adding it to the tree. Each entry:
 # {center: Vector3, basis: Basis, forward: Vector3, right: Vector3, up: Vector3, length: float}.
 var _meta: Array = []
 
@@ -70,32 +73,37 @@ func _make_box_body(node_name: String, size: Vector3, pos: Vector3, basis: Basis
 	body.physics_material_override = PhysicsMaterials.track()
 	return body
 
-# ─── Track overrides ───────────────────────────────────────────────────
+# ─── Track API overrides ──────────────────────────────────────────────────
 
-func get_width() -> float:
-	return WIDTH
-
-func segment_count() -> int:
+func spawn_points() -> Array:
 	_ensure_meta()
-	return _meta.size()
+	var m: Dictionary = _meta[0]
+	var right: Vector3 = m["right"]
+	var length: float = m["length"]
+	# Segment-local forward_offset is negative = toward the uphill edge.
+	var forward_offset := -(length * 0.5 - UPHILL_MARGIN)
+	var surface := _segment_surface_point(0, forward_offset)
+	var usable := WIDTH - 2.0 * EDGE_MARGIN
+	var slots := []
+	var count := SpawnRail.SLOT_COUNT
+	for i in range(count):
+		var slot_x := -WIDTH * 0.5 + EDGE_MARGIN + float(i) * (usable / float(count - 1))
+		slots.append(surface + right * slot_x)
+	return slots
 
-func segment_meta(i: int) -> Dictionary:
+func finish_area_transform() -> Transform3D:
 	_ensure_meta()
-	return _meta[i]
-
-# World position of a point on segment i's top surface, offset `forward_offset`
-# meters along the segment's local forward axis (positive = further downhill).
-func segment_surface_point(i: int, forward_offset: float) -> Vector3:
-	_ensure_meta()
-	var m: Dictionary = _meta[i]
-	var center: Vector3 = m["center"]
-	var forward: Vector3 = m["forward"]
+	var last := _meta.size() - 1
+	var m: Dictionary = _meta[last]
+	var length: float = m["length"]
 	var up: Vector3 = m["up"]
-	return center + forward * forward_offset + up * (DECK_THICKNESS * 0.5)
+	var edge := _segment_surface_point(last, length * 0.5 + 0.5)
+	return Transform3D(m["basis"], edge + up * 2.0)
 
-# Axis-aligned bounding box of the whole track in world coords (deck + walls,
-# approx). Used by the camera to frame everything.
-func track_bounds() -> AABB:
+func finish_area_size() -> Vector3:
+	return Vector3(WIDTH + 4.0, 12.0, 0.4)
+
+func camera_bounds() -> AABB:
 	_ensure_meta()
 	var bb := AABB()
 	var first := true
@@ -118,6 +126,19 @@ func track_bounds() -> AABB:
 					else:
 						bb = bb.expand(corner)
 	return bb
+
+# ─── Internal helpers ─────────────────────────────────────────────────────
+
+# World position of a point on segment i's top surface, offset
+# forward_offset meters along the segment's local forward axis (positive =
+# further downhill). Used by spawn_points() and finish_area_transform().
+func _segment_surface_point(i: int, forward_offset: float) -> Vector3:
+	_ensure_meta()
+	var m: Dictionary = _meta[i]
+	var center: Vector3 = m["center"]
+	var forward: Vector3 = m["forward"]
+	var up: Vector3 = m["up"]
+	return center + forward * forward_offset + up * (DECK_THICKNESS * 0.5)
 
 func _ensure_meta() -> void:
 	if not _meta.is_empty():

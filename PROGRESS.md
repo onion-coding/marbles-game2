@@ -4,7 +4,7 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M6.** Casino-game track library + polish; master plan in [docs/m6-tracks.md](docs/m6-tracks.md). **M6.0 scaffolding** landed 2026-04-23 — replay format v3 (`track_id` header field), `TrackRegistry`, and deterministic-with-no-repeat track selection in `roundd`. Next: **M6.1 Roulette** (first casino track, establishes the scene template the rest copy).
+**M6.** Casino-game track library + polish; master plan in [docs/m6-tracks.md](docs/m6-tracks.md). **M6.0 scaffolding** landed 2026-04-23; **M6.1 Roulette** landed 2026-04-24 (first real casino track, also the forcing function that evolved `Track` to its fairness-relevant interface). Next: **M6.2 Craps** — introduces moving obstacles driven by a fairness-chained initial state (dice RNG).
 
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
@@ -144,6 +144,24 @@ Plumbing for the casino track library is in place. No new tracks yet — `RampTr
   - roundd+replayd+streamtest (2 rounds with live stream): manifests stamp `"protocol_version": 3, "track_id": 0`; streamtest reports `HEADER=1 TICK=812 DONE=1`, matching disk.
 
 Next: **M6.1 — Roulette.**
+
+### M6.1 — Roulette done (2026-04-24)
+First real casino track lands, `track_id=1` added to the rotation pool, and the `Track` base class is evolved to the fairness-relevant interface §5 of [m6-tracks.md](docs/m6-tracks.md) had been targeting.
+
+- **Track API evolved.** [game/tracks/track.gd](game/tracks/track.gd) shrinks to four methods — `spawn_points()`, `finish_area_transform()`, `finish_area_size()`, `camera_bounds()`. The old segment-oriented API (`segment_count`, `segment_meta`, `segment_surface_point`, `get_width`, `track_bounds`) was fine for chained-box tracks but useless for a wheel. RampTrack keeps its segment computation as internal-only helpers and implements the new API on top. `SpawnRail` is now a thin wrapper that reads `track.spawn_points()` once in `_init` and applies a world-Y stagger for drop-order; per-track "up axis" is gone, and the per-round RampTrack race outcome drifts slightly as a result (fairness verification unaffected because recorder and verifier share the same spawn_points source). `FinishLine` and `FixedCamera` migrated one-for-one.
+- **RouletteTrack built programmatically.** [game/tracks/roulette_track.gd](game/tracks/roulette_track.gd) — tilted spinning wheel (AnimatableBody3D, 10° pedestal tilt toward +X, fixed 1.5 rad/s angular velocity), 3°-downhill green felt 40×20m, 5 chip-stack obstacles, back wall, finish slab. Spawn points form a ring above the wheel at `SPAWN_RADIUS = WHEEL_RADIUS * 0.6`. Initial wheel angle is 0 (deterministic by construction; fairness-chained angle is a deliberate M6.2 upgrade). No `.tscn` for this track — geometry is parametric enough that script-only matches how RampTrack works and keeps M6.1 consistent; later tracks with hand-placed assets may use scenes.
+- **TrackRegistry updated.** [game/tracks/track_registry.gd](game/tracks/track_registry.gd) `ROULETTE = 1`, `SELECTABLE = [RAMP, ROULETTE]`. `name_of` and `instance` match arms extended.
+- **Server-side pool.** [server/cmd/roundd/main.go](server/cmd/roundd/main.go) `selectableTrackIDs = []uint8{0, 1}`. Comment warns that this MUST match Godot's SELECTABLE — a mismatch would silently fall back to RampTrack on the client while the server thought it was running Roulette.
+- **Smoke tests (2026-04-24).**
+  - `test_vectors`: 4/4 (fairness untouched).
+  - Sim spec-mode `track_id=1` seed `…0042`: 686 frames, Marble_01 wins at tick 627 (~10.5s), replay 388 KB.
+  - Verifier on that replay: PASS, prints `track: RouletteTrack (id=1)`.
+  - `playback_main` on it: 686 frames rendered, terminates cleanly.
+  - `roundd --rounds=4`: tracks selected 0, 1, 0, 1 (deterministic-with-no-repeat). All four manifests stamp `"protocol_version": 3` + correct `track_id`. Round-trip OK on all four.
+- **Race variance observed, accepted.** Roulette rounds finished in 521–2278 ticks (8.7s–38s). Variance comes from some marbles briefly stuck between wheel dividers or behind chips before one reaches the finish. All under the 60s sim timeout, so acceptance criterion holds; tuning is an M6.7 polish item.
+
+### Nested-PhysicsBody3D hang (M6.1, 2026-04-24)
+First Roulette smoke hung at 0 CPU — Godot deadlocked before the first physics tick with no script errors, no output past `COMMIT:`. Root cause: the wheel's 24 pocket dividers were built as `StaticBody3D` *children* of the wheel's `AnimatableBody3D`. Jolt can't reconcile nested kinematic/static PhysicsBody3Ds at world-enter time under this configuration. Fix: flatten the dividers to plain `CollisionShape3D` + `MeshInstance3D` siblings on the same wheel body — one Body per moving thing, many shapes per body. Full write-up in [docs/bugfixes.md](docs/bugfixes.md) 2026-04-24 entry. Race ran to completion on the first run post-fix.
 
 ### M6 — planning landed (2026-04-22)
 Scope aligned with user 2026-04-22: the MVP track library is **5 casino games at marble scale** (Roulette, Craps, Poker, Slots, Plinko), not themed-environment variations of the S-curve. Polish focus is graphics + physics feel per track. Per-player free-cam in the Web client preferred; cinematic cuts are the fallback. Sound is user-sourced.

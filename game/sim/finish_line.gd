@@ -4,36 +4,21 @@ extends Area3D
 signal marble_crossed(marble: RigidBody3D, tick: int)
 signal race_finished(winner: RigidBody3D, tick: int)
 
-# Set by the caller before add_child. The finish slab geometry is derived from
-# the last segment of this track.
+# Set by the caller before add_child. The finish slab geometry is pulled from
+# track.finish_area_transform() and .finish_area_size() so each track decides
+# where and how big the finish is without this class knowing any geometry.
 var track: Track
 
 var _winner: RigidBody3D = null
 var _crossed: Dictionary = {}
 
 func _ready() -> void:
-	# Park the slab just past the last segment's downhill edge. The slab is
-	# oriented to match the last segment's frame so its "crossing plane" is
-	# perpendicular to the segment's forward direction — otherwise a curving
-	# track ending with a yaw would have marbles missing an axis-aligned slab.
-	var last := track.segment_count() - 1
-	var meta := track.segment_meta(last)
-	var up: Vector3 = meta["up"]
-	var length: float = meta["length"]
-
-	# Surface point at the downhill edge, plus a small forward offset so the slab
-	# sits just past the edge and catches balls that fall off.
-	var edge := track.segment_surface_point(last, length * 0.5 + 0.5)
-	position = edge + up * 2.0
-	basis = meta["basis"]
-
+	transform = track.finish_area_transform()
 	var shape := CollisionShape3D.new()
 	var box := BoxShape3D.new()
-	# Wide and tall in the segment's cross-track / vertical axes, thin along its forward axis.
-	box.size = Vector3(track.get_width() + 4.0, 12.0, 0.4)
+	box.size = track.finish_area_size()
 	shape.shape = box
 	add_child(shape)
-
 	body_entered.connect(_on_body_entered)
 
 func _on_body_entered(body: Node) -> void:
