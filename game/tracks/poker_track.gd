@@ -19,7 +19,8 @@ extends Track
 
 const COURSE_LEN := 36.0           # X span between shoe and pot
 const COURSE_WIDTH := 12.0         # Z span
-const FELT_TILT_DEG := 14.0        # downhill tilt around Z (descend toward +X)
+const FELT_TILT_DEG := 9.0         # downhill tilt around Z (descend toward +X). Combined
+                                    # with FELT_FRICTION 0.55 keeps races in the ~25-35s range.
 
 # Y of the felt's top surface at x=0 (track is locally flat; tilt rotates the
 # whole table around the world Z axis for the downhill effect).
@@ -55,16 +56,16 @@ const CHIP_ROWS := [
 # Each card is a flat box pivoting on its short edge. The pivot axis is along
 # world Z (across the course); the card tilts ±FLIP_AMP_DEG around that axis.
 # Rotation: angle(t) = amp * sin(2π * t / period_ticks + phase)
-const CARD_COUNT := 4
-const CARD_LEN := 4.0              # along X (course direction)
-const CARD_WIDTH := 3.6            # along Z
+const CARD_COUNT := 6
+const CARD_LEN := 3.5              # along X (course direction)
+const CARD_WIDTH := 4.5            # along Z (wider so marbles can't all slip past at one Z)
 const CARD_THICKNESS := 0.18
-const CARD_FLIP_AMP_DEG := 35.0
-const CARD_PERIOD_BASE_TICKS := 240   # 4s at 60Hz; per-card jitter from seed
+const CARD_FLIP_AMP_DEG := 30.0
+const CARD_PERIOD_BASE_TICKS := 300   # 5s at 60Hz; per-card jitter from seed
 const CARD_PERIOD_JITTER := 90        # ±1.5s
-const CARD_X_STEP := 4.5              # spacing along the course
-const CARD_X_START := 1.0             # first card position
-const CARD_PIVOT_HEIGHT := 0.8        # height of pivot above tilted felt
+const CARD_X_STEP := 3.8              # spacing along the course
+const CARD_X_START := -2.0            # first card placed earlier in the course
+const CARD_PIVOT_HEIGHT := 0.8
 
 # ─── Decorative community cards (visual only) ────────────────────────────
 # Behind the rails, on a side pedestal — flop/turn/river. No collision.
@@ -80,7 +81,7 @@ const POT_RADIUS := 3.5
 const POT_HEIGHT := 0.6
 
 # ─── Physics materials ───────────────────────────────────────────────────
-const FELT_FRICTION := 0.40
+const FELT_FRICTION := 0.55
 const FELT_BOUNCE := 0.10
 const CARD_FRICTION := 0.18        # slippery — card surface
 const CARD_BOUNCE := 0.30

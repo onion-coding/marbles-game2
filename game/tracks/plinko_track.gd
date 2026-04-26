@@ -14,11 +14,13 @@ extends Track
 # ─── Geometry ────────────────────────────────────────────────────────────
 # Course depth (Z) is shallow so marbles stay roughly in the plane.
 const COURSE_DEPTH := 1.4
-const PLAY_FIELD_WIDTH := 20.0       # X span (peg field + slot row)
-const PLAY_FIELD_HEIGHT := 24.0      # Y span (top of peg field to bottom of slots)
+# Peg field is narrow enough that side walls hug the outermost pegs — marbles
+# can't drift past the field along the side and skip the obstacles.
+const PLAY_FIELD_WIDTH := 16.0
+const PLAY_FIELD_HEIGHT := 24.0
 
 const FIELD_TOP_Y := 22.0
-const FIELD_BOTTOM_Y := 4.0          # bottom of pegs (slots below this)
+const FIELD_BOTTOM_Y := 4.0
 
 # ─── Hopper (above the peg field) ────────────────────────────────────────
 const HOPPER_Y := 24.0
@@ -34,15 +36,18 @@ const SPAWN_DX := 0.20
 const SPAWN_DZ := 0.20
 
 # ─── Peg forest ──────────────────────────────────────────────────────────
-const PEG_RADIUS := 0.20
-const PEG_HEIGHT := COURSE_DEPTH       # spans the full play depth so marbles can't slip past
-const PEG_ROW_COUNT := 12              # number of rows
-const PEG_ROW_SPACING := 1.4           # vertical between rows
-const PEG_COL_SPACING := 1.4           # horizontal between pegs in a row
-const PEG_BASE_COLS := 11              # pegs in the widest (even-indexed) rows
-const PEG_FIELD_TOP_Y_GAP := 1.5       # Y gap from FIELD_TOP_Y to first peg row
-const PEG_FRICTION := 0.10
-const PEG_BOUNCE := 0.55
+const PEG_RADIUS := 0.30
+const PEG_HEIGHT := COURSE_DEPTH
+const PEG_ROW_COUNT := 18              # filling the available 17m of vertical between
+                                        # FIELD_TOP_Y and the slot floor at row spacing 1m
+const PEG_ROW_SPACING := 1.0
+const PEG_COL_SPACING := 1.3           # gap between adjacent pegs ≈ 0.7m (marble diameter
+                                        # is 0.6m) — tight enough to force interaction every
+                                        # row, loose enough to never wedge a marble
+const PEG_BASE_COLS := 11
+const PEG_FIELD_TOP_Y_GAP := 1.0
+const PEG_FRICTION := 0.45
+const PEG_BOUNCE := 0.30
 
 # ─── Slot row (bottom catchers) ──────────────────────────────────────────
 const SLOT_COUNT := 9

@@ -52,12 +52,15 @@ func _ready() -> void:
 	fov = 60.0
 	_bb = track.camera_bounds()
 	_target = _bb.get_center()
-	# Frame the whole bounds at sensible defaults — match FixedCamera's logic.
+	# Frame the whole bounds at sensible defaults — match FixedCamera's logic
+	# (FOV-aware fit at 16:9 aspect, with a small margin).
 	var extent := _bb.size
-	var horizontal_span: float = maxf(extent.x, extent.z)
-	_distance = horizontal_span * 0.9 + 10.0
-	_min_dist = max(2.0, horizontal_span * 0.2)
-	_max_dist = horizontal_span * 2.5 + 30.0
+	var aspect := 16.0 / 9.0
+	var dist_v: float = (extent.y * 0.5) / 0.577
+	var dist_h: float = (maxf(extent.x, extent.z) * 0.5) / (0.577 * aspect)
+	_distance = maxf(dist_v, dist_h) * 1.10 + 4.0
+	_min_dist = max(2.0, _distance * 0.2)
+	_max_dist = _distance * 3.0 + 20.0
 	_default_target = _target
 	_default_yaw = _yaw
 	_default_pitch = _pitch

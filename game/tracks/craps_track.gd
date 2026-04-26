@@ -23,15 +23,14 @@ extends Track
 # ─── Table ────────────────────────────────────────────────────────────────
 const TABLE_LEN := 36.0          # X-extent (race direction = +X)
 const TABLE_WIDTH := 14.0        # Z-extent
-const TABLE_TILT_DEG := 14.0     # downhill tilt around Z (+X side lower).
-                                  # Felt friction is 0.45 (grippy but not stopping); the
-                                  # combination keeps marble run time around target.
+const TABLE_TILT_DEG := 9.0      # downhill tilt around Z. Combined with FELT_FRICTION
+                                  # 0.55 keeps marbles moving but slow enough for ~25-35s races.
 const TABLE_THICKNESS := 0.4
 const TABLE_RAIL_HEIGHT := 1.6
 const TABLE_RAIL_THICKNESS := 0.3
 
 # Felt physics: grippy, low bounce.
-const FELT_FRICTION := 0.45
+const FELT_FRICTION := 0.55
 const FELT_BOUNCE := 0.10
 
 # Wood rail physics: medium grip, low bounce.
@@ -51,13 +50,16 @@ const SPAWN_SPREAD_Z := 8.0
 # Three rows of chip-stacks force lane discipline mid-table.
 const CHIP_RADIUS := 0.45
 const CHIP_HEIGHT := 1.4
-const CHIP_ROW_X := [-6.0, 1.0, 8.0]   # X positions of chip rows along the table
-# Per-row Z offsets create a slalom: cols/row alternate offsets so marbles
-# can't follow a single straight line.
+# Five rows of chip-stacks across the table at staggered Z offsets — each row
+# breaks the line marbles would otherwise follow, forcing a slalom that adds
+# real time to each crossing.
+const CHIP_ROW_X := [-10.0, -5.5, -1.0, 3.5, 8.0]
 const CHIP_ROW_OFFSETS := [
 	[-5.0, -2.0, 1.0, 4.0],
 	[-3.5, -0.5, 2.5, 5.5],
 	[-4.5, -1.5, 1.5, 4.5],
+	[-3.0, 0.0, 3.0, 6.0],
+	[-5.5, -2.5, 0.5, 3.5],
 ]
 
 # ─── Pyramid rubber back wall ─────────────────────────────────────────────

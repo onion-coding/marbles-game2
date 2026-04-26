@@ -6,18 +6,21 @@ extends Camera3D
 var track: Track
 
 func _ready() -> void:
-	# Compute a high-angle shot that frames the whole (possibly curving) track.
-	# Pull back from the AABB center along world -Z by enough distance to fit the
-	# track's longest horizontal extent in frame, then lift up by ~60% of that
-	# distance. Tilt down to look at the AABB center. Tuned against the current
-	# 5-segment S-curve; if segments change radically, this may need re-tuning
-	# rather than being a pure function of bounds.
+	# Compute a shot that frames the whole AABB tightly. Pulls back enough to
+	# fit the largest dimension at the camera's vertical FOV, with a small
+	# margin and a modest Y lift for high-angle feel.
 	var bb := track.camera_bounds()
 	var center := bb.get_center()
 	var extent := bb.size
-	var horizontal_span: float = maxf(extent.x, extent.z)
-	var pullback: float = horizontal_span * 0.9 + 10.0
-	position = center + Vector3(0, pullback * 0.6 + extent.y * 0.5, pullback * 0.6)
+	# Required distance to fit the AABB's vertical extent at FOV 60°.
+	# tan(30°) ≈ 0.577, so dist = (extent.y/2) / 0.577.
+	# For wide-and-flat tracks the X dimension dominates; account via aspect.
+	var aspect := 16.0 / 9.0
+	var dist_v: float = (extent.y * 0.5) / 0.577
+	var dist_h: float = (maxf(extent.x, extent.z) * 0.5) / (0.577 * aspect)
+	var dist: float = maxf(dist_v, dist_h) * 1.10 + 4.0
+	var lift: float = extent.y * 0.20
+	position = center + Vector3(0, lift, dist)
 	look_at(center, Vector3.UP)
 	current = true
 	fov = 60.0

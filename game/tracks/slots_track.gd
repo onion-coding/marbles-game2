@@ -35,20 +35,21 @@ const SPAWN_DZ := 1.0
 # cut through its middle (modeled as an arc of "blockers" — short box arcs
 # spanning ~270° of the cylinder, leaving a 90° gap that marbles can slip
 # through).
-const REEL_COUNT := 3
-const REEL_RADIUS := 2.0
-const REEL_LENGTH := 11.0           # along world X (slightly less than cabinet width)
-const REEL_BLOCKER_THICKNESS := 0.35
-const REEL_BLOCKER_HEIGHT := 0.7    # height of each "tooth" radially
-const REEL_BLOCKER_COUNT := 6       # arc segments per reel — gap = 1 missing segment
-const REEL_GATE_INDEX := 0          # which segment slot is the gap (the reel rotates so it moves)
-const REEL_FRICTION := 0.12
-const REEL_BOUNCE := 0.55
-# Y positions of the three reels (descending).
-const REEL_YS := [19.0, 13.0, 7.0]
-# Angular velocities (rad/tick at 60Hz). Different per reel to vary timing.
-# At 60Hz, w=0.04 rad/tick → 2.4 rad/s → ~0.4 rev/s. Comfortable to read.
-const REEL_W := [0.045, -0.038, 0.052]
+const REEL_COUNT := 5
+const REEL_RADIUS := 2.2
+const REEL_LENGTH := 11.0
+const REEL_BLOCKER_THICKNESS := 0.40
+const REEL_BLOCKER_HEIGHT := 0.85    # taller teeth catch marbles more reliably
+const REEL_BLOCKER_COUNT := 8        # 8 segments → gap is 45° wide
+const REEL_GATE_INDEX := 0
+const REEL_FRICTION := 0.30
+const REEL_BOUNCE := 0.40
+# Y positions of the five reels (descending). Spaced ~3.5m apart so each
+# reel has a chance to catch marbles before the next one.
+const REEL_YS := [21.0, 17.5, 14.0, 10.5, 7.0]
+# Angular velocities (rad/tick at 60Hz). Slower than before so the gate
+# doesn't whip past too fast — marbles need to be there at the right moment.
+const REEL_W := [0.025, -0.022, 0.028, -0.030, 0.024]
 
 # ─── Funnel (after the bottom reel) ──────────────────────────────────────
 const FUNNEL_TOP_Y := 4.5
@@ -173,9 +174,11 @@ func _build_cabinet() -> void:
 # ─── Reels ───────────────────────────────────────────────────────────────
 
 func _init_reel_phases() -> void:
+	# Per-reel initial phase in [0, TAU). Shifted so the gates are spread
+	# out across the cabinet rather than starting aligned — looks more
+	# kinetic and gives marbles different chances at each level.
 	for i in range(REEL_COUNT):
 		var raw := _hash_with_tag("reel_%d" % i)
-		# Initial phase in [0, TAU)
 		_reel_phases.append(float(raw[0]) / 255.0 * TAU)
 
 func _build_reels() -> void:
