@@ -27,8 +27,11 @@ static func spawn_confetti(parent: Node, world_pos: Vector3, accent_color: Color
 	burst.one_shot = true
 	burst.explosiveness = 1.0      # all particles spawn at once
 	burst.local_coords = false
-	burst.emitting = true
-	burst.global_position = world_pos
+	# Defer `emitting = true` until after the node is in the tree and
+	# positioned at world_pos. Setting global_position before add_child
+	# would error ("not inside tree"); starting emission before the
+	# transform is set would emit a frame at the parent's origin.
+	burst.emitting = false
 
 	var pmat := ParticleProcessMaterial.new()
 	pmat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
@@ -70,6 +73,8 @@ static func spawn_confetti(parent: Node, world_pos: Vector3, accent_color: Color
 	burst.draw_pass_1 = quad
 
 	parent.add_child(burst)
+	burst.global_position = world_pos
+	burst.emitting = true
 
 	# Auto-free after the lifetime + a small grace period.
 	var timer := Timer.new()
