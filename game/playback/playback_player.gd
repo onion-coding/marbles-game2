@@ -21,6 +21,13 @@ var _stream_done := false
 var _winner_revealed := false
 
 signal playback_finished(last_tick: int, first_marble_pos: Vector3)
+# Emitted every frame the cursor advances into a new tick — HUDs / overlays
+# use this to drive a race timer without re-implementing the lerp math.
+signal tick_advanced(tick: int)
+# Emitted once when EVENT_FINISH_CROSS first appears in a frame's flags;
+# carries the marble-index that crossed and its color so HUD modals can
+# display the winner without re-deriving the data.
+signal winner_revealed(marble_index: int, marble_name: String, color: Color)
 
 func load_replay(replay: Dictionary) -> void:
 	_header = replay["header"]
@@ -102,6 +109,9 @@ func _process(delta: float) -> void:
 	var idx_f: float = min(_elapsed_ticks, float(_frames.size() - 1))
 	var i := int(idx_f)
 	var t := idx_f - float(i)
+	# Drive the HUD timer once per advancing tick.
+	if i < _frames.size():
+		tick_advanced.emit(int(_frames[i]["tick"]))
 	# Trigger WinnerReveal the first time we see EVENT_FINISH_CROSS (1 << 0)
 	# in a frame's flags. The recorder sets that bit on the tick a marble
 	# crossed the finish, so this fires once at the climax of the race.
@@ -157,6 +167,7 @@ func _fire_winner_reveal(frame: Dictionary) -> void:
 	WinnerReveal.spawn_confetti(self, winner_pos, color)
 	if winner_idx < _marbles.size():
 		WinnerReveal.boost_winner_emission(_marbles[winner_idx], get_tree())
+	winner_revealed.emit(winner_idx, String(_header[winner_idx].get("name", "")), color)
 
 func _apply_frame_state(frame: Dictionary) -> void:
 	var states: Array = frame["states"]

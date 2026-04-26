@@ -29,6 +29,7 @@ static func _default_api_base() -> String:
 var _list_req: HTTPRequest
 var _bin_req: HTTPRequest
 var _player: PlaybackPlayer
+var _hud: HUD
 
 func _ready() -> void:
 	# Environment is deferred until the track is known (track may pick its
@@ -49,6 +50,15 @@ func _ready() -> void:
 	_player = PlaybackPlayer.new()
 	add_child(_player)
 	_player.playback_finished.connect(_on_playback_finished)
+
+	_hud = HUD.new()
+	add_child(_hud)
+	_player.tick_advanced.connect(func(t: int) -> void:
+		_hud.update_tick(t, 60.0)
+	)
+	_player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
+		_hud.reveal_winner(name, color)
+	)
 
 	print("WEB_CLIENT: fetching round list from %s/rounds" % _api_base)
 	var err := _list_req.request(_api_base + "/rounds")
@@ -99,6 +109,7 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 	cam.track = track
 	add_child(cam)
 	print("WEB_CLIENT: playing %d frames for %d marbles (track=%s)" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size(), TrackRegistry.name_of(track_id)])
+	_hud.setup(replay["header"])
 	_player.load_replay(replay)
 
 func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:

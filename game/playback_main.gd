@@ -22,6 +22,17 @@ func _ready() -> void:
 	var player := PlaybackPlayer.new()
 	add_child(player)
 	player.playback_finished.connect(_on_playback_finished)
+
+	var hud := HUD.new()
+	add_child(hud)
+	hud.setup(replay["header"])
+	player.tick_advanced.connect(func(t: int) -> void:
+		hud.update_tick(t, 60.0)
+	)
+	player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
+		hud.reveal_winner(name, color)
+	)
+
 	player.load_replay(replay)
 
 func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:

@@ -25,6 +25,7 @@ static func _default_api_base() -> String:
 var _list_req: HTTPRequest
 var _player: PlaybackPlayer
 var _client: LiveStreamClient
+var _hud: HUD
 var _poll_deadline_ms: int = 0
 
 func _ready() -> void:
@@ -41,6 +42,15 @@ func _ready() -> void:
 	_player = PlaybackPlayer.new()
 	add_child(_player)
 	_player.playback_finished.connect(_on_playback_finished)
+
+	_hud = HUD.new()
+	add_child(_hud)
+	_player.tick_advanced.connect(func(t: int) -> void:
+		_hud.update_tick(t, 60.0)
+	)
+	_player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
+		_hud.reveal_winner(name, color)
+	)
 
 	_poll_deadline_ms = Time.get_ticks_msec() + int(LIVE_POLL_TIMEOUT_SEC * 1000.0)
 	print("LIVE_CLIENT: polling %s/live for active rounds" % _api_base)
@@ -114,6 +124,7 @@ func _on_header(header: Dictionary) -> void:
 	cam.track = track
 	add_child(cam)
 	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])
+	_hud.setup(header["header"])
 	_player.begin_stream(header)
 
 var _tick_count: int = 0
