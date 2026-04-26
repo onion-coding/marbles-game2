@@ -23,13 +23,15 @@ extends Track
 # ─── Table ────────────────────────────────────────────────────────────────
 const TABLE_LEN := 36.0          # X-extent (race direction = +X)
 const TABLE_WIDTH := 14.0        # Z-extent
-const TABLE_TILT_DEG := 6.0      # downhill tilt around Z (+X side lower)
+const TABLE_TILT_DEG := 14.0     # downhill tilt around Z (+X side lower).
+                                  # Felt friction is 0.45 (grippy but not stopping); the
+                                  # combination keeps marble run time around target.
 const TABLE_THICKNESS := 0.4
 const TABLE_RAIL_HEIGHT := 1.6
 const TABLE_RAIL_THICKNESS := 0.3
 
 # Felt physics: grippy, low bounce.
-const FELT_FRICTION := 0.7
+const FELT_FRICTION := 0.45
 const FELT_BOUNCE := 0.10
 
 # Wood rail physics: medium grip, low bounce.
@@ -60,9 +62,12 @@ const CHIP_ROW_OFFSETS := [
 
 # ─── Pyramid rubber back wall ─────────────────────────────────────────────
 # A jagged sawtooth row before the finish; deflects marbles unpredictably.
+# Tooth count chosen so the gap between adjacent teeth is wider than a
+# marble (radius 0.3 → 0.6 diameter). With TABLE_WIDTH=14 and 5 teeth, gaps
+# average 14/5 - tooth_diagonal = 2.8 - 1.7 = 1.1m: marbles thread through.
 const PYRAMID_X := 13.0
-const PYRAMID_TOOTH_COUNT := 8
-const PYRAMID_TOOTH_HALF_WIDTH := 0.6
+const PYRAMID_TOOTH_COUNT := 5
+const PYRAMID_TOOTH_HALF_WIDTH := 0.55
 const PYRAMID_TOOTH_HEIGHT := 1.2
 const PYRAMID_FRICTION := 0.35
 const PYRAMID_BOUNCE := 0.55

@@ -19,7 +19,7 @@ extends Track
 
 const COURSE_LEN := 36.0           # X span between shoe and pot
 const COURSE_WIDTH := 12.0         # Z span
-const FELT_TILT_DEG := 8.0         # downhill tilt around Z (descend toward +X)
+const FELT_TILT_DEG := 14.0        # downhill tilt around Z (descend toward +X)
 
 # Y of the felt's top surface at x=0 (track is locally flat; tilt rotates the
 # whole table around the world Z axis for the downhill effect).
@@ -80,7 +80,7 @@ const POT_RADIUS := 3.5
 const POT_HEIGHT := 0.6
 
 # ─── Physics materials ───────────────────────────────────────────────────
-const FELT_FRICTION := 0.65
+const FELT_FRICTION := 0.40
 const FELT_BOUNCE := 0.10
 const CARD_FRICTION := 0.18        # slippery — card surface
 const CARD_BOUNCE := 0.30

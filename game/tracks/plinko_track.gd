@@ -58,10 +58,11 @@ const SIDE_WALL_FRICTION := 0.20
 const SIDE_WALL_BOUNCE := 0.50
 
 # ─── Finish ──────────────────────────────────────────────────────────────
-# Spans the entire slot row at the very bottom — first marble to drop into
-# any slot crosses the finish line.
-const FINISH_Y := 0.6
-const FINISH_BOX_SIZE := Vector3(PLAY_FIELD_WIDTH + 2.0, 0.8, COURSE_DEPTH + 1.0)
+# Spans the slot interior column — from slot-floor top (y=SLOT_FLOOR_Y) up
+# to divider top. Any marble falling into a slot necessarily overlaps the
+# slab's vertical span and triggers the body_entered signal.
+const FINISH_Y := 2.4
+const FINISH_BOX_SIZE := Vector3(PLAY_FIELD_WIDTH + 2.0, 1.8, COURSE_DEPTH + 1.0)
 
 # ─── Materials ───────────────────────────────────────────────────────────
 const COLOR_FRAME := Color(0.06, 0.06, 0.10)
