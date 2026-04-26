@@ -46,17 +46,5 @@ func _latest_replay_path() -> String:
 	return best
 
 func _build_environment() -> void:
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-50, -30, 0)
-	light.shadow_enabled = true
-	add_child(light)
-
-	var env := WorldEnvironment.new()
-	var e := Environment.new()
-	e.background_mode = Environment.BG_SKY
-	var sky := Sky.new()
-	sky.sky_material = ProceduralSkyMaterial.new()
-	e.sky = sky
-	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.environment = e
-	add_child(env)
+	add_child(EnvironmentBuilder.build_sun())
+	add_child(EnvironmentBuilder.build_environment())

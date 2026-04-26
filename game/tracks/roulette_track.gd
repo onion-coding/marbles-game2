@@ -143,7 +143,12 @@ func _build_helix() -> void:
 	wood_mat.albedo_color = COLOR_MAHOGANY
 	var brass_mat := StandardMaterial3D.new()
 	brass_mat.albedo_color = COLOR_BRASS
-	brass_mat.metallic = 0.6
+	brass_mat.metallic = 0.85
+	brass_mat.metallic_specular = 0.85
+	brass_mat.roughness = 0.30
+	brass_mat.emission_enabled = true
+	brass_mat.emission = COLOR_BRASS
+	brass_mat.emission_energy_multiplier = 0.20
 
 	# Per-segment length: sum of tangent magnitude × dt approximated as
 	# arc-length over the segment count, with a 1.2× overlap so adjacent

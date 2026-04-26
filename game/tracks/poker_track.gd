@@ -269,7 +269,8 @@ func _init_card_params() -> void:
 func _build_cards() -> void:
 	var face_mat := StandardMaterial3D.new()
 	face_mat.albedo_color = COLOR_CARD_FACE
-	face_mat.roughness = 0.25
+	face_mat.roughness = 0.20
+	face_mat.metallic_specular = 0.7
 
 	for i in range(CARD_COUNT):
 		var x_local: float = CARD_X_START + float(i) * CARD_X_STEP
@@ -321,8 +322,12 @@ func _apply_card_pose(i: int, t: float) -> void:
 func _build_pot() -> void:
 	var pot_mat := StandardMaterial3D.new()
 	pot_mat.albedo_color = COLOR_POT
-	pot_mat.metallic = 0.6
-	pot_mat.roughness = 0.4
+	pot_mat.metallic = 0.85
+	pot_mat.metallic_specular = 0.9
+	pot_mat.roughness = 0.25
+	pot_mat.emission_enabled = true
+	pot_mat.emission = COLOR_POT
+	pot_mat.emission_energy_multiplier = 0.35
 
 	var pot := StaticBody3D.new()
 	pot.name = "Pot"

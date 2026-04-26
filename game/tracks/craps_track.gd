@@ -223,8 +223,12 @@ func _build_table() -> void:
 func _build_chip_stacks() -> void:
 	var chip_mat := StandardMaterial3D.new()
 	chip_mat.albedo_color = COLOR_CHIP
-	chip_mat.metallic = 0.5
-	chip_mat.roughness = 0.4
+	chip_mat.metallic = 0.7
+	chip_mat.metallic_specular = 0.8
+	chip_mat.roughness = 0.30
+	chip_mat.emission_enabled = true
+	chip_mat.emission = COLOR_CHIP
+	chip_mat.emission_energy_multiplier = 0.20
 
 	for r in range(CHIP_ROW_X.size()):
 		var row_x: float = CHIP_ROW_X[r]
@@ -311,7 +315,8 @@ func _init_dice_params() -> void:
 func _build_dice() -> void:
 	var dice_mat := StandardMaterial3D.new()
 	dice_mat.albedo_color = COLOR_DICE
-	dice_mat.roughness = 0.3
+	dice_mat.metallic = 0.10
+	dice_mat.roughness = 0.35
 
 	for i in range(DICE_COUNT):
 		var body := AnimatableBody3D.new()

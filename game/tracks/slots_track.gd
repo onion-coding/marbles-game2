@@ -140,8 +140,9 @@ func _init_materials() -> void:
 func _build_cabinet() -> void:
 	var chrome_mat := StandardMaterial3D.new()
 	chrome_mat.albedo_color = COLOR_CHROME
-	chrome_mat.metallic = 0.85
-	chrome_mat.roughness = 0.15
+	chrome_mat.metallic = 1.0
+	chrome_mat.metallic_specular = 1.0
+	chrome_mat.roughness = 0.10
 
 	var cabinet := StaticBody3D.new()
 	cabinet.name = "Cabinet"
@@ -323,6 +324,13 @@ func _build_tray() -> void:
 func _solid_mat(c: Color) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
+	# Default to a slight emission tint of the same color so reel teeth pop
+	# in the bloom pass — chrome cabinet vibe needs the vivid reels to read.
+	m.emission_enabled = true
+	m.emission = c
+	m.emission_energy_multiplier = 0.30
+	m.metallic_specular = 0.6
+	m.roughness = 0.4
 	return m
 
 func _add_box(parent: Node, node_name: String, tx: Transform3D, size: Vector3, mat: StandardMaterial3D) -> void:

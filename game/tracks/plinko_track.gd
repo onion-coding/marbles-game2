@@ -193,8 +193,12 @@ func _build_hopper() -> void:
 func _build_peg_forest() -> void:
 	var peg_mat := StandardMaterial3D.new()
 	peg_mat.albedo_color = COLOR_PEG
-	peg_mat.metallic = 0.4
-	peg_mat.roughness = 0.4
+	peg_mat.metallic = 0.85
+	peg_mat.metallic_specular = 0.9
+	peg_mat.roughness = 0.20
+	peg_mat.emission_enabled = true
+	peg_mat.emission = Color(0.95, 0.85, 1.0)
+	peg_mat.emission_energy_multiplier = 0.15
 
 	var pegs := StaticBody3D.new()
 	pegs.name = "Pegs"
@@ -240,9 +244,17 @@ func _build_slot_row() -> void:
 	floor_mat.albedo_color = COLOR_SLOT_FLOOR
 	var div_gold := StandardMaterial3D.new()
 	div_gold.albedo_color = COLOR_DIVIDER_GOLD
-	div_gold.metallic = 0.7
+	div_gold.metallic = 0.8
+	div_gold.roughness = 0.30
+	div_gold.emission_enabled = true
+	div_gold.emission = COLOR_DIVIDER_GOLD
+	div_gold.emission_energy_multiplier = 0.40
 	var div_red := StandardMaterial3D.new()
 	div_red.albedo_color = COLOR_DIVIDER_RED
+	div_red.roughness = 0.40
+	div_red.emission_enabled = true
+	div_red.emission = COLOR_DIVIDER_RED
+	div_red.emission_energy_multiplier = 0.40
 
 	var slots := StaticBody3D.new()
 	slots.name = "SlotRow"

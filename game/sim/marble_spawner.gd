@@ -26,8 +26,17 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 	sphere.radius = RADIUS
 	sphere.height = RADIUS * 2.0
 	mesh_inst.mesh = sphere
+	# PBR-tuned marble: slight metallic + low roughness for a glass-bead shine,
+	# plus a low-energy emission of the marble's color so bloom turns each
+	# marble into a faintly-glowing orb that reads from a distance.
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
+	mat.metallic = 0.30
+	mat.metallic_specular = 0.6
+	mat.roughness = 0.18
+	mat.emission_enabled = true
+	mat.emission = color
+	mat.emission_energy_multiplier = 0.45
 	mesh_inst.material_override = mat
 	marble.add_child(mesh_inst)
 
