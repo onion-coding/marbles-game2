@@ -18,6 +18,22 @@ extends Node3D
 # override shows up loudly (0-length spawn list, empty AABB) rather than
 # silently breaking physics.
 
+# Round context. Tracks with deterministic-but-variable obstacle motion (dice in
+# Craps, coin cascade in Slots) hash these to seed obstacle paths so each round
+# looks different while remaining replay-stable. Tracks with fully static
+# geometry (RampTrack, Plinko peg forest) ignore them.
+#
+# Caller MUST invoke configure() after instance() and before add_child() so
+# subclasses can use _round_id / _server_seed during _ready(). Defaults are
+# zero so a missing call doesn't crash, but obstacle motion will be uniform
+# across rounds.
+var _round_id: int = 0
+var _server_seed: PackedByteArray = PackedByteArray()
+
+func configure(round_id: int, server_seed: PackedByteArray) -> void:
+	_round_id = round_id
+	_server_seed = server_seed
+
 # Base positions for the fairness-ordered spawn slots. Length MUST equal
 # SpawnRail.SLOT_COUNT. Each returned Vector3 is the resting world-space point
 # for that slot index; SpawnRail applies a world-Y stagger on top for
@@ -42,3 +58,19 @@ func finish_area_size() -> Vector3:
 # volume so none of the action is clipped out of frame.
 func camera_bounds() -> AABB:
 	return AABB()
+
+# Helper for subclasses: hash (server_seed || round_id || tag) → 32 bytes.
+# Use to derive deterministic-but-varying obstacle parameters (dice initial
+# velocity, peg row offsets, etc.) that are stable per round.
+func _hash_with_tag(tag: String) -> PackedByteArray:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	if not _server_seed.is_empty():
+		ctx.update(_server_seed)
+	var rid_bytes := PackedByteArray()
+	rid_bytes.resize(8)
+	for i in range(8):
+		rid_bytes[7 - i] = (_round_id >> (i * 8)) & 0xFF
+	ctx.update(rid_bytes)
+	ctx.update(tag.to_utf8_buffer())
+	return ctx.finish()

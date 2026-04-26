@@ -31,7 +31,7 @@ import (
 // Must stay in sync with the Godot side — a mismatched pool here would
 // either skip a track the client can render, or (worse) pick an ID the
 // client maps to its fallback (RampTrack) with the wrong physics.
-var selectableTrackIDs = []uint8{0, 1}
+var selectableTrackIDs = []uint8{0, 1, 2, 3, 4, 5}
 
 // selectTrack picks the next track_id using a deterministic hash of the
 // round_id, skipping the previous round's id to avoid back-to-back repeats.

@@ -108,8 +108,9 @@ func _on_header(header: Dictionary) -> void:
 	var marbles: int = (header["header"] as Array).size()
 	var track_id := int(header.get("track_id", TrackRegistry.RAMP))
 	var track := TrackRegistry.instance(track_id)
+	track.configure(int(header["round_id"]), header["server_seed"] as PackedByteArray)
 	add_child(track)
-	var cam := FixedCamera.new()
+	var cam := FreeCamera.new()
 	cam.track = track
 	add_child(cam)
 	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])

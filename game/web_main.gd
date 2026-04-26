@@ -94,8 +94,9 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 		return
 	var track_id := int(replay.get("track_id", TrackRegistry.RAMP))
 	var track := TrackRegistry.instance(track_id)
+	track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
 	add_child(track)
-	var cam := FixedCamera.new()
+	var cam := FreeCamera.new()
 	cam.track = track
 	add_child(cam)
 	print("WEB_CLIENT: playing %d frames for %d marbles (track=%s)" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size(), TrackRegistry.name_of(track_id)])

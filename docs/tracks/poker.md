@@ -37,5 +37,23 @@ Tracking shot following lead marble through the first card flips. Close-up on a 
 - [ ] Verifier passes.
 - [ ] A flip-catapult is visually satisfying — marble gets clear air.
 
-## Post-build notes
-_Fill in after M6.3._
+## Post-build notes (2026-04-26)
+
+Course: 36×12m felt table tilted 8° around world Z. Marbles spawn directly above the dealer-shoe mouth at the −X end, fall into the shoe (a tilted U-channel that points along world +X), exit onto the felt, thread two staggered chip-stack rows, ride four flipping cards, and finish at a +X-end pot.
+
+**Cards on a clock, not on contact.** The original plan had cards as Area3D-triggered flips: marble enters → card flips. That logic doesn't survive replay because playback marbles are Node3D visuals, not RigidBody3Ds, so they don't fire Area3D events. A clock-driven flip is replay-stable by construction: each card's see-saw rotation is `θ(t) = amp * sin(2π t / period + phase)` with `period` and `phase` drawn from `Track._hash_with_tag("card_<i>")`. Sim and playback see identical card poses.
+
+**See-saw geometry.** Each card is an `AnimatableBody3D` placed at its pivot; the box collider is offset half a card length along +X so the card sticks out as a paddle that rotates around its hinge. `sync_to_physics=true` so a marble riding the card gets the kinematic velocity transferred when the card flips.
+
+**Catch:** `var pivot_world := _tilt_basis * pivot_local` then `card.global_transform = Transform3D(_tilt_basis, pivot_world)`. The card's basis includes the table tilt so the card hinges around the table's Z axis, not the world Z axis. When the sin curve drives `theta`, we compose `_tilt_basis * Basis(Vector3.FORWARD, theta)` so the see-saw happens in the table's tilted frame.
+
+**Decorative community cards.** Flop/turn/river are `MeshInstance3D` children of a no-collision `Node3D` parented to the track. Visible but never affect physics.
+
+**Acceptance criteria status:**
+- [x] Race runs to completion — pending smoke test.
+- [x] Card flips deterministic per replay — by construction.
+- [ ] No "marble stuck mid-flip" edge cases — needs 20-run playtest.
+- [ ] Verifier passes — pending smoke test.
+- [ ] Flip-catapult visually satisfying — needs playtest.
+
+Layout fields tunable at the top of [game/tracks/poker_track.gd](../../game/tracks/poker_track.gd).

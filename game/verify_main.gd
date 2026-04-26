@@ -64,6 +64,7 @@ func _verify(replay: Dictionary) -> bool:
 	# RefCounted, so we must .free() it manually or Godot reports a leak.
 	var track_id := int(replay.get("track_id", TrackRegistry.RAMP))
 	var track := TrackRegistry.instance(track_id)
+	track.configure(round_id, server_seed)
 	print("  track: %s (id=%d)" % [TrackRegistry.name_of(track_id), track_id])
 	var ok := _verify_positions(SpawnRail.new(track), header, replay)
 	track.free()

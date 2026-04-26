@@ -13,6 +13,7 @@ func _ready() -> void:
 		return
 	var track_id := int(replay.get("track_id", TrackRegistry.RAMP))
 	var track := TrackRegistry.instance(track_id)
+	track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
 	add_child(track)
 	var cam := FixedCamera.new()
 	cam.track = track

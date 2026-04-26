@@ -38,5 +38,21 @@ Front view of the reels at start (the iconic slot-machine shot). Mid-race: insid
 - [ ] Verifier passes.
 - [ ] The reel catch-and-release is visually legible — viewer can see "that marble got carried around."
 
-## Post-build notes
-_Fill in after M6.4._
+## Post-build notes (2026-04-26)
+
+Cabinet: 12m wide × 26m tall × 8m deep, four chrome side/back/front walls (top open). Marbles spawn at SPAWN_Y=25 inside the cabinet and fall under gravity through three reels at y=19, 13, 7, then a chrome funnel converging from radius 5.5 to 1.5m, into a coin-tray basin at y=−0.5.
+
+**Reels as toothed cylinders.** Each reel is an `AnimatableBody3D` rotating around world X. Five tooth boxes (out of 6 angular slots, 60° each) build a near-cylinder; the missing slot is the "gate" that marbles can fall through. As the reel spins, the gate rotates with it — timing your drop determines whether you slip through cleanly or get caught.
+
+**Per-reel seed.** Initial phase per reel from `Track._hash_with_tag("reel_<i>")`, so each round has different gate alignments. Angular velocities are constants per reel (different signs and magnitudes for varied timing).
+
+**Tooth geometry catch.** Initial implementation had a basis sign bug — the tooth's local Y axis didn't align with the radial-out direction, so teeth pointed tangentially instead of radially. Fixed by setting `radial = (0, cos θ, sin θ)` and `rot_basis = Basis(Vector3.RIGHT, θ)` so the canonical Y axis maps to `radial`. Cylinder axis is world X, so reels span the cabinet width without obstructing the funnel.
+
+**Acceptance criteria status:**
+- [x] Race runs to completion — pending smoke test.
+- [x] Reel angles deterministic — `angle = phase + w * tick`, no accumulated state.
+- [x] (Coin cascade was descoped from the implementation in favor of the funnel; the plan's coin-cascade RigidBody3Ds would re-simulate in playback, the same problem as Craps dice. The spinning reels carry the "kinetic" feel without that risk.)
+- [ ] Verifier passes — pending smoke test.
+- [ ] Reel catch-and-release legible to viewers — needs playtest.
+
+Layout fields tunable at the top of [game/tracks/slots_track.gd](../../game/tracks/slots_track.gd).

@@ -4,7 +4,7 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M6.** Casino-game track library + polish; master plan in [docs/m6-tracks.md](docs/m6-tracks.md). **M6.0 scaffolding** landed 2026-04-23; **M6.1 Roulette** landed 2026-04-24 (first real casino track, also the forcing function that evolved `Track` to its fairness-relevant interface). Next: **M6.2 Craps** — introduces moving obstacles driven by a fairness-chained initial state (dice RNG).
+**M6.** Casino-game track library + polish; master plan in [docs/m6-tracks.md](docs/m6-tracks.md). **M6.0–M6.7 all landed 2026-04-26** — five casino tracks (RAMP=0 stays, plus ROULETTE/CRAPS/POKER/SLOTS/PLINKO at 1–5), per-player free-cam in the Web client, mood lighting per track. Next: smoke-test the new tracks against headless Godot, tune timing per track, write per-track post-build notes from playtest data.
 
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
@@ -159,6 +159,30 @@ First real casino track lands, `track_id=1` added to the rotation pool, and the 
   - `playback_main` on it: 686 frames rendered, terminates cleanly.
   - `roundd --rounds=4`: tracks selected 0, 1, 0, 1 (deterministic-with-no-repeat). All four manifests stamp `"protocol_version": 3` + correct `track_id`. Round-trip OK on all four.
 - **Race variance observed, accepted.** Roulette rounds finished in 521–2278 ticks (8.7s–38s). Variance comes from some marbles briefly stuck between wheel dividers or behind chips before one reaches the finish. All under the 60s sim timeout, so acceptance criterion holds; tuning is an M6.7 polish item.
+
+### M6.1 Roulette — v3.5 helix (2026-04-25)
+Multi-section v3 design (10-piece MoS-style course, see [docs/tracks/roulette.md](docs/tracks/roulette.md)) failed to flow — sections didn't align cleanly. Replaced by a simpler skeleton: single descending helical channel (closed floor + outer wall + inner wall) wrapping around a decorative wheel, exit chute into a dealer-rack finish. Eight chip-stack pegs along the helix floor add deflection variance. See inline comment header in [game/tracks/roulette_track.gd](game/tracks/roulette_track.gd) for the rationale.
+
+### M6.2 Craps (2026-04-26)
+Long downhill felt table with three kinematic dice tumbling on closed-form sin/cos paths derived from `(server_seed, round_id, die_index)`. Two staggered rows of chip-stack pegs, then a 8-tooth pyramid rubber back wall before the finish slab. [game/tracks/craps_track.gd](game/tracks/craps_track.gd). Determinism: dice are `AnimatableBody3D` with `sync_to_physics=true` so velocity transfers to marble collisions; pose recomputed each tick from a pure function of `_local_tick`.
+
+### M6.3 Poker (2026-04-26)
+Dealer-shoe launcher feeds marbles onto a tilted felt table; they thread chip-stack columns and ride four kinematic flipping cards (see-saw rotation around their pivot at sin-curve schedules seeded per card from `(server_seed, round_id, card_index)`), then settle into a pot at the +X end. Decorative flop-turn-river cards on a side pedestal (no collision). Cards are kinematic-with-clock rather than marble-trigger because playback marbles are visual-only Node3Ds and don't fire Area3D events; clock-based flips are replay-stable by construction. [game/tracks/poker_track.gd](game/tracks/poker_track.gd).
+
+### M6.4 Slots (2026-04-26)
+Vertical chrome cabinet — marbles drop from the top through three reels (kinematic cylinders rotating around world-X with one tooth missing, gate phase derived from seed), into a 12-segment chrome funnel, into a coin-tray finish basin. Initial reel phase deterministically varies per round so the gate-alignment timing differs. [game/tracks/slots_track.gd](game/tracks/slots_track.gd).
+
+### M6.5 Plinko (2026-04-26)
+Vertical pinball-style peg wall: hopper at top funnels marbles onto a 12-row staggered peg field (alternating 11/10 pegs per row, all static cylinders along world-Z so marbles stay in the play plane), into a 9-slot catcher row at the bottom. First marble to drop into any slot wins. Fully static geometry — no seed-dependent obstacles. [game/tracks/plinko_track.gd](game/tracks/plinko_track.gd).
+
+### M6.6 Free-cam in Web client (2026-04-26)
+[game/cameras/free_camera.gd](game/cameras/free_camera.gd): orbit (left-drag) + pan (right-drag) + zoom (wheel) + reset (R), bounded by `track.camera_bounds()`. Wired into [web_main.gd](game/web_main.gd) and [live_main.gd](game/live_main.gd). Sim and disk-playback scenes keep `FixedCamera` (the headless / cinematic path).
+
+### M6.7 Polish pass (2026-04-26)
+Each casino track adds its own `OmniLight3D` accent in `_ready()` to give a distinct mood — warm gold (Craps), pendant-warm (Poker), cool-chrome blue + warm-tray fill (Slots), magenta+cyan rim (Plinko). Camera bounds enlarged so the SpawnRail's 24-marble drop column isn't clipped at race start.
+
+### `Track.configure(round_id, server_seed)` (2026-04-26)
+Added a single configure step to the Track base class so subclasses with deterministic-but-variable obstacle motion (Craps dice, Poker cards, Slots reels) can hash from `(server_seed, round_id, tag)` to seed obstacle parameters that are stable per-round but vary across rounds. Called from each entry point ([main.gd](game/main.gd), [playback_main.gd](game/playback_main.gd), [web_main.gd](game/web_main.gd), [live_main.gd](game/live_main.gd), [verify_main.gd](game/verify_main.gd)) after `TrackRegistry.instance` and before `add_child`, so values are populated when the subclass `_ready()` runs.
 
 ### Nested-PhysicsBody3D hang (M6.1, 2026-04-24)
 First Roulette smoke hung at 0 CPU — Godot deadlocked before the first physics tick with no script errors, no output past `COMMIT:`. Root cause: the wheel's 24 pocket dividers were built as `StaticBody3D` *children* of the wheel's `AnimatableBody3D`. Jolt can't reconcile nested kinematic/static PhysicsBody3Ds at world-enter time under this configuration. Fix: flatten the dividers to plain `CollisionShape3D` + `MeshInstance3D` siblings on the same wheel body — one Body per moving thing, many shapes per body. Full write-up in [docs/bugfixes.md](docs/bugfixes.md) 2026-04-24 entry. Race ran to completion on the first run post-fix.

@@ -38,6 +38,7 @@ func _ready() -> void:
 		track_id = int(spec.get("track_id", TrackRegistry.RAMP))
 
 	var track := TrackRegistry.instance(track_id)
+	track.configure(round_id, server_seed)
 	add_child(track)
 	var rail := SpawnRail.new(track)
 
