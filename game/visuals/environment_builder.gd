@@ -18,7 +18,7 @@ extends RefCounted
 #   - Per-track mood lights — those stay in each track's _build_mood_light.
 #   - HDRI / sky textures — using procedural for now (no asset shipping).
 
-static func build_environment() -> WorldEnvironment:
+static func build_environment(overrides: Dictionary = {}) -> WorldEnvironment:
 	var node := WorldEnvironment.new()
 	node.name = "Environment"
 	var env := Environment.new()
@@ -76,13 +76,34 @@ static func build_environment() -> WorldEnvironment:
 	env.adjustment_contrast = 1.05
 	env.adjustment_saturation = 1.10
 
+	# Apply per-track overrides on top of the defaults. Mutating the existing
+	# Sky / Environment is fine because each track gets its own copy.
+	if overrides.has("sky_top"):
+		sky_mat.sky_top_color = overrides["sky_top"]
+	if overrides.has("sky_horizon"):
+		sky_mat.sky_horizon_color = overrides["sky_horizon"]
+	if overrides.has("ground_top"):
+		sky_mat.ground_horizon_color = overrides["ground_top"]
+	if overrides.has("ground_bottom"):
+		sky_mat.ground_bottom_color = overrides["ground_bottom"]
+	if overrides.has("ambient_energy"):
+		env.ambient_light_energy = overrides["ambient_energy"]
+	if overrides.has("fog_color"):
+		env.fog_light_color = overrides["fog_color"]
+	if overrides.has("fog_energy"):
+		env.fog_light_energy = overrides["fog_energy"]
+	if overrides.has("fog_density"):
+		env.fog_density = overrides["fog_density"]
+	if overrides.has("exposure"):
+		env.tonemap_exposure = overrides["exposure"]
+
 	node.environment = env
 	return node
 
 # The sun: directional light at a slight side-angle so casinos read 3D rather
 # than top-lit-flat. Soft shadows on by default. Returns the configured node;
-# caller add_child's it.
-static func build_sun() -> DirectionalLight3D:
+# caller add_child's it. Optional overrides apply on top of the defaults.
+static func build_sun(overrides: Dictionary = {}) -> DirectionalLight3D:
 	var sun := DirectionalLight3D.new()
 	sun.name = "Sun"
 	sun.rotation_degrees = Vector3(-55.0, -38.0, 0.0)
@@ -94,4 +115,8 @@ static func build_sun() -> DirectionalLight3D:
 	# gives reasonable shadow quality for the depth range our tracks span.
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
 	sun.directional_shadow_max_distance = 100.0
+	if overrides.has("sun_color"):
+		sun.light_color = overrides["sun_color"]
+	if overrides.has("sun_energy"):
+		sun.light_energy = overrides["sun_energy"]
 	return sun

@@ -48,4 +48,66 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 
 	marble.physics_material_override = PhysicsMaterials.marble()
 	marble.position = rail.slot_position(slot, drop_order)
+	attach_trail(marble, color)
 	return marble
+
+# Color-tinted streak that follows a marble. Pure visual; no effect on
+# physics or replay. Implemented as a GPUParticles3D child whose emitter
+# inherits the marble's motion, producing a fading trail of small spheres
+# the same color as the marble. Public so PlaybackPlayer can attach the
+# same trail to its visual-only marble nodes.
+static func attach_trail(marble: Node3D, color: Color) -> void:
+	var trail := GPUParticles3D.new()
+	trail.name = "Trail"
+	trail.amount = 32
+	trail.lifetime = 0.55
+	trail.preprocess = 0.0
+	trail.emitting = true
+	trail.local_coords = false   # particles emit in world space, freezing them
+	                              # in place as the marble moves on — that's the
+	                              # "trail" effect we want.
+
+	var pmat := ParticleProcessMaterial.new()
+	pmat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pmat.emission_sphere_radius = RADIUS * 0.3
+	pmat.direction = Vector3(0, 0, 0)
+	pmat.spread = 0.0
+	pmat.initial_velocity_min = 0.0
+	pmat.initial_velocity_max = 0.0
+	pmat.gravity = Vector3.ZERO
+	pmat.scale_min = 0.6
+	pmat.scale_max = 0.9
+	# Curve: shrink to 0 by end of lifetime so the trail tapers cleanly.
+	var curve := Curve.new()
+	curve.add_point(Vector2(0.0, 1.0))
+	curve.add_point(Vector2(1.0, 0.0))
+	var ctex := CurveTexture.new()
+	ctex.curve = curve
+	pmat.scale_curve = ctex
+	pmat.color = color
+	# Alpha-fade across lifetime via a gradient.
+	var grad := Gradient.new()
+	grad.add_point(0.0, Color(color.r, color.g, color.b, 0.85))
+	grad.add_point(1.0, Color(color.r, color.g, color.b, 0.0))
+	var gtex := GradientTexture1D.new()
+	gtex.gradient = grad
+	pmat.color_ramp = gtex
+	trail.process_material = pmat
+
+	# Trail mesh: small sphere with emissive of the marble color so bloom
+	# turns the whole trail into a light streak.
+	var trail_mesh := SphereMesh.new()
+	trail_mesh.radius = RADIUS * 0.55
+	trail_mesh.height = RADIUS * 1.10
+	trail_mesh.radial_segments = 8
+	trail_mesh.rings = 4
+	var trail_mat := StandardMaterial3D.new()
+	trail_mat.albedo_color = color
+	trail_mat.emission_enabled = true
+	trail_mat.emission = color
+	trail_mat.emission_energy_multiplier = 0.8
+	trail_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	trail_mesh.material = trail_mat
+	trail.draw_pass_1 = trail_mesh
+
+	marble.add_child(trail)

@@ -31,11 +31,9 @@ var _bin_req: HTTPRequest
 var _player: PlaybackPlayer
 
 func _ready() -> void:
-	_build_environment()
-	# Track is instantiated *after* we read the replay header (which carries
-	# track_id in v3). Building env-only now keeps the first frame black
-	# instead of flashing the wrong track before the fetch completes.
-
+	# Environment is deferred until the track is known (track may pick its
+	# own sky/fog/ambient via environment_overrides). First frame is black
+	# until the replay fetch completes — same UX as before, just delayed.
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--api-base="):
 			_api_base = a.substr("--api-base=".length())
@@ -96,6 +94,7 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 	var track := TrackRegistry.instance(track_id)
 	track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
 	add_child(track)
+	_build_environment(track)
 	var cam := FreeCamera.new()
 	cam.track = track
 	add_child(cam)
@@ -110,6 +109,7 @@ func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:
 	await get_tree().create_timer(3.0).timeout
 	get_tree().quit(0)
 
-func _build_environment() -> void:
-	add_child(EnvironmentBuilder.build_sun())
-	add_child(EnvironmentBuilder.build_environment())
+func _build_environment(track: Track) -> void:
+	var overrides: Dictionary = track.environment_overrides()
+	add_child(EnvironmentBuilder.build_sun(overrides))
+	add_child(EnvironmentBuilder.build_environment(overrides))

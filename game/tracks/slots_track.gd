@@ -375,3 +375,17 @@ func camera_bounds() -> AABB:
 	var min_v := Vector3(-COURSE_WIDTH_X * 0.5 - 4.0, TRAY_Y - 2.0, -COURSE_DEPTH_Z * 0.5 - 2.0)
 	var max_v := Vector3(COURSE_WIDTH_X * 0.5 + 4.0, COURSE_TOP_Y + 5.0, COURSE_DEPTH_Z * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
+
+func environment_overrides() -> Dictionary:
+	# Cool electric chrome arcade — blue-tinted ambient with crisp sun.
+	return {
+		"sky_top": Color(0.04, 0.06, 0.10),
+		"sky_horizon": Color(0.08, 0.18, 0.30),
+		"ground_top": Color(0.04, 0.08, 0.14),
+		"ground_bottom": Color(0.02, 0.03, 0.06),
+		"ambient_energy": 0.55,
+		"fog_color": Color(0.12, 0.20, 0.30),
+		"fog_density": 0.004,
+		"sun_color": Color(0.80, 0.92, 1.0),
+		"sun_energy": 1.5,
+	}

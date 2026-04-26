@@ -322,3 +322,17 @@ func camera_bounds() -> AABB:
 	var min_v := Vector3(-PLAY_FIELD_WIDTH * 0.5 - 2.0, FINISH_Y - 2.0, -COURSE_DEPTH * 0.5 - 1.0)
 	var max_v := Vector3(PLAY_FIELD_WIDTH * 0.5 + 2.0, SPAWN_Y + 5.0, COURSE_DEPTH * 0.5 + 1.0)
 	return AABB(min_v, max_v - min_v)
+
+func environment_overrides() -> Dictionary:
+	# Loud arcade — magenta-and-cyan saturated with high contrast.
+	return {
+		"sky_top": Color(0.08, 0.04, 0.10),
+		"sky_horizon": Color(0.30, 0.10, 0.30),
+		"ground_top": Color(0.10, 0.04, 0.18),
+		"ground_bottom": Color(0.03, 0.02, 0.06),
+		"ambient_energy": 0.55,
+		"fog_color": Color(0.25, 0.10, 0.30),
+		"fog_density": 0.006,
+		"sun_color": Color(1.0, 0.75, 0.95),
+		"sun_energy": 1.4,
+	}

@@ -15,6 +15,10 @@ var _finished := false
 # lets the normal tail-of-replay handling fire once the cursor gets there.
 var _streaming := false
 var _stream_done := false
+# Once true, the EVENT_FINISH_CROSS flag has already been observed and the
+# WinnerReveal effect has fired — don't re-fire it on subsequent flagged
+# frames (e.g. if multiple marbles cross during the race tail).
+var _winner_revealed := false
 
 signal playback_finished(last_tick: int, first_marble_pos: Vector3)
 
@@ -72,13 +76,23 @@ func _build_marbles() -> void:
 		node.mesh = sphere
 		var mat := StandardMaterial3D.new()
 		var rgba: int = m["rgba"]
+		var color: Color
 		if rgba == 0:
 			# Deterministic fallback color by header index so M1/M2 look roughly alike.
-			mat.albedo_color = Color.from_hsv(float(_marbles.size()) / max(_header.size(), 1), 0.8, 0.95)
+			color = Color.from_hsv(float(_marbles.size()) / max(_header.size(), 1), 0.8, 0.95)
 		else:
-			mat.albedo_color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, (rgba & 0xFF) / 255.0)
+			color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, (rgba & 0xFF) / 255.0)
+		# PBR + emission to match the sim-side marble look (M7.0).
+		mat.albedo_color = color
+		mat.metallic = 0.30
+		mat.metallic_specular = 0.6
+		mat.roughness = 0.18
+		mat.emission_enabled = true
+		mat.emission = color
+		mat.emission_energy_multiplier = 0.45
 		node.material_override = mat
 		add_child(node)
+		MarbleSpawner.attach_trail(node, color)
 		_marbles.append(node)
 
 func _process(delta: float) -> void:
@@ -88,6 +102,14 @@ func _process(delta: float) -> void:
 	var idx_f: float = min(_elapsed_ticks, float(_frames.size() - 1))
 	var i := int(idx_f)
 	var t := idx_f - float(i)
+	# Trigger WinnerReveal the first time we see EVENT_FINISH_CROSS (1 << 0)
+	# in a frame's flags. The recorder sets that bit on the tick a marble
+	# crossed the finish, so this fires once at the climax of the race.
+	if not _winner_revealed and i < _frames.size():
+		var f: Dictionary = _frames[i]
+		var flags: int = int(f.get("flags", 0))
+		if (flags & 1) != 0:
+			_fire_winner_reveal(f)
 	if i + 1 < _frames.size():
 		_apply_interpolated(_frames[i], _frames[i + 1], t)
 	else:
@@ -98,6 +120,43 @@ func _process(delta: float) -> void:
 			_finished = true
 			var last: Dictionary = _frames[_frames.size() - 1]
 			playback_finished.emit(int(last["tick"]), (last["states"][0]["pos"] as Vector3))
+
+func _fire_winner_reveal(frame: Dictionary) -> void:
+	# Identify the "winner": the recorded frame doesn't tag which marble
+	# crossed, but the winner is by definition the marble whose position is
+	# closest to the finish-area trigger. Without easy access to the track's
+	# finish_area_transform here, we approximate by picking the marble whose
+	# delta-from-previous-frame is largest along its motion direction — that
+	# marble is the one most actively crossing the finish-line area on this
+	# tick. Cheap and visually believable.
+	_winner_revealed = true
+	var states: Array = frame["states"]
+	if states.is_empty():
+		return
+	var winner_idx := 0
+	# Header carries the rgba; pick the first marble's position as fallback
+	# anchor if we can't compute deltas (e.g. first frame).
+	var winner_pos: Vector3 = states[0]["pos"] as Vector3
+	# Use the previous frame to compute per-marble velocity and pick the fastest.
+	var prev_idx := _frames.find(frame) - 1
+	if prev_idx >= 0:
+		var prev_states: Array = _frames[prev_idx]["states"]
+		var best_speed := -1.0
+		for j in range(min(states.size(), prev_states.size())):
+			var d := (states[j]["pos"] as Vector3) - (prev_states[j]["pos"] as Vector3)
+			if d.length() > best_speed:
+				best_speed = d.length()
+				winner_idx = j
+				winner_pos = states[j]["pos"]
+	var rgba: int = int(_header[winner_idx]["rgba"])
+	var color: Color
+	if rgba == 0:
+		color = Color(1.0, 0.85, 0.20)
+	else:
+		color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, 1.0)
+	WinnerReveal.spawn_confetti(self, winner_pos, color)
+	if winner_idx < _marbles.size():
+		WinnerReveal.boost_winner_emission(_marbles[winner_idx], get_tree())
 
 func _apply_frame_state(frame: Dictionary) -> void:
 	var states: Array = frame["states"]

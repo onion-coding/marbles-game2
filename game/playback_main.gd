@@ -1,8 +1,6 @@
 extends Node3D
 
 func _ready() -> void:
-	_build_environment()
-
 	var path := _latest_replay_path()
 	if path.is_empty():
 		push_error("no replays found in user://replays/")
@@ -15,6 +13,7 @@ func _ready() -> void:
 	var track := TrackRegistry.instance(track_id)
 	track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
 	add_child(track)
+	_build_environment(track)
 	var cam := FixedCamera.new()
 	cam.track = track
 	add_child(cam)
@@ -45,6 +44,7 @@ func _latest_replay_path() -> String:
 			best = full
 	return best
 
-func _build_environment() -> void:
-	add_child(EnvironmentBuilder.build_sun())
-	add_child(EnvironmentBuilder.build_environment())
+func _build_environment(track: Track) -> void:
+	var overrides: Dictionary = track.environment_overrides()
+	add_child(EnvironmentBuilder.build_sun(overrides))
+	add_child(EnvironmentBuilder.build_environment(overrides))

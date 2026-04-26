@@ -399,3 +399,16 @@ func camera_bounds() -> AABB:
 	var min_v := Vector3(-TABLE_LEN * 0.5 - 2.0, -2.0, -TABLE_WIDTH * 0.5 - 2.0)
 	var max_v := Vector3(FINISH_X + 4.0, SPAWN_Y + 5.0, TABLE_WIDTH * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
+
+func environment_overrides() -> Dictionary:
+	# Vegas-strip warm red — felt-and-gold pit, slightly hazy.
+	return {
+		"sky_top": Color(0.10, 0.05, 0.06),
+		"sky_horizon": Color(0.30, 0.12, 0.10),
+		"ground_top": Color(0.20, 0.08, 0.05),
+		"ground_bottom": Color(0.05, 0.02, 0.03),
+		"ambient_energy": 0.50,
+		"fog_color": Color(0.22, 0.10, 0.08),
+		"fog_density": 0.006,
+		"sun_color": Color(1.0, 0.90, 0.70),
+	}

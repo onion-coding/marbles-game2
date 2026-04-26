@@ -59,6 +59,20 @@ func finish_area_size() -> Vector3:
 func camera_bounds() -> AABB:
 	return AABB()
 
+# Optional per-track tuning of the shared WorldEnvironment (sky color,
+# ambient, fog, exposure) so each track has its own room mood without
+# rebuilding the entire environment. Subclasses return only the keys they
+# want to override; EnvironmentBuilder applies them on top of the defaults.
+#
+# Recognised keys:
+#   sky_top, sky_horizon, ground_top, ground_bottom : Color
+#   ambient_energy, fog_energy, fog_density, exposure : float
+#   fog_color : Color
+#   sun_color : Color (overrides sun light_color)
+#   sun_energy : float
+func environment_overrides() -> Dictionary:
+	return {}
+
 # Helper for subclasses: hash (server_seed || round_id || tag) → 32 bytes.
 # Use to derive deterministic-but-varying obstacle parameters (dice initial
 # velocity, peg row offsets, etc.) that are stable per round.

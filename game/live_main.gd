@@ -28,9 +28,8 @@ var _client: LiveStreamClient
 var _poll_deadline_ms: int = 0
 
 func _ready() -> void:
-	_build_environment()
-	# Track is instantiated in _on_header once we know track_id from the stream.
-
+	# Environment is deferred until the WS HEADER tells us which track is
+	# running — each track picks its own sky/fog/ambient.
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--api-base="):
 			_api_base = a.substr("--api-base=".length())
@@ -110,6 +109,7 @@ func _on_header(header: Dictionary) -> void:
 	var track := TrackRegistry.instance(track_id)
 	track.configure(int(header["round_id"]), header["server_seed"] as PackedByteArray)
 	add_child(track)
+	_build_environment(track)
 	var cam := FreeCamera.new()
 	cam.track = track
 	add_child(cam)
@@ -147,6 +147,7 @@ func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:
 	await get_tree().create_timer(3.0).timeout
 	get_tree().quit(0)
 
-func _build_environment() -> void:
-	add_child(EnvironmentBuilder.build_sun())
-	add_child(EnvironmentBuilder.build_environment())
+func _build_environment(track: Track) -> void:
+	var overrides: Dictionary = track.environment_overrides()
+	add_child(EnvironmentBuilder.build_sun(overrides))
+	add_child(EnvironmentBuilder.build_environment(overrides))

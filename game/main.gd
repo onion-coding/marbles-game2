@@ -8,8 +8,6 @@ var _server_seed_hash: PackedByteArray = PackedByteArray()
 var _replay_path: String = ""
 
 func _ready() -> void:
-	_build_environment()
-
 	# Two modes:
 	# (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>). Used
 	#     by the Go server (server/sim) to drive deterministic rounds with supplied seeds.
@@ -40,6 +38,7 @@ func _ready() -> void:
 	var track := TrackRegistry.instance(track_id)
 	track.configure(round_id, server_seed)
 	add_child(track)
+	_build_environment(track)
 	var rail := SpawnRail.new(track)
 
 	var server_seed_hash := FairSeed.hash_server_seed(server_seed)
@@ -55,6 +54,14 @@ func _ready() -> void:
 	var finish := FinishLine.new()
 	finish.track = track
 	add_child(finish)
+	# Visual celebration when the first marble crosses — confetti burst at the
+	# winner's position, tinted by the winner's color, plus a brief emission
+	# boost so viewers can read which marble actually won.
+	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
+		var winner_color: Color = colors[int(String(winner.name).trim_prefix("Marble_"))]
+		WinnerReveal.spawn_confetti(self, winner.global_position, winner_color)
+		WinnerReveal.boost_winner_emission(winner, get_tree())
+	)
 	var recorder := TickRecorder.new()
 	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
 	if not _replay_path.is_empty():
@@ -127,6 +134,7 @@ func _on_finalized(_path: String, finish: FinishLine) -> void:
 		f.close()
 	get_tree().quit(0)
 
-func _build_environment() -> void:
-	add_child(EnvironmentBuilder.build_sun())
-	add_child(EnvironmentBuilder.build_environment())
+func _build_environment(track: Track) -> void:
+	var overrides: Dictionary = track.environment_overrides()
+	add_child(EnvironmentBuilder.build_sun(overrides))
+	add_child(EnvironmentBuilder.build_environment(overrides))

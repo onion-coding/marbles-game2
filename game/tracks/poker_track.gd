@@ -425,3 +425,16 @@ func camera_bounds() -> AABB:
 	var min_v := Vector3(SHOE_X - 4.0, -3.0, -COURSE_WIDTH * 0.5 - 2.0)
 	var max_v := Vector3(FINISH_X + 5.0, SHOE_Y_BASE + 6.0, COURSE_WIDTH * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
+
+func environment_overrides() -> Dictionary:
+	# Smoky cardroom — dim greens with warm amber pendants.
+	return {
+		"sky_top": Color(0.04, 0.06, 0.04),
+		"sky_horizon": Color(0.10, 0.14, 0.08),
+		"ground_top": Color(0.06, 0.10, 0.05),
+		"ground_bottom": Color(0.02, 0.04, 0.02),
+		"ambient_energy": 0.35,
+		"fog_color": Color(0.10, 0.12, 0.08),
+		"fog_density": 0.012,
+		"sun_color": Color(1.0, 0.82, 0.50),
+	}
