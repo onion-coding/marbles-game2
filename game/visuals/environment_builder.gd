@@ -23,24 +23,22 @@ static func build_environment(overrides: Dictionary = {}) -> WorldEnvironment:
 	node.name = "Environment"
 	var env := Environment.new()
 
-	# Sky
+	# Sky — daylight blue gradient + FBM cloud cover, drawn in a sky shader.
 	var sky := Sky.new()
-	var sky_mat := ProceduralSkyMaterial.new()
-	# Slightly warm, low-saturation sky — reads as "indoor casino" rather than
-	# "outdoor blue sky".
-	sky_mat.sky_top_color = Color(0.10, 0.08, 0.12)
-	sky_mat.sky_horizon_color = Color(0.20, 0.15, 0.10)
-	sky_mat.ground_bottom_color = Color(0.06, 0.05, 0.05)
-	sky_mat.ground_horizon_color = Color(0.18, 0.13, 0.08)
-	sky_mat.sun_angle_max = 30.0
-	sky_mat.sun_curve = 0.10
+	var sky_mat := ShaderMaterial.new()
+	var sky_shader: Shader = load("res://visuals/sky_clouds.gdshader")
+	if sky_shader == null:
+		push_error("EnvironmentBuilder: failed to load res://visuals/sky_clouds.gdshader")
+	else:
+		print("EnvironmentBuilder: sky shader loaded ", sky_shader)
+	sky_mat.shader = sky_shader
 	sky.sky_material = sky_mat
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 
-	# Ambient light from the sky, modest energy so direct lights still pop.
+	# Ambient light from the sky — daylight scenes need brighter ambient.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.45
+	env.ambient_light_energy = 1.0
 
 	# Tone mapping — filmic ACES is the current Godot best-practice for
 	# physically-based scenes. Default linear blows out emissive highlights.
@@ -64,11 +62,14 @@ static func build_environment(overrides: Dictionary = {}) -> WorldEnvironment:
 	env.ssao_power = 1.5
 	env.ssao_detail = 0.5
 
-	# Light fog for depth/atmosphere — keeps long tracks from looking flat.
+	# Light atmospheric fog — keep its sky tint off so the sky shader
+	# (gradient + clouds) renders cleanly. fog_sky_affect=0 means fog only
+	# applies to scene geometry, not the sky background.
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.10, 0.08, 0.10)
-	env.fog_light_energy = 0.6
-	env.fog_density = 0.005   # very mild
+	env.fog_light_color = Color(0.78, 0.86, 0.94)
+	env.fog_light_energy = 0.8
+	env.fog_density = 0.0015
+	env.fog_sky_affect = 0.0
 
 	# Adjustments — slight color grading toward warmer.
 	env.adjustment_enabled = true

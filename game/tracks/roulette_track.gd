@@ -394,14 +394,4 @@ func camera_bounds() -> AABB:
 	return AABB(Vector3(min_x, min_y, min_z), Vector3(max_x - min_x, max_y - min_y, max_z - min_z))
 
 func environment_overrides() -> Dictionary:
-	# Mahogany-and-gold pit room — deep, warm, slight gold haze.
-	return {
-		"sky_top": Color(0.08, 0.05, 0.04),
-		"sky_horizon": Color(0.22, 0.13, 0.06),
-		"ground_top": Color(0.16, 0.08, 0.04),
-		"ground_bottom": Color(0.04, 0.02, 0.02),
-		"ambient_energy": 0.40,
-		"fog_color": Color(0.18, 0.10, 0.05),
-		"fog_density": 0.008,
-		"sun_color": Color(1.0, 0.85, 0.55),
-	}
+	return {}
