@@ -222,6 +222,15 @@ var _pin_phases: Array = []
 var _chip_wheels: Array[AnimatableBody3D] = []
 var _chip_wheel_phases: Array = []
 
+# Slow-motion gravity zone — same 40-50 s target as Poker. Marbles inside
+# the play volume experience ~2.5 % of project gravity so the race reads
+# as slow-motion instead of freefall.
+const SLOW_GRAVITY_ACCEL := 0.20     # tuned to ~45 s race time. Craps has fewer
+                                      # obstacles per metre than Poker (13 chip rows +
+                                      # 4 pins vs 10 cards + 7 chip rows + denser layout),
+                                      # so it needs slightly different gravity to land
+                                      # in the same race-time window.
+
 # Table tilt basis applied to the whole course (everything sits on the tilted
 # felt). Cached so dice motion code can use the same frame.
 var _tilt_basis: Basis = Basis.IDENTITY
@@ -245,6 +254,7 @@ func _ready() -> void:
 	_build_pins()
 	_init_chip_wheel_phases()
 	_build_chip_wheels()
+	_build_slow_gravity_zone()
 	_build_mood_light()
 
 	_ensure_root_transform()
@@ -696,6 +706,23 @@ func _apply_chip_wheel_pose(i: int, t: float) -> void:
 	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
 	# Local transform so root rotation propagates via parent.
 	wheel.transform = Transform3D(Basis(Vector3.UP, angle), pos)
+
+# ─── Slow-motion gravity zone ────────────────────────────────────────────
+
+func _build_slow_gravity_zone() -> void:
+	var zone := Area3D.new()
+	zone.name = "SlowGravityZone"
+	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
+	zone.gravity_direction = Vector3(0, -1, 0)   # always world-down regardless of zone rotation
+	zone.gravity = SLOW_GRAVITY_ACCEL
+	add_child(zone)
+
+	var coll := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(TABLE_LEN + 12, 6, TABLE_WIDTH + 6)
+	coll.shape = box
+	coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, 1.5, 0))
+	zone.add_child(coll)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 

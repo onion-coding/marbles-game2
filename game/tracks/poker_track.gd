@@ -137,6 +137,16 @@ var _chip_wheels: Array[AnimatableBody3D] = []
 var _chip_wheel_phases: Array = []
 var _chip_wheel_mat: PhysicsMaterial = null
 
+# Slow-motion gravity zone. After the vertical root rotation, gravity does
+# all the work and the race naturally completes in ~6 s over 80 m of drop.
+# To stretch it back into the 40-50 s "watchable race" window the user
+# wants, we drop the gravity inside the play volume to ~5 % of normal.
+# Marbles still fall, but visually it reads as "slow-motion" instead of
+# "freefall".
+const SLOW_GRAVITY_ACCEL := 0.25     # m/s² (~2.5 % of project default 9.8) — produces
+                                      # ~42 s race over the 80 m drop with the chip rows,
+                                      # cards, and chip wheels deflecting marbles.
+
 # Spinning chip wheels — three large rotating discs with peg-chips on
 # the rim, scattered between the existing chip rows / cards. Same idea
 # as CrapsTrack v2 (rim-pegs sweep through the play volume) but tinted
@@ -173,6 +183,7 @@ func _ready() -> void:
 	_build_community_cards()
 	_init_chip_wheel_phases()
 	_build_chip_wheels()
+	_build_slow_gravity_zone()
 	_build_mood_light()
 
 	# Stand the whole track up. Same root rotation as CrapsTrack so the
@@ -521,6 +532,28 @@ func _apply_chip_wheel_pose(i: int, t: float) -> void:
 	var angle: float = phase + w * t
 	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
 	wheel.transform = Transform3D(Basis(Vector3.UP, angle), pos)
+
+# ─── Slow-motion gravity zone ────────────────────────────────────────────
+
+func _build_slow_gravity_zone() -> void:
+	# Area3D covering the full play volume; marbles inside experience a
+	# fraction of project gravity so the race reads as slow-motion. The
+	# Area's collision shape is in the track's local frame, so it rotates
+	# with the root rotation and stays aligned with the play volume.
+	var zone := Area3D.new()
+	zone.name = "SlowGravityZone"
+	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
+	zone.gravity_direction = Vector3(0, -1, 0)   # always world-down regardless of zone rotation
+	zone.gravity = SLOW_GRAVITY_ACCEL
+	add_child(zone)
+
+	var coll := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	# Cover the full course length + width with margin in old coords.
+	box.size = Vector3(COURSE_LEN + 12, 6, COURSE_WIDTH + 6)
+	coll.shape = box
+	coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, 1.5, 0))
+	zone.add_child(coll)
 
 # ─── Community cards (decoration only) ───────────────────────────────────
 
