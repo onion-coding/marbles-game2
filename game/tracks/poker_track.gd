@@ -17,10 +17,10 @@ extends Track
 # Course runs along world +X. Spawn at the dealer shoe (-X end), finish at
 # the pot (+X end).
 
-const COURSE_LEN := 36.0           # X span between shoe and pot
-const COURSE_WIDTH := 12.0         # Z span
-const FELT_TILT_DEG := 9.0         # downhill tilt around Z (descend toward +X). Combined
-                                    # with FELT_FRICTION 0.55 keeps races in the ~25-35s range.
+const COURSE_LEN := 80.0           # X span between shoe and pot — long mini-golf course
+const COURSE_WIDTH := 14.0         # Z span
+const FELT_TILT_DEG := 3.0         # very gentle slope; chip rows + flipping cards do the
+                                    # slowing. 2-2.5° causes marbles to stall.
 
 # Y of the felt's top surface at x=0 (track is locally flat; tilt rotates the
 # whole table around the world Z axis for the downhill effect).
@@ -30,7 +30,7 @@ const RAIL_HEIGHT := 1.4
 const RAIL_THICKNESS := 0.3
 
 # ─── Spawn (inside the dealer shoe) ───────────────────────────────────────
-const SHOE_X := -16.0
+const SHOE_X := -38.0
 const SHOE_Y_BASE := 5.0
 const SHOE_LEN := 4.0
 const SHOE_INNER_W := 1.6
@@ -47,24 +47,31 @@ const SPAWN_GRID_DZ := 0.4
 # Two staggered rows of chip-stacks form gates that marbles must thread.
 const CHIP_RADIUS := 0.4
 const CHIP_HEIGHT := 1.6
+# Six staggered chip-stack rows along the long table, alternating offsets
+# so a marble can never follow a single straight Z column.
 const CHIP_ROWS := [
-	{"x": -8.0, "zs": [-4.0, -1.0, 1.0, 4.0]},
-	{"x": -4.5, "zs": [-3.0, 0.0, 3.0]},
+	{"x": -30.0, "zs": [-5.0, -2.0,  1.0,  4.0]},
+	{"x": -25.0, "zs": [-4.0, -1.0,  2.0,  5.0]},
+	{"x": -20.0, "zs": [-5.5, -2.5,  0.5,  3.5]},
+	{"x": -15.0, "zs": [-3.5, -0.5,  2.5,  5.5]},
+	{"x":  -8.0, "zs": [-5.0, -2.0,  1.0,  4.0]},
+	{"x":  18.0, "zs": [-4.5, -1.5,  1.5,  4.5]},
+	{"x":  25.0, "zs": [-5.0, -2.0,  1.0,  4.0]},
 ]
 
 # ─── Flipping cards (kinematic see-saws) ─────────────────────────────────
 # Each card is a flat box pivoting on its short edge. The pivot axis is along
 # world Z (across the course); the card tilts ±FLIP_AMP_DEG around that axis.
 # Rotation: angle(t) = amp * sin(2π * t / period_ticks + phase)
-const CARD_COUNT := 6
+const CARD_COUNT := 10
 const CARD_LEN := 3.5              # along X (course direction)
-const CARD_WIDTH := 4.5            # along Z (wider so marbles can't all slip past at one Z)
+const CARD_WIDTH := 5.0            # along Z (wider so marbles can't all slip past at one Z)
 const CARD_THICKNESS := 0.18
-const CARD_FLIP_AMP_DEG := 30.0
-const CARD_PERIOD_BASE_TICKS := 300   # 5s at 60Hz; per-card jitter from seed
-const CARD_PERIOD_JITTER := 90        # ±1.5s
-const CARD_X_STEP := 3.8              # spacing along the course
-const CARD_X_START := -2.0            # first card placed earlier in the course
+const CARD_FLIP_AMP_DEG := 28.0
+const CARD_PERIOD_BASE_TICKS := 360   # 6s at 60Hz; slower flips for the longer course
+const CARD_PERIOD_JITTER := 120       # ±2s
+const CARD_X_STEP := 4.0
+const CARD_X_START := -10.0
 const CARD_PIVOT_HEIGHT := 0.8
 
 # ─── Decorative community cards (visual only) ────────────────────────────
@@ -75,13 +82,13 @@ const COMMUNITY_Y := 1.5
 const COMMUNITY_COUNT := 5
 
 # ─── Finish (pot) ─────────────────────────────────────────────────────────
-const FINISH_X := 17.5
+const FINISH_X := 38.0
 const FINISH_BOX_SIZE := Vector3(1.0, 5.0, COURSE_WIDTH)
 const POT_RADIUS := 3.5
 const POT_HEIGHT := 0.6
 
 # ─── Physics materials ───────────────────────────────────────────────────
-const FELT_FRICTION := 0.55
+const FELT_FRICTION := 0.75
 const FELT_BOUNCE := 0.10
 const CARD_FRICTION := 0.18        # slippery — card surface
 const CARD_BOUNCE := 0.30
@@ -420,9 +427,9 @@ func finish_area_size() -> Vector3:
 	return FINISH_BOX_SIZE
 
 func camera_bounds() -> AABB:
-	# Y max accounts for the SpawnRail drop-order stagger (~3m above the top
-	# spawn row) so the marble column isn't clipped at race start.
-	var min_v := Vector3(SHOE_X - 4.0, -3.0, -COURSE_WIDTH * 0.5 - 2.0)
+	# v2 frames the full 80m table. Y max accounts for the SpawnRail
+	# drop-order stagger (~3m above the top spawn row).
+	var min_v := Vector3(SHOE_X - 4.0, -4.0, -COURSE_WIDTH * 0.5 - 2.0)
 	var max_v := Vector3(FINISH_X + 5.0, SHOE_Y_BASE + 6.0, COURSE_WIDTH * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
 

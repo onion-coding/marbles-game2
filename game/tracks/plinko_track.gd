@@ -14,40 +14,82 @@ extends Track
 # ─── Geometry ────────────────────────────────────────────────────────────
 # Course depth (Z) is shallow so marbles stay roughly in the plane.
 const COURSE_DEPTH := 1.4
-# Peg field is narrow enough that side walls hug the outermost pegs — marbles
-# can't drift past the field along the side and skip the obstacles.
-const PLAY_FIELD_WIDTH := 16.0
-const PLAY_FIELD_HEIGHT := 24.0
+const PLAY_FIELD_WIDTH := 20.0
+const PLAY_FIELD_HEIGHT := 60.0
 
-const FIELD_TOP_Y := 22.0
+# Field is dramatically taller now — three peg sections stacked over
+# ~55 m of vertical, with kinematic spinning bars between them. Targets
+# the longest practical Plinko race without making the descent boring:
+# ~30 s in our smokes, vs the 5-12 s the smaller v1 produced.
+const FIELD_TOP_Y := 60.0
 const FIELD_BOTTOM_Y := 4.0
 
-# ─── Hopper (above the peg field) ────────────────────────────────────────
-const HOPPER_Y := 24.0
-const HOPPER_INNER_W := 2.0
-const HOPPER_THROAT_W := 1.0
-const HOPPER_HEIGHT := 1.6
+# ─── Hopper (closed-chamber bottleneck above the peg field) ──────────────
+# Big enclosed chamber that holds all 20 marbles at race start; the only
+# exit is a narrow slot in the floor (HOPPER_OUTLET_W) so marbles trickle
+# out one or two at a time. This adds ~8-12 s of pre-field queue time
+# that's visually engaging — the audience watches marbles compete to
+# escape the cage before the descent even starts.
+const HOPPER_FLOOR_Y := 58.5             # just above FIELD_TOP_Y
+const HOPPER_INNER_W := 4.0              # plenty of room for 20 marbles
+const HOPPER_INNER_H := 4.0
+const HOPPER_OUTLET_W := 0.8             # ~1 marble wide; forces single-file egress
+const HOPPER_WALL_THICKNESS := 0.3
+const HOPPER_FRICTION := 0.35
 
-# Spawn 24 points inside the hopper.
-const SPAWN_Y := 25.5
-const SPAWN_COLS := 8
-const SPAWN_ROWS := 3
-const SPAWN_DX := 0.20
+# Spawn 24 points inside the hopper, lower-left to upper-right grid.
+# The grid is wide so all marbles fit horizontally even at SLOT_COUNT=24
+# without overlapping. Y_STAGGER from SpawnRail still applies on top.
+const SPAWN_Y := 59.5                    # 1 m above hopper floor; 24 marbles stagger up to ~62.8
+const SPAWN_COLS := 6
+const SPAWN_ROWS := 4
+const SPAWN_DX := 0.50
 const SPAWN_DZ := 0.20
 
 # ─── Peg forest ──────────────────────────────────────────────────────────
+# Three stacked sections. Column spacing must be >= 2*(PEG_RADIUS + marble
+# radius 0.3) ~= 1.2 m or marbles wedge between pegs; we keep all sections
+# at 1.3 m to be safe with a small margin.
 const PEG_RADIUS := 0.30
 const PEG_HEIGHT := COURSE_DEPTH
-const PEG_ROW_COUNT := 18              # filling the available 17m of vertical between
-                                        # FIELD_TOP_Y and the slot floor at row spacing 1m
-const PEG_ROW_SPACING := 1.0
-const PEG_COL_SPACING := 1.3           # gap between adjacent pegs ≈ 0.7m (marble diameter
-                                        # is 0.6m) — tight enough to force interaction every
-                                        # row, loose enough to never wedge a marble
-const PEG_BASE_COLS := 11
-const PEG_FIELD_TOP_Y_GAP := 1.0
-const PEG_FRICTION := 0.45
-const PEG_BOUNCE := 0.30
+const PEG_BASE_COLS := 14
+const PEG_FRICTION := 0.85             # very grippy: each peg drains a lot of velocity
+const PEG_BOUNCE := 0.10               # very low: marbles roll-and-slide rather than ping
+
+# Section 1 (top of field) — sparse, sets rhythm.
+const SECTION1_TOP_Y := FIELD_TOP_Y - 1.0
+const SECTION1_ROWS := 12
+const SECTION1_ROW_SPACING := 1.0
+const SECTION1_COL_SPACING := 1.4
+
+# Section 2 (middle) — main deflection zone, dense + tight.
+const SECTION2_TOP_Y := SECTION1_TOP_Y - SECTION1_ROWS * SECTION1_ROW_SPACING - 3.5
+const SECTION2_ROWS := 22
+const SECTION2_ROW_SPACING := 0.95
+const SECTION2_COL_SPACING := 1.3
+
+# Section 3 (bottom) — funnel toward slot row.
+const SECTION3_TOP_Y := SECTION2_TOP_Y - SECTION2_ROWS * SECTION2_ROW_SPACING - 3.5
+const SECTION3_ROWS := 12
+const SECTION3_ROW_SPACING := 0.9
+const SECTION3_COL_SPACING := 1.3
+
+# ─── Spinning paddle bars (kinematic obstacles between peg sections) ─────
+# Each bar is a thin elongated AnimatableBody3D rotating around world Z so
+# marbles falling on its top edge are flung sideways before continuing
+# down. Two zones, two bars each.
+const SPINNER_BAR_LEN := 6.0
+const SPINNER_BAR_THICKNESS := 0.25
+const SPINNER_FRICTION := 0.20
+const SPINNER_BOUNCE := 0.55
+# Y centre per bar; X offset per bar (alternating sides).
+const SPINNER_ZONE1_Y := SECTION1_TOP_Y - SECTION1_ROWS * SECTION1_ROW_SPACING - 1.7
+const SPINNER_ZONE2_Y := SECTION2_TOP_Y - SECTION2_ROWS * SECTION2_ROW_SPACING - 1.7
+# Two bars per zone, offset on X so marbles can't slip down a single column.
+const SPINNER_X_OFFSET := 4.0
+# Angular velocities (rad/tick at 60Hz). Slow enough to read, fast enough
+# to noticeably push marbles around.
+const SPINNER_W := [0.040, -0.045, 0.038, -0.042]
 
 # ─── Slot row (bottom catchers) ──────────────────────────────────────────
 const SLOT_COUNT := 9
@@ -79,14 +121,29 @@ const COLOR_DIVIDER_RED := Color(0.85, 0.18, 0.16)
 var _peg_mat: PhysicsMaterial = null
 var _wall_mat: PhysicsMaterial = null
 var _slot_mat: PhysicsMaterial = null
+var _spinner_mat: PhysicsMaterial = null
+
+# Kinematic spinner state
+var _spinners: Array[AnimatableBody3D] = []
+var _spinner_centers: Array = []     # per-spinner pivot in world coords
+var _local_tick: int = -1
 
 func _ready() -> void:
 	_init_materials()
 	_build_outer_walls()
 	_build_hopper()
 	_build_peg_forest()
+	_build_spinners()
 	_build_slot_row()
 	_build_mood_light()
+
+func _physics_process(_delta: float) -> void:
+	_local_tick += 1
+	for i in range(_spinners.size()):
+		var w: float = float(SPINNER_W[i])
+		var pivot: Vector3 = _spinner_centers[i]
+		var angle: float = w * float(_local_tick)
+		_spinners[i].global_transform = Transform3D(Basis(Vector3.FORWARD, angle), pivot)
 
 func _build_mood_light() -> void:
 	# Saturated magenta-arcade mood — the loudest track on the rotation.
@@ -120,6 +177,10 @@ func _init_materials() -> void:
 	_slot_mat.friction = SLOT_FRICTION
 	_slot_mat.bounce = SLOT_BOUNCE
 
+	_spinner_mat = PhysicsMaterial.new()
+	_spinner_mat.friction = SPINNER_FRICTION
+	_spinner_mat.bounce = SPINNER_BOUNCE
+
 # ─── Outer frame ─────────────────────────────────────────────────────────
 
 func _build_outer_walls() -> void:
@@ -132,8 +193,11 @@ func _build_outer_walls() -> void:
 	frame.physics_material_override = _wall_mat
 	add_child(frame)
 
-	var height: float = HOPPER_Y - FINISH_Y + 4.0
-	var center_y: float = (HOPPER_Y + FINISH_Y) * 0.5
+	# Frame envelopes everything from below the slot row to the top of the
+	# closed hopper chamber.
+	var top_y: float = HOPPER_FLOOR_Y + HOPPER_INNER_H + 1.0
+	var height: float = top_y - FINISH_Y + 4.0
+	var center_y: float = (top_y + FINISH_Y) * 0.5
 
 	# Side walls (along Y, on +/-X)
 	for sgn in [-1, 1]:
@@ -161,41 +225,58 @@ func _build_outer_walls() -> void:
 	front_coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, center_y, COURSE_DEPTH * 0.5 + 0.2))
 	frame.add_child(front_coll)
 
-# ─── Hopper (funnels marbles into the peg field) ─────────────────────────
+# ─── Hopper (closed chamber with narrow floor outlet) ────────────────────
 
 func _build_hopper() -> void:
 	var frame_mat := StandardMaterial3D.new()
 	frame_mat.albedo_color = COLOR_FRAME
 
+	var glass_mat := StandardMaterial3D.new()
+	glass_mat.albedo_color = Color(0.85, 0.45, 0.85, 0.20)
+	glass_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glass_mat.metallic = 0.4
+	glass_mat.roughness = 0.10
+
+	var hopper_mat := PhysicsMaterial.new()
+	hopper_mat.friction = HOPPER_FRICTION
+	hopper_mat.bounce = 0.30
+
 	var hopper := StaticBody3D.new()
 	hopper.name = "Hopper"
-	hopper.physics_material_override = _wall_mat
+	hopper.physics_material_override = hopper_mat
 	add_child(hopper)
 
-	# Two angled walls forming the funnel: outer top width = HOPPER_INNER_W,
-	# bottom (throat) = HOPPER_THROAT_W. We approximate each as one tilted box.
-	var top_y: float = HOPPER_Y + HOPPER_HEIGHT * 0.5
-	var bot_y: float = HOPPER_Y - HOPPER_HEIGHT * 0.5
+	# Side walls (along Y, on +/-X)
 	for sgn in [-1, 1]:
-		var top_x: float = float(sgn) * HOPPER_INNER_W * 0.5
-		var bot_x: float = float(sgn) * HOPPER_THROAT_W * 0.5
-		var top_pt := Vector3(top_x, top_y, 0)
-		var bot_pt := Vector3(bot_x, bot_y, 0)
-		var center := (top_pt + bot_pt) * 0.5
-		var direction := bot_pt - top_pt
-		var length := direction.length()
-		var forward := direction.normalized()
-		var right := Vector3.FORWARD.cross(forward).normalized()
-		if right.length() < 0.001:
-			right = Vector3.RIGHT
-		var up := forward.cross(right).normalized()
-		var basis := Basis(right, up, -forward)
-		_add_box(hopper, "HopperWall_%s" % ("pos" if sgn > 0 else "neg"),
-			Transform3D(basis, center),
-			Vector3(0.18, COURSE_DEPTH, length),
+		var x: float = float(sgn) * (HOPPER_INNER_W * 0.5 + HOPPER_WALL_THICKNESS * 0.5)
+		_add_box(hopper, "ChamberWallX_%s" % ("pos" if sgn > 0 else "neg"),
+			Transform3D(Basis.IDENTITY, Vector3(x, HOPPER_FLOOR_Y + HOPPER_INNER_H * 0.5, 0)),
+			Vector3(HOPPER_WALL_THICKNESS, HOPPER_INNER_H, COURSE_DEPTH + 0.4),
 			frame_mat)
 
-# ─── Peg forest ──────────────────────────────────────────────────────────
+	# Floor with a centred outlet: build two slabs leaving a HOPPER_OUTLET_W
+	# gap at x=0 so marbles only escape through that bottleneck.
+	var slab_w: float = (HOPPER_INNER_W - HOPPER_OUTLET_W) * 0.5
+	for sgn in [-1, 1]:
+		var slab_x: float = float(sgn) * (HOPPER_OUTLET_W * 0.5 + slab_w * 0.5)
+		_add_box(hopper, "ChamberFloor_%s" % ("pos" if sgn > 0 else "neg"),
+			Transform3D(Basis.IDENTITY, Vector3(slab_x, HOPPER_FLOOR_Y, 0)),
+			Vector3(slab_w, 0.3, COURSE_DEPTH + 0.4),
+			frame_mat)
+
+	# Glass front (visible) so the queueing animation reads from the camera.
+	# Just a mesh, no collision (the outer Frame's front-wall collision
+	# already handles depth containment).
+	var glass_front := MeshInstance3D.new()
+	glass_front.name = "ChamberGlass"
+	var bm := BoxMesh.new()
+	bm.size = Vector3(HOPPER_INNER_W + 2 * HOPPER_WALL_THICKNESS, HOPPER_INNER_H, 0.05)
+	glass_front.mesh = bm
+	glass_front.material_override = glass_mat
+	glass_front.position = Vector3(0, HOPPER_FLOOR_Y + HOPPER_INNER_H * 0.5, COURSE_DEPTH * 0.5)
+	hopper.add_child(glass_front)
+
+# ─── Peg forest (3 stacked sections) ─────────────────────────────────────
 
 func _build_peg_forest() -> void:
 	var peg_mat := StandardMaterial3D.new()
@@ -212,29 +293,32 @@ func _build_peg_forest() -> void:
 	pegs.physics_material_override = _peg_mat
 	add_child(pegs)
 
-	var first_row_y: float = FIELD_TOP_Y - PEG_FIELD_TOP_Y_GAP
-	for r in range(PEG_ROW_COUNT):
-		var y: float = first_row_y - float(r) * PEG_ROW_SPACING
-		# Stagger: even rows have PEG_BASE_COLS, odd rows have one fewer
-		# offset by half a column.
+	_build_peg_section(pegs, peg_mat, "S1", SECTION1_TOP_Y, SECTION1_ROWS, SECTION1_ROW_SPACING, SECTION1_COL_SPACING)
+	_build_peg_section(pegs, peg_mat, "S2", SECTION2_TOP_Y, SECTION2_ROWS, SECTION2_ROW_SPACING, SECTION2_COL_SPACING)
+	_build_peg_section(pegs, peg_mat, "S3", SECTION3_TOP_Y, SECTION3_ROWS, SECTION3_ROW_SPACING, SECTION3_COL_SPACING)
+
+func _build_peg_section(parent: Node, peg_mat: StandardMaterial3D, tag: String, top_y: float, rows: int, row_spacing: float, col_spacing: float) -> void:
+	for r in range(rows):
+		var y: float = top_y - float(r) * row_spacing
 		var cols: int = PEG_BASE_COLS if (r % 2 == 0) else PEG_BASE_COLS - 1
-		var x_offset: float = 0.0 if (r % 2 == 0) else PEG_COL_SPACING * 0.5
-		var x_origin: float = -float(cols - 1) * 0.5 * PEG_COL_SPACING + x_offset
+		var x_offset: float = 0.0 if (r % 2 == 0) else col_spacing * 0.5
+		var x_origin: float = -float(cols - 1) * 0.5 * col_spacing + x_offset
 		for c in range(cols):
-			var x: float = x_origin + float(c) * PEG_COL_SPACING
-			# Cylinder lying along world Z (so its long axis spans the play
-			# depth); its CollisionShape3D is rotated 90° around X.
+			var x: float = x_origin + float(c) * col_spacing
+			# Skip pegs that would sit outside the play field width.
+			if abs(x) > PLAY_FIELD_WIDTH * 0.5 - PEG_RADIUS:
+				continue
 			var coll := CollisionShape3D.new()
-			coll.name = "Peg_%d_%d_shape" % [r, c]
+			coll.name = "Peg_%s_%d_%d_shape" % [tag, r, c]
 			var cs := CylinderShape3D.new()
 			cs.radius = PEG_RADIUS
 			cs.height = PEG_HEIGHT
 			coll.shape = cs
 			coll.transform = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(90.0)), Vector3(x, y, 0))
-			pegs.add_child(coll)
+			parent.add_child(coll)
 
 			var mesh := MeshInstance3D.new()
-			mesh.name = "Peg_%d_%d_mesh" % [r, c]
+			mesh.name = "Peg_%s_%d_%d_mesh" % [tag, r, c]
 			var cm := CylinderMesh.new()
 			cm.top_radius = PEG_RADIUS
 			cm.bottom_radius = PEG_RADIUS
@@ -242,7 +326,51 @@ func _build_peg_forest() -> void:
 			mesh.mesh = cm
 			mesh.material_override = peg_mat
 			mesh.transform = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(90.0)), Vector3(x, y, 0))
-			pegs.add_child(mesh)
+			parent.add_child(mesh)
+
+# ─── Spinning paddle bars (kinematic, deterministic) ─────────────────────
+
+func _build_spinners() -> void:
+	var bar_mat := StandardMaterial3D.new()
+	bar_mat.albedo_color = Color(0.95, 0.40, 0.85)
+	bar_mat.metallic = 0.6
+	bar_mat.roughness = 0.30
+	bar_mat.emission_enabled = true
+	bar_mat.emission = Color(1.0, 0.55, 0.95)
+	bar_mat.emission_energy_multiplier = 0.55
+
+	# Two bars per zone, four bars total; centers chosen so adjacent bars
+	# can't all align at once (alternating X offsets).
+	var configs := [
+		{"y": SPINNER_ZONE1_Y, "x": -SPINNER_X_OFFSET},
+		{"y": SPINNER_ZONE1_Y, "x":  SPINNER_X_OFFSET},
+		{"y": SPINNER_ZONE2_Y, "x": -SPINNER_X_OFFSET},
+		{"y": SPINNER_ZONE2_Y, "x":  SPINNER_X_OFFSET},
+	]
+	for i in range(configs.size()):
+		var pivot := Vector3(float(configs[i]["x"]), float(configs[i]["y"]), 0.0)
+		var bar := AnimatableBody3D.new()
+		bar.name = "Spinner_%d" % i
+		bar.physics_material_override = _spinner_mat
+		bar.sync_to_physics = true
+		bar.global_transform = Transform3D(Basis.IDENTITY, pivot)
+		add_child(bar)
+
+		var coll := CollisionShape3D.new()
+		var box := BoxShape3D.new()
+		box.size = Vector3(SPINNER_BAR_LEN, SPINNER_BAR_THICKNESS, COURSE_DEPTH * 0.9)
+		coll.shape = box
+		bar.add_child(coll)
+
+		var mesh := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(SPINNER_BAR_LEN, SPINNER_BAR_THICKNESS, COURSE_DEPTH * 0.9)
+		mesh.mesh = bm
+		mesh.material_override = bar_mat
+		bar.add_child(mesh)
+
+		_spinners.append(bar)
+		_spinner_centers.append(pivot)
 
 # ─── Slot row ────────────────────────────────────────────────────────────
 
@@ -325,9 +453,10 @@ func finish_area_size() -> Vector3:
 	return FINISH_BOX_SIZE
 
 func camera_bounds() -> AABB:
-	# Y max includes the SpawnRail drop-order stagger above SPAWN_Y.
+	# Y max covers the closed-hopper chamber + drop-order stagger above
+	# SPAWN_Y. Field with the bottleneck hopper is ~62 m tall total.
 	var min_v := Vector3(-PLAY_FIELD_WIDTH * 0.5 - 2.0, FINISH_Y - 2.0, -COURSE_DEPTH * 0.5 - 1.0)
-	var max_v := Vector3(PLAY_FIELD_WIDTH * 0.5 + 2.0, SPAWN_Y + 5.0, COURSE_DEPTH * 0.5 + 1.0)
+	var max_v := Vector3(PLAY_FIELD_WIDTH * 0.5 + 2.0, HOPPER_FLOOR_Y + HOPPER_INNER_H + 4.0, COURSE_DEPTH * 0.5 + 1.0)
 	return AABB(min_v, max_v - min_v)
 
 func environment_overrides() -> Dictionary:

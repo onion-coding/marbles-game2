@@ -15,50 +15,53 @@ extends Track
 # and a chrome funnel.
 
 # ─── Layout ────────────────────────────────────────────────────────────────
-const COURSE_TOP_Y := 26.0
+const COURSE_TOP_Y := 50.0       # taller cabinet — 7 reels stacked over 50 m of drop
 const COURSE_BOTTOM_Y := 0.0
-const COURSE_WIDTH_X := 12.0      # cabinet width
-const COURSE_DEPTH_Z := 8.0       # cabinet depth
+const COURSE_WIDTH_X := 12.0
+const COURSE_DEPTH_Z := 8.0
 const CABINET_WALL_THICKNESS := 0.4
-const CABINET_FRICTION := 0.18
-const CABINET_BOUNCE := 0.45
+const CABINET_FRICTION := 0.45    # stickier cabinet so marbles bouncing off side
+                                   # walls don't accelerate downward
+const CABINET_BOUNCE := 0.30
 
 # ─── Spawn ────────────────────────────────────────────────────────────────
 const SPAWN_Y := COURSE_TOP_Y - 1.0
 const SPAWN_COLS := 6
 const SPAWN_ROWS := 4
-const SPAWN_DX := 1.4
-const SPAWN_DZ := 1.0
+const SPAWN_DX := 0.9
+const SPAWN_DZ := 0.7
 
 # ─── Reels ────────────────────────────────────────────────────────────────
 # Three horizontal cylinders rotating around world X. Each reel has a slot
 # cut through its middle (modeled as an arc of "blockers" — short box arcs
 # spanning ~270° of the cylinder, leaving a 90° gap that marbles can slip
 # through).
-const REEL_COUNT := 5
-const REEL_RADIUS := 2.2
+const REEL_COUNT := 8                # more reels stacked through the taller cabinet
+const REEL_RADIUS := 2.4             # bigger discs catch and carry marbles longer
 const REEL_LENGTH := 11.0
-const REEL_BLOCKER_THICKNESS := 0.40
-const REEL_BLOCKER_HEIGHT := 0.85    # taller teeth catch marbles more reliably
-const REEL_BLOCKER_COUNT := 8        # 8 segments → gap is 45° wide
+const REEL_BLOCKER_THICKNESS := 0.45
+const REEL_BLOCKER_HEIGHT := 1.00    # taller teeth deflect marbles more aggressively
+const REEL_BLOCKER_COUNT := 10       # 10 segments → gap is 36° wide; gate aligns less often
 const REEL_GATE_INDEX := 0
-const REEL_FRICTION := 0.30
-const REEL_BOUNCE := 0.40
-# Y positions of the five reels (descending). Spaced ~3.5m apart so each
-# reel has a chance to catch marbles before the next one.
-const REEL_YS := [21.0, 17.5, 14.0, 10.5, 7.0]
-# Angular velocities (rad/tick at 60Hz). Slower than before so the gate
-# doesn't whip past too fast — marbles need to be there at the right moment.
-const REEL_W := [0.025, -0.022, 0.028, -0.030, 0.024]
+const REEL_FRICTION := 0.50
+const REEL_BOUNCE := 0.30
+# Y positions of the eight reels descending through the cabinet, spaced
+# ~5 m apart so each reel has a clear chance to interact with marbles
+# before the next one.
+const REEL_YS := [44.0, 39.0, 34.0, 29.0, 24.0, 19.0, 14.0, 9.0]
+# Angular velocities (rad/tick at 60Hz). Slower than v1 — at 0.015 rad/tick
+# = 0.9 rad/s, gate aligns once every ~7 s, so marbles often have to wait
+# multiple cycles before slipping through.
+const REEL_W := [0.015, -0.013, 0.017, -0.014, 0.016, -0.015, 0.013, -0.017]
 
 # ─── Funnel (after the bottom reel) ──────────────────────────────────────
-const FUNNEL_TOP_Y := 4.5
+const FUNNEL_TOP_Y := 6.0
 const FUNNEL_BOTTOM_Y := 1.5
 const FUNNEL_TOP_RADIUS := 5.5
-const FUNNEL_BOTTOM_RADIUS := 1.5
+const FUNNEL_BOTTOM_RADIUS := 1.0    # tighter throat — marbles bottleneck a bit
 const FUNNEL_SEGMENTS := 12
-const FUNNEL_FRICTION := 0.18
-const FUNNEL_BOUNCE := 0.40
+const FUNNEL_FRICTION := 0.45
+const FUNNEL_BOUNCE := 0.25
 
 # ─── Tray (finish) ───────────────────────────────────────────────────────
 const TRAY_Y := -0.5

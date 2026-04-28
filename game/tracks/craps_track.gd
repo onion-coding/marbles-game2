@@ -21,45 +21,57 @@ extends Track
 # CollisionShape3D + MeshInstance3D children, never another body.
 
 # ─── Table ────────────────────────────────────────────────────────────────
-const TABLE_LEN := 36.0          # X-extent (race direction = +X)
-const TABLE_WIDTH := 14.0        # Z-extent
-const TABLE_TILT_DEG := 9.0      # downhill tilt around Z. Combined with FELT_FRICTION
-                                  # 0.55 keeps marbles moving but slow enough for ~25-35s races.
+# v2: long Vegas-strip table — 60 m of felt with a gentle 5° tilt and high
+# friction so a marble released at the come end takes ~40 s to traverse.
+# 9 chip-stack rows force a slalom; 4 dice tumble across mid-table.
+const TABLE_LEN := 90.0          # X-extent — long mini-golf-style course
+const TABLE_WIDTH := 16.0        # Z-extent
+const TABLE_TILT_DEG := 3.0      # very gentle slope; chip-stack rows do the slowing.
+                                  # Push lower and marbles stall on the felt (2.5° timed out
+                                  # in smoke). Race lands ~30 s with current obstacle density.
 const TABLE_THICKNESS := 0.4
 const TABLE_RAIL_HEIGHT := 1.6
 const TABLE_RAIL_THICKNESS := 0.3
 
-# Felt physics: grippy, low bounce.
-const FELT_FRICTION := 0.55
+# Felt physics: very grippy, low bounce — keeps marbles rolling slowly.
+const FELT_FRICTION := 0.75
 const FELT_BOUNCE := 0.10
 
 # Wood rail physics: medium grip, low bounce.
-const WOOD_FRICTION := 0.45
+const WOOD_FRICTION := 0.55
 const WOOD_BOUNCE := 0.20
 
 # ─── Spawn ────────────────────────────────────────────────────────────────
 # 24 spawn points clustered at the uphill end (+X = downhill, so spawn at -X).
-const SPAWN_X := -16.0
+const SPAWN_X := -42.0
 const SPAWN_Y := 8.0
 const SPAWN_GRID_COLS := 6
 const SPAWN_GRID_ROWS := 4
 const SPAWN_SPREAD_X := 1.5
-const SPAWN_SPREAD_Z := 8.0
+const SPAWN_SPREAD_Z := 9.0
 
 # ─── Chip-stack obstacles ─────────────────────────────────────────────────
-# Three rows of chip-stacks force lane discipline mid-table.
+# Nine rows of chip-stacks across the now-longer table; each row breaks the
+# line marbles would otherwise follow, forcing a slalom that adds real time
+# to each crossing.
 const CHIP_RADIUS := 0.45
-const CHIP_HEIGHT := 1.4
-# Five rows of chip-stacks across the table at staggered Z offsets — each row
-# breaks the line marbles would otherwise follow, forcing a slalom that adds
-# real time to each crossing.
-const CHIP_ROW_X := [-10.0, -5.5, -1.0, 3.5, 8.0]
+const CHIP_HEIGHT := 1.6
+const CHIP_ROW_X := [-36.0, -32.0, -28.0, -24.0, -20.0, -16.0, -12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0, 16.0]
 const CHIP_ROW_OFFSETS := [
-	[-5.0, -2.0, 1.0, 4.0],
-	[-3.5, -0.5, 2.5, 5.5],
-	[-4.5, -1.5, 1.5, 4.5],
-	[-3.0, 0.0, 3.0, 6.0],
-	[-5.5, -2.5, 0.5, 3.5],
+	[-6.0, -3.0,  0.0,  3.0,  6.0],
+	[-4.5, -1.5,  1.5,  4.5,  7.0],
+	[-6.5, -3.5, -0.5,  2.5,  5.5],
+	[-5.0, -2.0,  1.0,  4.0,  7.0],
+	[-6.0, -3.0,  0.0,  3.0,  6.0],
+	[-7.0, -4.0, -1.0,  2.0,  5.0],
+	[-5.5, -2.5,  0.5,  3.5,  6.5],
+	[-4.5, -1.5,  1.5,  4.5,  7.0],
+	[-6.0, -3.0,  0.0,  3.0,  6.0],
+	[-3.0,  0.0,  3.0,  6.0,  7.5],
+	[-7.0, -4.0, -1.0,  2.0,  5.0],
+	[-5.5, -2.5,  0.5,  3.5,  6.5],
+	[-4.5, -1.5,  1.5,  4.5,  7.0],
+	[-6.0, -3.0,  0.0,  3.0,  6.0],
 ]
 
 # ─── Pyramid rubber back wall ─────────────────────────────────────────────
@@ -67,8 +79,8 @@ const CHIP_ROW_OFFSETS := [
 # Tooth count chosen so the gap between adjacent teeth is wider than a
 # marble (radius 0.3 → 0.6 diameter). With TABLE_WIDTH=14 and 5 teeth, gaps
 # average 14/5 - tooth_diagonal = 2.8 - 1.7 = 1.1m: marbles thread through.
-const PYRAMID_X := 13.0
-const PYRAMID_TOOTH_COUNT := 5
+const PYRAMID_X := 35.0
+const PYRAMID_TOOTH_COUNT := 6
 const PYRAMID_TOOTH_HALF_WIDTH := 0.55
 const PYRAMID_TOOTH_HEIGHT := 1.2
 const PYRAMID_FRICTION := 0.35
@@ -82,10 +94,10 @@ const PYRAMID_BOUNCE := 0.55
 # Tumbling rotation is also closed-form, three independent angles each tick.
 # Centre Y is held just above the table felt at that x, so the die slides on
 # the felt rather than floating.
-const DICE_COUNT := 3
+const DICE_COUNT := 5              # 5 dice scattered across the long table
 const DICE_HALF_EXTENT := 0.6     # half-edge of the cube (so edge length 1.2 m)
-const DICE_PATH_HALF_WIDTH := 5.5  # |z| amplitude
-const DICE_PATH_X_AMP := 3.5       # along-table wiggle
+const DICE_PATH_HALF_WIDTH := 6.5  # |z| amplitude
+const DICE_PATH_X_AMP := 6.0       # along-table wiggle
 # Centre frequency around which per-die frequencies cluster (rad / tick).
 # At 60 Hz physics, w = 0.06 → period ~ 105 ticks ~ 1.75s. Low-frequency
 # enough to be readable, high-frequency enough to vary.
@@ -94,7 +106,7 @@ const DICE_FRICTION := 0.55
 const DICE_BOUNCE := 0.35
 
 # ─── Finish ───────────────────────────────────────────────────────────────
-const FINISH_X := 17.0
+const FINISH_X := 42.0
 const FINISH_BOX_SIZE := Vector3(1.0, 6.0, TABLE_WIDTH)
 
 # ─── Materials ────────────────────────────────────────────────────────────
@@ -293,8 +305,8 @@ func _init_dice_params() -> void:
 		# Use bytes 0–7 for spatial offsets, 8–15 for frequencies, 16–23 for
 		# phases, 24–29 for rotation rates. All values normalised to a
 		# friendly range.
-		var x0: float = (float(raw[0]) / 255.0 - 0.5) * 6.0           # ±3 m around table center
-		var z0: float = (float(raw[1]) / 255.0 - 0.5) * 4.0           # ±2 m
+		var x0: float = (float(raw[0]) / 255.0 - 0.5) * 60.0          # ±30 m: dice cover the full 90m table
+		var z0: float = (float(raw[1]) / 255.0 - 0.5) * 6.0           # ±3 m
 		var ax: float = DICE_PATH_X_AMP * (0.6 + float(raw[2]) / 511.0)
 		var az: float = DICE_PATH_HALF_WIDTH * (0.6 + float(raw[3]) / 511.0)
 		var wx: float = DICE_W_BASE * (0.7 + float(raw[8]) / 255.0)
@@ -394,10 +406,10 @@ func finish_area_size() -> Vector3:
 	return FINISH_BOX_SIZE
 
 func camera_bounds() -> AABB:
-	# Frame the whole table including spawn drop column (24 marbles staggered
-	# at ~0.12m per drop_order = ~3m extra above SPAWN_Y) and finish.
-	var min_v := Vector3(-TABLE_LEN * 0.5 - 2.0, -2.0, -TABLE_WIDTH * 0.5 - 2.0)
-	var max_v := Vector3(FINISH_X + 4.0, SPAWN_Y + 5.0, TABLE_WIDTH * 0.5 + 2.0)
+	# v2 table extends from x=-30 to x=+30; finish is just inside the +X
+	# end. Y max accounts for SpawnRail's ~3 m drop-column above SPAWN_Y.
+	var min_v := Vector3(-TABLE_LEN * 0.5 - 2.0, -3.0, -TABLE_WIDTH * 0.5 - 2.0)
+	var max_v := Vector3(TABLE_LEN * 0.5 + 2.0, SPAWN_Y + 5.0, TABLE_WIDTH * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
 
 func environment_overrides() -> Dictionary:
