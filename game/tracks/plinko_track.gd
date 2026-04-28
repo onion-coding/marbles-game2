@@ -28,27 +28,29 @@ const PLAY_FIELD_HEIGHT := 60.0
 const FIELD_TOP_Y := 60.0
 const FIELD_BOTTOM_Y := 4.0
 
-# ─── Hopper (closed-chamber bottleneck above the peg field) ──────────────
-# Big enclosed chamber that holds all 20 marbles at race start; the only
-# exit is a narrow slot in the floor (HOPPER_OUTLET_W) so marbles trickle
-# out one or two at a time. This adds ~8-12 s of pre-field queue time
-# that's visually engaging — the audience watches marbles compete to
-# escape the cage before the descent even starts.
-const HOPPER_FLOOR_Y := 58.5             # just above FIELD_TOP_Y
-const HOPPER_INNER_W := 4.0              # plenty of room for 20 marbles
-const HOPPER_INNER_H := 4.0
-const HOPPER_OUTLET_W := 0.7             # tight outlet; marbles funnel center
+# ─── Hopper (wide chamber spanning the full play width) ──────────────────
+# v3.2: previous bottleneck design (4 m chamber, 0.7 m outlet) made every
+# marble exit through the same centred funnel — they all entered the peg
+# field at the same X and traced almost identical paths. Now the chamber
+# spans the full play width with a near-open floor; marbles spawn spread
+# across the field and enter the pegs at varied X for genuine path
+# variety. The "cube" is still visible (side walls + glass front) but no
+# longer concentrates the flow.
+const HOPPER_FLOOR_Y := 58.5
+const HOPPER_INNER_W := 16.0             # matches PLAY_FIELD_WIDTH minus wall thickness
+const HOPPER_INNER_H := 3.0              # shorter — no bottleneck queue space needed
+const HOPPER_OUTLET_W := 15.0            # nearly the full inner width; only 0.5 m lip per side
 const HOPPER_WALL_THICKNESS := 0.3
 const HOPPER_FRICTION := 0.35
 
-# Spawn 24 points inside the hopper, lower-left to upper-right grid.
-# The grid is wide so all marbles fit horizontally even at SLOT_COUNT=24
-# without overlapping. Y_STAGGER from SpawnRail still applies on top.
-const SPAWN_Y := 59.5                    # 1 m above hopper floor; 24 marbles stagger up to ~62.8
-const SPAWN_COLS := 6
-const SPAWN_ROWS := 4
-const SPAWN_DX := 0.50
-const SPAWN_DZ := 0.20
+# Spawn 24 points across the wide chamber as an 8×3 grid. Y_STAGGER from
+# SpawnRail still applies on top. Wider DX means each marble enters the
+# peg field at a different X, dramatically increasing path randomness.
+const SPAWN_Y := 59.5
+const SPAWN_COLS := 8
+const SPAWN_ROWS := 3
+const SPAWN_DX := 1.7                    # 8 cols × 1.7 m = ~12 m spread; fits inside 16 m chamber
+const SPAWN_DZ := 0.30
 
 # ─── Peg forest ──────────────────────────────────────────────────────────
 # Three stacked sections. Column spacing must be >= 2*(PEG_RADIUS + marble
@@ -116,11 +118,12 @@ const SPINNER_BAR_LEN := 1.0     # short paddles that don't span the lane height
 const SPINNER_BAR_THICKNESS := 0.20
 const SPINNER_FRICTION := 0.20
 const SPINNER_BOUNCE := 0.55
-# Angular velocities per lane (rad/tick at 60 Hz). Slow enough that the
-# paddles don't punt marbles back uphill — the serpentine is the dominant
-# slowdown, paddles are decorative-with-occasional-impact. ~6-10 s per
-# revolution.
-const SPINNER_W := [0.010, -0.012, 0.011, -0.009]
+# Angular velocities (rad/tick at 60 Hz). Two paddles total — placed only
+# in the middle lanes (2 and 3) so the entry/exit lanes (1 and 4) are
+# unobstructed and marbles flow naturally in/out of the serpentine.
+# Slow rotation (~10 s per revolution) so paddles don't punt marbles
+# backwards uphill.
+const SPINNER_W := [-0.012, 0.011]
 
 # ─── Slot row (bottom catchers) ──────────────────────────────────────────
 const SLOT_COUNT := 9
@@ -426,14 +429,14 @@ func _build_spinners() -> void:
 	bar_mat.emission = Color(1.0, 0.55, 0.95)
 	bar_mat.emission_energy_multiplier = 0.55
 
-	# One paddle per lane, pivot near the lane's mid-X with vertical
-	# clearance above the floor surface so the paddle's sweep stays inside
-	# the lane's vertical envelope.
+	# Two paddles total, in the two middle lanes only (2 and 3). Lanes 1
+	# and 4 stay clear so marbles enter and exit the serpentine without
+	# obstruction. Pivot near each lane's mid-X with vertical clearance
+	# above the floor surface so the paddle's sweep stays inside the
+	# lane's vertical envelope.
 	var configs := [
-		{"y": LANE1_FLOOR_Y + 1.4, "x": 0.0},
 		{"y": LANE2_FLOOR_Y + 1.4, "x": 0.0},
 		{"y": LANE3_FLOOR_Y + 1.4, "x": 0.0},
-		{"y": LANE4_FLOOR_Y + 1.4, "x": 0.0},
 	]
 	for i in range(configs.size()):
 		var pivot := Vector3(float(configs[i]["x"]), float(configs[i]["y"]), 0.0)
