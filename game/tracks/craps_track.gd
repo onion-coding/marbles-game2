@@ -126,6 +126,36 @@ const PIN_SIZE := Vector3(0.7, 1.6, 0.7)
 const PIN_FRICTION := 0.45
 const PIN_BOUNCE := 0.30
 
+# ─── Spinning chip wheels (kinematic rotating obstacles) ─────────────────
+# Three large rotating wheels mounted at different Y heights along the
+# now-vertical course. Each has 6 chip-shaped pegs around its rim that
+# sweep through the play volume as the wheel turns, giving marbles
+# passing through that section a kinematic deflection. Per-wheel phase
+# derived from server_seed via _hash_with_tag("wheel_<i>") so timing
+# varies round-to-round but is replay-stable.
+const CHIP_WHEEL_COUNT := 3
+const CHIP_WHEEL_RADIUS := 2.4
+const CHIP_WHEEL_THICKNESS := 0.35
+const CHIP_WHEEL_PEG_COUNT := 6
+const CHIP_WHEEL_PEG_RADIUS := 0.30
+const CHIP_WHEEL_PEG_LENGTH := 1.20
+const CHIP_WHEEL_PEG_RIM_OFFSET := 2.0    # peg distance from wheel centre
+const CHIP_WHEEL_FRICTION := 0.40
+const CHIP_WHEEL_BOUNCE := 0.35
+
+# Old-coords positions, between existing chip layers along the course.
+# After the root rotation, these spread vertically along world -Y
+# (downward) so the camera sees three big wheels stacked one above the
+# next, each with 6 pegs orbiting the rim.
+const CHIP_WHEEL_POSITIONS := [
+	Vector3(-34.0, 0.5,  0.0),    # pre-split, between first chip rows
+	Vector3(  0.0, 0.5,  4.0),    # mid-table, in the +Z channel half
+	Vector3( 16.0, 0.5,  0.0),    # at funnel exit, before post-chips
+]
+# Per-wheel angular velocity (rad/tick at 60Hz). Different signs for
+# visual variety — neighbouring wheels spin in opposite directions.
+const CHIP_WHEEL_W := [0.040, -0.035, 0.045]
+
 # ─── Pyramid rubber back wall ─────────────────────────────────────────────
 # A jagged sawtooth row before the finish; deflects marbles unpredictably.
 # Tooth count chosen so the gap between adjacent teeth is wider than a
@@ -178,6 +208,7 @@ var _wood_mat: PhysicsMaterial = null
 var _rubber_mat: PhysicsMaterial = null
 var _dice_mat: PhysicsMaterial = null
 var _pin_mat: PhysicsMaterial = null
+var _chip_wheel_mat: PhysicsMaterial = null
 
 # Per-die motion parameters cached from server_seed.
 var _dice_bodies: Array[AnimatableBody3D] = []
@@ -186,6 +217,10 @@ var _dice_params: Array = []   # array of dictionaries: {x0,z0,ax,az,wx,wz,px,pz
 # Per-pin sin-clock phases cached from server_seed.
 var _pins: Array[AnimatableBody3D] = []
 var _pin_phases: Array = []
+
+# Per-wheel rotation phases cached from server_seed.
+var _chip_wheels: Array[AnimatableBody3D] = []
+var _chip_wheel_phases: Array = []
 
 # Table tilt basis applied to the whole course (everything sits on the tilted
 # felt). Cached so dice motion code can use the same frame.
@@ -208,6 +243,8 @@ func _ready() -> void:
 	_build_dice()
 	_init_pin_phases()
 	_build_pins()
+	_init_chip_wheel_phases()
+	_build_chip_wheels()
 	_build_mood_light()
 
 	_ensure_root_transform()
@@ -246,6 +283,8 @@ func _physics_process(_delta: float) -> void:
 		_apply_dice_pose(i, float(_local_tick))
 	for i in range(_pins.size()):
 		_apply_pin_pose(i, float(_local_tick))
+	for i in range(_chip_wheels.size()):
+		_apply_chip_wheel_pose(i, float(_local_tick))
 
 func _apply_dice_pose(i: int, t: float) -> void:
 	var body: AnimatableBody3D = _dice_bodies[i]
@@ -284,6 +323,10 @@ func _init_materials() -> void:
 	_pin_mat = PhysicsMaterial.new()
 	_pin_mat.friction = PIN_FRICTION
 	_pin_mat.bounce = PIN_BOUNCE
+
+	_chip_wheel_mat = PhysicsMaterial.new()
+	_chip_wheel_mat.friction = CHIP_WHEEL_FRICTION
+	_chip_wheel_mat.bounce = CHIP_WHEEL_BOUNCE
 
 # ─── Table (felt + rails) ────────────────────────────────────────────────
 
@@ -555,6 +598,104 @@ func _apply_pin_pose(i: int, t: float) -> void:
 	var local_pos := Vector3(x, y, PIN_Z)
 	# Local transform so root rotation propagates via parent.
 	pin.transform = Transform3D(_tilt_basis, _tilt_basis * local_pos)
+
+# ─── Chip wheels (kinematic spinning discs with peg-chips on the rim) ────
+
+func _init_chip_wheel_phases() -> void:
+	# Per-wheel phase from server_seed so each round opens with a different
+	# wheel orientation. Replay-stable.
+	for i in range(CHIP_WHEEL_COUNT):
+		var raw := _hash_with_tag("wheel_%d" % i)
+		_chip_wheel_phases.append(float(raw[0]) / 255.0 * TAU)
+
+func _build_chip_wheels() -> void:
+	var disc_mat := StandardMaterial3D.new()
+	disc_mat.albedo_color = Color(0.85, 0.72, 0.25)   # gold
+	disc_mat.metallic = 0.85
+	disc_mat.metallic_specular = 0.85
+	disc_mat.roughness = 0.30
+	disc_mat.emission_enabled = true
+	disc_mat.emission = Color(0.85, 0.72, 0.25)
+	disc_mat.emission_energy_multiplier = 0.30
+
+	var peg_mat := StandardMaterial3D.new()
+	peg_mat.albedo_color = Color(0.93, 0.20, 0.20)    # red chip
+	peg_mat.metallic = 0.40
+	peg_mat.roughness = 0.40
+	peg_mat.emission_enabled = true
+	peg_mat.emission = Color(0.93, 0.20, 0.20)
+	peg_mat.emission_energy_multiplier = 0.30
+
+	for i in range(CHIP_WHEEL_COUNT):
+		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
+		var wheel := AnimatableBody3D.new()
+		wheel.name = "ChipWheel_%d" % i
+		wheel.physics_material_override = _chip_wheel_mat
+		wheel.sync_to_physics = true
+		wheel.transform = Transform3D(Basis.IDENTITY, pos)
+		add_child(wheel)
+
+		# Disc body (centred on wheel origin, axis along local +Y)
+		var disc_coll := CollisionShape3D.new()
+		disc_coll.name = "Disc_%d_shape" % i
+		var disc_shape := CylinderShape3D.new()
+		disc_shape.radius = CHIP_WHEEL_RADIUS
+		disc_shape.height = CHIP_WHEEL_THICKNESS
+		disc_coll.shape = disc_shape
+		wheel.add_child(disc_coll)
+
+		var disc_mesh := MeshInstance3D.new()
+		disc_mesh.name = "Disc_%d_mesh" % i
+		var disc_cyl := CylinderMesh.new()
+		disc_cyl.top_radius = CHIP_WHEEL_RADIUS
+		disc_cyl.bottom_radius = CHIP_WHEEL_RADIUS
+		disc_cyl.height = CHIP_WHEEL_THICKNESS
+		disc_mesh.mesh = disc_cyl
+		disc_mesh.material_override = disc_mat
+		wheel.add_child(disc_mesh)
+
+		# Pegs around the rim — each is a small cylinder sticking out of
+		# the front face (local +Y) at angular position theta.
+		var peg_y_centre: float = CHIP_WHEEL_THICKNESS * 0.5 + CHIP_WHEEL_PEG_LENGTH * 0.5
+		for k in range(CHIP_WHEEL_PEG_COUNT):
+			var theta: float = TAU * float(k) / float(CHIP_WHEEL_PEG_COUNT)
+			var peg_pos := Vector3(
+				cos(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
+				peg_y_centre,
+				sin(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
+			)
+
+			var peg_coll := CollisionShape3D.new()
+			peg_coll.name = "Peg_%d_%d_shape" % [i, k]
+			var peg_shape := CylinderShape3D.new()
+			peg_shape.radius = CHIP_WHEEL_PEG_RADIUS
+			peg_shape.height = CHIP_WHEEL_PEG_LENGTH
+			peg_coll.shape = peg_shape
+			peg_coll.transform = Transform3D(Basis.IDENTITY, peg_pos)
+			wheel.add_child(peg_coll)
+
+			var peg_mesh := MeshInstance3D.new()
+			peg_mesh.name = "Peg_%d_%d_mesh" % [i, k]
+			var peg_cyl := CylinderMesh.new()
+			peg_cyl.top_radius = CHIP_WHEEL_PEG_RADIUS
+			peg_cyl.bottom_radius = CHIP_WHEEL_PEG_RADIUS
+			peg_cyl.height = CHIP_WHEEL_PEG_LENGTH
+			peg_mesh.mesh = peg_cyl
+			peg_mesh.material_override = peg_mat
+			peg_mesh.transform = Transform3D(Basis.IDENTITY, peg_pos)
+			wheel.add_child(peg_mesh)
+
+		_chip_wheels.append(wheel)
+		_apply_chip_wheel_pose(i, 0.0)
+
+func _apply_chip_wheel_pose(i: int, t: float) -> void:
+	var wheel: AnimatableBody3D = _chip_wheels[i]
+	var w: float = float(CHIP_WHEEL_W[i])
+	var phase: float = float(_chip_wheel_phases[i])
+	var angle: float = phase + w * t
+	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
+	# Local transform so root rotation propagates via parent.
+	wheel.transform = Transform3D(Basis(Vector3.UP, angle), pos)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
