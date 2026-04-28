@@ -26,9 +26,9 @@ extends Track
 # 9 chip-stack rows force a slalom; 4 dice tumble across mid-table.
 const TABLE_LEN := 90.0          # X-extent — long mini-golf-style course
 const TABLE_WIDTH := 16.0        # Z-extent
-const TABLE_TILT_DEG := 3.0      # very gentle slope; chip-stack rows do the slowing.
-                                  # Push lower and marbles stall on the felt (2.5° timed out
-                                  # in smoke). Race lands ~30 s with current obstacle density.
+const TABLE_TILT_DEG := 0.0      # vertical orientation: gravity aligns with the race
+                                  # direction post-root-rotation, so the felt-tilt that
+                                  # drove the original horizontal mode is no longer needed.
 const TABLE_THICKNESS := 0.4
 const TABLE_RAIL_HEIGHT := 1.6
 const TABLE_RAIL_THICKNESS := 0.3
@@ -42,13 +42,30 @@ const WOOD_FRICTION := 0.55
 const WOOD_BOUNCE := 0.20
 
 # ─── Spawn ────────────────────────────────────────────────────────────────
-# 24 spawn points clustered at the uphill end (+X = downhill, so spawn at -X).
+# 24 spawn points at the "uphill" end (-X in local coords). After the
+# vertical-orientation root rotation (see ROOT_OFFSET / _ready), local +X
+# maps to world -Y (gravity), local +Y maps to world +Z (depth toward
+# camera), so SPAWN_Y is the depth offset of marbles in front of the back
+# wall — kept small so spawn sits just in front of the play surface.
 const SPAWN_X := -42.0
-const SPAWN_Y := 8.0
+const SPAWN_Y := 1.0                # depth in front of back wall
 const SPAWN_GRID_COLS := 6
 const SPAWN_GRID_ROWS := 4
-const SPAWN_SPREAD_X := 1.5
-const SPAWN_SPREAD_Z := 9.0
+const SPAWN_SPREAD_X := 1.5         # spreads spawn along old +X = world -Y (vertical stagger)
+const SPAWN_SPREAD_Z := 9.0         # spreads spawn along old +Z = world -X (sideways)
+
+# ─── Vertical orientation (root rotation) ────────────────────────────────
+# Apply a rigid rotation to the whole track so the original "horizontal
+# table" becomes a "vertical wall" the player views frontally. Marbles
+# now drop along the original race direction under gravity instead of
+# rolling on a tilted felt. Mapping:
+#   local +X (downhill)         → world -Y (gravity)
+#   local +Y (above felt)       → world +Z (depth, toward camera)
+#   local +Z (across the table) → world -X (sideways)
+# Decomposes as Basis(Z, -90°) * Basis(X, +90°). ROOT_OFFSET shifts the
+# rotated play volume up so the finish (was old +X=42) lands near world
+# Y=6 instead of Y=-42.
+const ROOT_OFFSET_Y := 48.0
 
 # ─── Chip-stack obstacles ─────────────────────────────────────────────────
 # v2-split layout: chip rows split across three zones —
@@ -174,6 +191,12 @@ var _pin_phases: Array = []
 # felt). Cached so dice motion code can use the same frame.
 var _tilt_basis: Basis = Basis.IDENTITY
 
+# Root rotation applied to the whole track at the end of _ready(). All
+# child geometry rotates with it; spawn_points / finish_area_transform /
+# camera_pose / camera_bounds apply this transform manually since they
+# return values consumed in world space.
+var _root_transform: Transform3D = Transform3D.IDENTITY
+
 func _ready() -> void:
 	_init_materials()
 	_tilt_basis = Basis(Vector3(0, 0, 1), -deg_to_rad(TABLE_TILT_DEG))
@@ -186,6 +209,21 @@ func _ready() -> void:
 	_init_pin_phases()
 	_build_pins()
 	_build_mood_light()
+
+	_ensure_root_transform()
+	transform = _root_transform
+
+# Lazy-initialise the root transform so spawn_points / finish_area_transform
+# / camera_pose return correctly-rotated values even when called from a
+# context that doesn't add the track to the scene tree (e.g. verify_main).
+func _ensure_root_transform() -> void:
+	if _root_transform != Transform3D.IDENTITY:
+		return
+	# Stand the whole track up on its end. local +X → world -Y (gravity),
+	# local +Y → world +Z (depth toward camera), local +Z → world -X.
+	var b1 := Basis(Vector3(1, 0, 0), PI / 2)        # +Y → +Z, +Z → -Y
+	var b2 := Basis(Vector3(0, 0, 1), -PI / 2)       # +X → -Y, +Y → +X
+	_root_transform = Transform3D(b2 * b1, Vector3(0, ROOT_OFFSET_Y, 0))
 
 func _build_mood_light() -> void:
 	# Warm gold key light from above-X to give the table a casino-pit mood
@@ -219,7 +257,8 @@ func _apply_dice_pose(i: int, t: float) -> void:
 	var ry: float = float(p["ry"]) * t
 	var rz: float = float(p["rz"]) * t
 	var local_rot := Basis(Vector3.RIGHT, rx) * Basis(Vector3.UP, ry) * Basis(Vector3.FORWARD, rz)
-	body.global_transform = Transform3D(_tilt_basis * local_rot, _tilt_basis * local_pos)
+	# Use LOCAL transform — root rotation propagates via parent.
+	body.transform = Transform3D(_tilt_basis * local_rot, _tilt_basis * local_pos)
 
 var _local_tick: int = -1
 
@@ -276,11 +315,21 @@ func _build_table() -> void:
 			Transform3D(Basis.IDENTITY, Vector3(0, TABLE_RAIL_HEIGHT * 0.5, rail_z)),
 			Vector3(TABLE_LEN, TABLE_RAIL_HEIGHT, TABLE_RAIL_THICKNESS),
 			wood_mat)
-	# End rail at uphill end so marbles can't roll off backwards.
-	_add_box(table, "RailUphill",
-		Transform3D(Basis.IDENTITY, Vector3(-TABLE_LEN * 0.5 - TABLE_RAIL_THICKNESS * 0.5, TABLE_RAIL_HEIGHT * 0.5, 0)),
-		Vector3(TABLE_RAIL_THICKNESS, TABLE_RAIL_HEIGHT, TABLE_WIDTH + 2.0 * TABLE_RAIL_THICKNESS),
-		wood_mat)
+	# (Old uphill end-rail removed: in vertical orientation it would become a
+	# ceiling above the spawn column, trapping the SpawnRail-staggered marbles.
+	# Marbles drop into play under gravity so no backward-roll guard is needed.)
+
+	# Front cover — collision-only (no mesh) at old +Y = 3.0 above the felt.
+	# After the root rotation, this slab sits 3 m in front of the back wall
+	# along world +Z, catching marbles that would otherwise bounce off chips
+	# toward the camera and drift out of the play volume.
+	var front_coll := CollisionShape3D.new()
+	front_coll.name = "FrontCover_shape"
+	var front_box := BoxShape3D.new()
+	front_box.size = Vector3(TABLE_LEN, 0.2, TABLE_WIDTH)
+	front_coll.shape = front_box
+	front_coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, 3.0, 0))
+	table.add_child(front_coll)
 
 # ─── Chip stacks ─────────────────────────────────────────────────────────
 
@@ -504,7 +553,8 @@ func _apply_pin_pose(i: int, t: float) -> void:
 	var w: float = TAU / float(PIN_PERIOD_TICKS)
 	var y: float = PIN_BASE_Y + PIN_AMPLITUDE * 0.5 * (1.0 + sin(w * t + phase))
 	var local_pos := Vector3(x, y, PIN_Z)
-	pin.global_transform = Transform3D(_tilt_basis, _tilt_basis * local_pos)
+	# Local transform so root rotation propagates via parent.
+	pin.transform = Transform3D(_tilt_basis, _tilt_basis * local_pos)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -536,42 +586,49 @@ func _add_box(parent: Node, node_name: String, tx: Transform3D, size: Vector3, m
 # ─── Track API overrides ─────────────────────────────────────────────────
 
 func spawn_points() -> Array:
-	# 24 points (6×4 grid) above the uphill end of the table. SpawnRail adds a
-	# world-Y stagger so marbles drop in sequence rather than overlapping.
+	# 24 points (6×4 grid) above the uphill end of the table in LOCAL coords;
+	# we apply _root_transform to convert to world so they match where the
+	# rotated geometry actually sits. SpawnRail then adds a world-Y stagger
+	# so marbles drop in sequence under gravity (which now aligns with the
+	# track's race direction post-rotation).
+	_ensure_root_transform()
 	var points: Array = []
 	for r in range(SPAWN_GRID_ROWS):
 		for c in range(SPAWN_GRID_COLS):
 			var fx: float = float(c) / float(SPAWN_GRID_COLS - 1) - 0.5
 			var fz: float = float(r) / float(SPAWN_GRID_ROWS - 1) - 0.5
-			points.append(Vector3(SPAWN_X + fx * SPAWN_SPREAD_X, SPAWN_Y, fz * SPAWN_SPREAD_Z))
+			var local := Vector3(SPAWN_X + fx * SPAWN_SPREAD_X, SPAWN_Y, fz * SPAWN_SPREAD_Z)
+			points.append(_root_transform * local)
 	return points
 
 func finish_area_transform() -> Transform3D:
-	# Place the finish slab in the tilted table frame at +X end.
+	# Local transform → world via _root_transform so the FinishLine Area3D
+	# aligns with the rotated finish slab.
+	_ensure_root_transform()
 	var local := Vector3(FINISH_X, FINISH_BOX_SIZE.y * 0.5, 0)
-	return Transform3D(_tilt_basis, _tilt_basis * local)
+	var local_tx := Transform3D(_tilt_basis, _tilt_basis * local)
+	return _root_transform * local_tx
 
 func finish_area_size() -> Vector3:
 	return FINISH_BOX_SIZE
 
 func camera_bounds() -> AABB:
-	# v2 table extends from x=-45 to x=+45; finish is just inside the +X
-	# end. Y max accounts for SpawnRail's ~3 m drop-column above SPAWN_Y.
-	var min_v := Vector3(-TABLE_LEN * 0.5 - 2.0, -3.0, -TABLE_WIDTH * 0.5 - 2.0)
-	var max_v := Vector3(TABLE_LEN * 0.5 + 2.0, SPAWN_Y + 5.0, TABLE_WIDTH * 0.5 + 2.0)
+	# Vertical play volume after the root rotation: width ~16 m along world X,
+	# height ~90 m along world Y centred at ROOT_OFFSET_Y, depth ~3 m along
+	# world Z.
+	var half_h: float = TABLE_LEN * 0.5 + 5.0
+	var min_v := Vector3(-TABLE_WIDTH * 0.5 - 2.0, ROOT_OFFSET_Y - half_h, -3.0)
+	var max_v := Vector3(TABLE_WIDTH * 0.5 + 2.0, ROOT_OFFSET_Y + half_h, 4.0)
 	return AABB(min_v, max_v - min_v)
 
 func camera_pose() -> Dictionary:
-	# 90 m × 16 m table is too elongated for the AABB-fitting default —
-	# that formula puts the camera 54 m back to fit the X extent at 16:9
-	# aspect, which drains the "frontal" feel. Instead: position the
-	# camera close (30 m back) just above eye level (6 m up), centered
-	# on the table, with a wide 80° FOV so the entire ±45 m length still
-	# fits in frame while feeling like a proper side-of-the-pit shot.
+	# Frontal vertical view: camera in front of the back wall (+Z), centred
+	# horizontally and at the vertical midpoint of the play volume. Wide
+	# enough FOV that the full 90 m drop fits in frame at this distance.
 	return {
-		"position": Vector3(0, 6, 30),
-		"target": Vector3(0, 3, 0),
-		"fov": 80.0,
+		"position": Vector3(0, ROOT_OFFSET_Y, 70),
+		"target": Vector3(0, ROOT_OFFSET_Y, 0),
+		"fov": 70.0,
 	}
 
 func environment_overrides() -> Dictionary:
