@@ -4,7 +4,15 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M6.** Casino-game track library + polish; master plan in [docs/m6-tracks.md](docs/m6-tracks.md). **M6.0–M6.7 all landed 2026-04-26** — five casino tracks (RAMP=0 stays, plus ROULETTE/CRAPS/POKER/SLOTS/PLINKO at 1–5), per-player free-cam in the Web client, mood lighting per track. Next: smoke-test the new tracks against headless Godot, tune timing per track, write per-track post-build notes from playtest data.
+**M10 done (2026-04-28)** — production scaffolding for rgsd (auth, observability, graceful shutdown, deployment doc).
+
+The "vero prodotto" four-block roadmap is now complete:
+- **M7** Visual + UI — PBR materials, ACES tonemap, bloom, SSAO, per-track environments + sky shader (onion), HUD overlay, marble trails + name labels + lead glow, winner reveal confetti, audio scaffolding.
+- **M8** RTP / fairness tooling — Python analyzer over the replay store, RTP smoke harness, [docs/rtp-fairness.md](docs/rtp-fairness.md).
+- **M9** RGS integration scaffolding — `server/rgs` (Wallet + Session + Manager + HTTP), 11 tests, `rgsd` binary, [docs/rgs-integration.md](docs/rgs-integration.md).
+- **M10** Production scaffolding — `server/middleware` (request id, logging, recovery, HMAC), `server/metrics` (Counter/Histogram + Prometheus exporter), 12-factor flags + env vars, graceful shutdown, [docs/deployment.md](docs/deployment.md).
+
+Next natural moves (not started): real-wallet client to replace `MockWallet`, distributed-deployment coordination (round_id collisions, track-rotation state, replay-store ownership), Postgres-backed session storage, multi-round concurrency, and certification readiness (months of regulator work). See [docs/deployment.md §Open operational items](docs/deployment.md) for the prioritised list.
 
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
