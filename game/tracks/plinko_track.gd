@@ -58,38 +58,65 @@ const PEG_BOUNCE := 0.10               # very low: marbles roll-and-slide rather
 
 # Section 1 (top of field) — sparse, sets rhythm.
 const SECTION1_TOP_Y := FIELD_TOP_Y - 1.0
-const SECTION1_ROWS := 12
+const SECTION1_ROWS := 10
 const SECTION1_ROW_SPACING := 1.0
 const SECTION1_COL_SPACING := 1.4
 
-# Section 2 (middle) — main deflection zone, dense + tight.
-const SECTION2_TOP_Y := SECTION1_TOP_Y - SECTION1_ROWS * SECTION1_ROW_SPACING - 3.5
-const SECTION2_ROWS := 22
+# ─── Serpentine zone (between SECTION1 and SECTION2) ─────────────────────
+# Closed-U corridor with 4 alternating-direction lanes; each lane has a
+# tilted floor that funnels marbles to one end, where they fall through a
+# drop hole onto the next lane. A single kinematic paddle bar spins inside
+# each lane as a moving obstacle. Replaces the old spinner-zone gaps.
+#
+# Marble path: top of S1 → Lane 1 (rolls +X) → Lane 2 (rolls -X) → Lane 3
+# (rolls +X) → Lane 4 (rolls -X) → drops into S2.
+const LANE_HEIGHT := 3.5            # vertical spacing between lane floors
+const LANE_TILT_DEG := 5.0
+const LANE_FLOOR_LEN := 14.0        # x-extent of each lane's floor
+const LANE_FLOOR_THICKNESS := 0.25
+const LANE_FRICTION := 0.55
+const LANE_BOUNCE := 0.15
+# A 2.0m wide drop hole at each lane's downhill end. Floor extends from
+# x=-LANE_HALF to (LANE_HALF - DROP_HOLE_W) on +X-flow lanes; mirrored
+# on -X-flow lanes. With LANE_HALF=8.0 + 0 margin, hole sits at x=+6 to
+# +8 on lanes 1,3 and at x=-8 to -6 on lanes 2,4.
+const LANE_HALF := 8.0
+const LANE_DROP_HOLE_W := 2.0
+
+# Lane floor Y positions (top to bottom). LANE1_FLOOR_Y is the floor's
+# centreline at its mid-X point — actual surface tilts ±0.7 m around it.
+const LANE1_FLOOR_Y := SECTION1_TOP_Y - SECTION1_ROWS * SECTION1_ROW_SPACING - 2.0
+const LANE2_FLOOR_Y := LANE1_FLOOR_Y - LANE_HEIGHT
+const LANE3_FLOOR_Y := LANE2_FLOOR_Y - LANE_HEIGHT
+const LANE4_FLOOR_Y := LANE3_FLOOR_Y - LANE_HEIGHT
+
+# Section 2 (middle) — main deflection zone, dense + tight. Now sits below
+# the serpentine.
+const SECTION2_TOP_Y := LANE4_FLOOR_Y - 2.5
+const SECTION2_ROWS := 16
 const SECTION2_ROW_SPACING := 0.95
 const SECTION2_COL_SPACING := 1.3
 
 # Section 3 (bottom) — funnel toward slot row.
-const SECTION3_TOP_Y := SECTION2_TOP_Y - SECTION2_ROWS * SECTION2_ROW_SPACING - 3.5
-const SECTION3_ROWS := 12
+const SECTION3_TOP_Y := SECTION2_TOP_Y - SECTION2_ROWS * SECTION2_ROW_SPACING - 1.0
+const SECTION3_ROWS := 10
 const SECTION3_ROW_SPACING := 0.9
 const SECTION3_COL_SPACING := 1.3
 
-# ─── Spinning paddle bars (kinematic obstacles between peg sections) ─────
-# Each bar is a thin elongated AnimatableBody3D rotating around world Z so
-# marbles falling on its top edge are flung sideways before continuing
-# down. Two zones, two bars each.
-const SPINNER_BAR_LEN := 6.0
-const SPINNER_BAR_THICKNESS := 0.25
+# ─── Spinning paddle bars (one per serpentine lane) ──────────────────────
+# Kinematic AnimatableBody3D pivoting around world Z. Length is bounded
+# by LANE_HEIGHT - some margin so when the paddle is vertical it doesn't
+# punch through floor or ceiling. 2.4 m fits the 3.5 m clearance.
+const SPINNER_BAR_LEN := 1.0     # short paddles that don't span the lane height —
+                                  # avoid trapping marbles between blade tip and floor
+const SPINNER_BAR_THICKNESS := 0.20
 const SPINNER_FRICTION := 0.20
 const SPINNER_BOUNCE := 0.55
-# Y centre per bar; X offset per bar (alternating sides).
-const SPINNER_ZONE1_Y := SECTION1_TOP_Y - SECTION1_ROWS * SECTION1_ROW_SPACING - 1.7
-const SPINNER_ZONE2_Y := SECTION2_TOP_Y - SECTION2_ROWS * SECTION2_ROW_SPACING - 1.7
-# Two bars per zone, offset on X so marbles can't slip down a single column.
-const SPINNER_X_OFFSET := 4.0
-# Angular velocities (rad/tick at 60Hz). Slow enough to read, fast enough
-# to noticeably push marbles around.
-const SPINNER_W := [0.040, -0.045, 0.038, -0.042]
+# Angular velocities per lane (rad/tick at 60 Hz). Slow enough that the
+# paddles don't punt marbles back uphill — the serpentine is the dominant
+# slowdown, paddles are decorative-with-occasional-impact. ~6-10 s per
+# revolution.
+const SPINNER_W := [0.010, -0.012, 0.011, -0.009]
 
 # ─── Slot row (bottom catchers) ──────────────────────────────────────────
 const SLOT_COUNT := 9
@@ -122,6 +149,7 @@ var _peg_mat: PhysicsMaterial = null
 var _wall_mat: PhysicsMaterial = null
 var _slot_mat: PhysicsMaterial = null
 var _spinner_mat: PhysicsMaterial = null
+var _lane_mat: PhysicsMaterial = null
 
 # Kinematic spinner state
 var _spinners: Array[AnimatableBody3D] = []
@@ -133,6 +161,7 @@ func _ready() -> void:
 	_build_outer_walls()
 	_build_hopper()
 	_build_peg_forest()
+	_build_serpentine()
 	_build_spinners()
 	_build_slot_row()
 	_build_mood_light()
@@ -180,6 +209,10 @@ func _init_materials() -> void:
 	_spinner_mat = PhysicsMaterial.new()
 	_spinner_mat.friction = SPINNER_FRICTION
 	_spinner_mat.bounce = SPINNER_BOUNCE
+
+	_lane_mat = PhysicsMaterial.new()
+	_lane_mat.friction = LANE_FRICTION
+	_lane_mat.bounce = LANE_BOUNCE
 
 # ─── Outer frame ─────────────────────────────────────────────────────────
 
@@ -328,7 +361,56 @@ func _build_peg_section(parent: Node, peg_mat: StandardMaterial3D, tag: String, 
 			mesh.transform = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(90.0)), Vector3(x, y, 0))
 			parent.add_child(mesh)
 
-# ─── Spinning paddle bars (kinematic, deterministic) ─────────────────────
+# ─── Serpentine corridor (4 alternating-direction lanes) ─────────────────
+
+# Per-lane direction: +1 = lane flows toward +X (downhill +X), -1 = flows -X.
+# Lanes 1 and 3 flow +X; lanes 2 and 4 flow -X. The drop hole sits at the
+# downhill end so marbles always exit at the lane's low side.
+const _LANE_DIRS := [1, -1, 1, -1]
+const _LANE_FLOOR_YS := [LANE1_FLOOR_Y, LANE2_FLOOR_Y, LANE3_FLOOR_Y, LANE4_FLOOR_Y]
+
+func _build_serpentine() -> void:
+	var floor_mat := StandardMaterial3D.new()
+	floor_mat.albedo_color = Color(0.18, 0.05, 0.20)
+	floor_mat.metallic = 0.30
+	floor_mat.roughness = 0.45
+	floor_mat.emission_enabled = true
+	floor_mat.emission = Color(0.95, 0.40, 0.95)
+	floor_mat.emission_energy_multiplier = 0.10
+
+	var corridor := StaticBody3D.new()
+	corridor.name = "Serpentine"
+	corridor.physics_material_override = _lane_mat
+	add_child(corridor)
+
+	for i in range(4):
+		var dir: int = _LANE_DIRS[i]
+		var lane_y: float = _LANE_FLOOR_YS[i]
+		# Floor: spans LANE_FLOOR_LEN m along X, with the drop hole at the
+		# downhill end. For a +X-flow lane, floor centre x is shifted -1 m
+		# so the floor covers [-8, +6] and the hole sits at [+6, +8].
+		# Mirror for -X-flow lanes.
+		var floor_centre_x: float = -float(dir) * (LANE_DROP_HOLE_W * 0.5)
+		var floor_size := Vector3(LANE_FLOOR_LEN, LANE_FLOOR_THICKNESS, COURSE_DEPTH + 0.4)
+		# Tilt around Z. +X-flow: rotate -tilt around Z (so +X end sinks).
+		# -X-flow: rotate +tilt (so -X end sinks).
+		var lane_basis := Basis(Vector3(0, 0, 1), float(-dir) * deg_to_rad(LANE_TILT_DEG))
+		_add_box(corridor, "LaneFloor_%d" % i,
+			Transform3D(lane_basis, Vector3(floor_centre_x, lane_y, 0)),
+			floor_size,
+			floor_mat)
+
+		# Closed-end wall at the uphill side. Sits 2 m above the lane's
+		# floor surface so a falling marble that bounces high doesn't
+		# pop over the wall back into the previous lane's drop column.
+		var closed_x: float = -float(dir) * LANE_HALF
+		var wall_h: float = LANE_HEIGHT - LANE_FLOOR_THICKNESS
+		_add_box(corridor, "LaneClosedWall_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(closed_x, lane_y + wall_h * 0.5, 0)),
+			Vector3(0.3, wall_h, COURSE_DEPTH + 0.4),
+			floor_mat)
+
+# ─── Spinning paddle bars (one per serpentine lane) ──────────────────────
 
 func _build_spinners() -> void:
 	var bar_mat := StandardMaterial3D.new()
@@ -339,13 +421,14 @@ func _build_spinners() -> void:
 	bar_mat.emission = Color(1.0, 0.55, 0.95)
 	bar_mat.emission_energy_multiplier = 0.55
 
-	# Two bars per zone, four bars total; centers chosen so adjacent bars
-	# can't all align at once (alternating X offsets).
+	# One paddle per lane, pivot near the lane's mid-X with vertical
+	# clearance above the floor surface so the paddle's sweep stays inside
+	# the lane's vertical envelope.
 	var configs := [
-		{"y": SPINNER_ZONE1_Y, "x": -SPINNER_X_OFFSET},
-		{"y": SPINNER_ZONE1_Y, "x":  SPINNER_X_OFFSET},
-		{"y": SPINNER_ZONE2_Y, "x": -SPINNER_X_OFFSET},
-		{"y": SPINNER_ZONE2_Y, "x":  SPINNER_X_OFFSET},
+		{"y": LANE1_FLOOR_Y + 1.4, "x": 0.0},
+		{"y": LANE2_FLOOR_Y + 1.4, "x": 0.0},
+		{"y": LANE3_FLOOR_Y + 1.4, "x": 0.0},
+		{"y": LANE4_FLOOR_Y + 1.4, "x": 0.0},
 	]
 	for i in range(configs.size()):
 		var pivot := Vector3(float(configs[i]["x"]), float(configs[i]["y"]), 0.0)
