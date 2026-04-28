@@ -52,13 +52,29 @@ func _ready() -> void:
 	fov = 60.0
 	_bb = track.camera_bounds()
 	_target = _bb.get_center()
-	# Frame the whole bounds at sensible defaults — match FixedCamera's logic
-	# (FOV-aware fit at 16:9 aspect, with a small margin).
-	var extent := _bb.size
-	var aspect := 16.0 / 9.0
-	var dist_v: float = (extent.y * 0.5) / 0.577
-	var dist_h: float = (maxf(extent.x, extent.z) * 0.5) / (0.577 * aspect)
-	_distance = maxf(dist_v, dist_h) * 1.10 + 4.0
+
+	# Tracks may supply an explicit camera_pose() override; convert it to
+	# (target, yaw, pitch, distance) so the orbit controls still work
+	# from a sensible starting view.
+	var pose: Dictionary = track.camera_pose()
+	if not pose.is_empty():
+		var p: Vector3 = pose.get("position", Vector3.ZERO) as Vector3
+		var t: Vector3 = pose.get("target", Vector3.ZERO) as Vector3
+		if pose.has("fov"):
+			fov = float(pose["fov"])
+		_target = t
+		var offset := p - t
+		_distance = offset.length()
+		var horiz: float = sqrt(offset.x * offset.x + offset.z * offset.z)
+		_yaw = atan2(offset.x, offset.z)
+		_pitch = atan2(offset.y, horiz)
+	else:
+		# Default: AABB-fit FOV-aware framing — match FixedCamera's logic.
+		var extent := _bb.size
+		var aspect := 16.0 / 9.0
+		var dist_v: float = (extent.y * 0.5) / 0.577
+		var dist_h: float = (maxf(extent.x, extent.z) * 0.5) / (0.577 * aspect)
+		_distance = maxf(dist_v, dist_h) * 1.10 + 4.0
 	_min_dist = max(2.0, _distance * 0.2)
 	_max_dist = _distance * 3.0 + 20.0
 	_default_target = _target

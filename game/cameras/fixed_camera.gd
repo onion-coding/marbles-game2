@@ -6,9 +6,24 @@ extends Camera3D
 var track: Track
 
 func _ready() -> void:
-	# Compute a shot that frames the whole AABB tightly. Pulls back enough to
-	# fit the largest dimension at the camera's vertical FOV, with a small
-	# margin and a modest Y lift for high-angle feel.
+	current = true
+	fov = 60.0
+
+	# Tracks may supply an explicit camera_pose() — useful when the AABB-
+	# fitting default produces an overly far / top-down framing (e.g. very
+	# long horizontal tables where dist gets dominated by the X extent).
+	var pose: Dictionary = track.camera_pose()
+	if not pose.is_empty():
+		position = pose.get("position", Vector3.ZERO) as Vector3
+		var target: Vector3 = pose.get("target", Vector3.ZERO) as Vector3
+		if pose.has("fov"):
+			fov = float(pose["fov"])
+		look_at(target, Vector3.UP)
+		return
+
+	# Default: fit the whole AABB. Pulls back enough to fit the largest
+	# dimension at the camera's vertical FOV, with a small margin and a
+	# modest Y lift for high-angle feel.
 	var bb := track.camera_bounds()
 	var center := bb.get_center()
 	var extent := bb.size
@@ -22,5 +37,3 @@ func _ready() -> void:
 	var lift: float = extent.y * 0.20
 	position = center + Vector3(0, lift, dist)
 	look_at(center, Vector3.UP)
-	current = true
-	fov = 60.0

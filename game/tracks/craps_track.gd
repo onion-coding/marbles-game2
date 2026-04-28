@@ -555,11 +555,24 @@ func finish_area_size() -> Vector3:
 	return FINISH_BOX_SIZE
 
 func camera_bounds() -> AABB:
-	# v2 table extends from x=-30 to x=+30; finish is just inside the +X
+	# v2 table extends from x=-45 to x=+45; finish is just inside the +X
 	# end. Y max accounts for SpawnRail's ~3 m drop-column above SPAWN_Y.
 	var min_v := Vector3(-TABLE_LEN * 0.5 - 2.0, -3.0, -TABLE_WIDTH * 0.5 - 2.0)
 	var max_v := Vector3(TABLE_LEN * 0.5 + 2.0, SPAWN_Y + 5.0, TABLE_WIDTH * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
+
+func camera_pose() -> Dictionary:
+	# 90 m × 16 m table is too elongated for the AABB-fitting default —
+	# that formula puts the camera 54 m back to fit the X extent at 16:9
+	# aspect, which drains the "frontal" feel. Instead: position the
+	# camera close (30 m back) just above eye level (6 m up), centered
+	# on the table, with a wide 80° FOV so the entire ±45 m length still
+	# fits in frame while feeling like a proper side-of-the-pit shot.
+	return {
+		"position": Vector3(0, 6, 30),
+		"target": Vector3(0, 3, 0),
+		"fov": 80.0,
+	}
 
 func environment_overrides() -> Dictionary:
 	# Sky stays the daylight default (onion's cloud shader); per-track

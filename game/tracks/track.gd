@@ -79,6 +79,18 @@ func environment_overrides() -> Dictionary:
 func audio_overrides() -> Dictionary:
 	return {}
 
+# Optional explicit camera pose. When non-empty, the FixedCamera and
+# FreeCamera classes use these values directly instead of the AABB-derived
+# defaults. Useful for tracks where the bounding-box framing produces an
+# overly distant or top-down view (e.g. very long horizontal tables).
+#
+# Recognised keys:
+#   position : Vector3 — camera world position
+#   target   : Vector3 — point the camera looks at
+#   fov      : float   — vertical FOV in degrees (default 60.0)
+func camera_pose() -> Dictionary:
+	return {}
+
 # Helper for subclasses: hash (server_seed || round_id || tag) → 32 bytes.
 # Use to derive deterministic-but-varying obstacle parameters (dice initial
 # velocity, peg row offsets, etc.) that are stable per round.
