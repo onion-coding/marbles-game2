@@ -77,16 +77,32 @@ static func build_environment(overrides: Dictionary = {}) -> WorldEnvironment:
 	env.adjustment_contrast = 1.05
 	env.adjustment_saturation = 1.10
 
-	# Apply per-track overrides on top of the defaults. Mutating the existing
-	# Sky / Environment is fine because each track gets its own copy.
+	# Apply per-track overrides on top of the defaults. The sky is now a
+	# ShaderMaterial (sky_clouds.gdshader) so colour overrides go through
+	# set_shader_parameter rather than being assigned as native properties.
+	# Old-format keys (sky_top / sky_horizon / ground_top / ground_bottom)
+	# are mapped onto the shader's uniforms (zenith_color / horizon_color /
+	# ground_color) so existing per-track overrides keep working without a
+	# rewrite. Both ground_top and ground_bottom fold into the shader's
+	# single ground_color (ground_bottom wins if both are present).
 	if overrides.has("sky_top"):
-		sky_mat.sky_top_color = overrides["sky_top"]
+		sky_mat.set_shader_parameter("zenith_color", overrides["sky_top"])
 	if overrides.has("sky_horizon"):
-		sky_mat.sky_horizon_color = overrides["sky_horizon"]
+		sky_mat.set_shader_parameter("horizon_color", overrides["sky_horizon"])
 	if overrides.has("ground_top"):
-		sky_mat.ground_horizon_color = overrides["ground_top"]
+		sky_mat.set_shader_parameter("ground_color", overrides["ground_top"])
 	if overrides.has("ground_bottom"):
-		sky_mat.ground_bottom_color = overrides["ground_bottom"]
+		sky_mat.set_shader_parameter("ground_color", overrides["ground_bottom"])
+	# New-format direct shader uniform pass-through, for tracks that want
+	# bespoke weather. Recognises every uniform exposed by the cloud shader.
+	for key in [
+		"zenith_color", "horizon_color", "ground_color",
+		"cloud_color", "cloud_shadow_color",
+		"cloud_coverage", "cloud_softness", "cloud_scale",
+	]:
+		if overrides.has(key):
+			sky_mat.set_shader_parameter(key, overrides[key])
+
 	if overrides.has("ambient_energy"):
 		env.ambient_light_energy = overrides["ambient_energy"]
 	if overrides.has("fog_color"):
