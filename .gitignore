@@ -32,3 +32,6 @@ game/.godot/
 
 # Local scratch — smoke-test specs/replays/statuses
 tmp/
+
+# Go binaries from server/ workspace
+/server/*.exe
