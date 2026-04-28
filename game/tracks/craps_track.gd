@@ -51,35 +51,70 @@ const SPAWN_SPREAD_X := 1.5
 const SPAWN_SPREAD_Z := 9.0
 
 # ─── Chip-stack obstacles ─────────────────────────────────────────────────
-# Nine rows of chip-stacks across the now-longer table; each row breaks the
-# line marbles would otherwise follow, forcing a slalom that adds real time
-# to each crossing.
+# v2-split layout: chip rows split across three zones —
+#   1. Pre-split (x ≤ -16): full-width chip rows (entry slalom)
+#   2. +Z channel only (-12 ≤ x ≤ +8): chips on the upper half of the table.
+#      The lower half is the "pin" channel (kinematic pistons, see PIN_*).
+#   3. Post-funnel (x ≥ +18): full-width again, after the channels merge.
 const CHIP_RADIUS := 0.45
 const CHIP_HEIGHT := 1.6
-const CHIP_ROW_X := [-36.0, -32.0, -28.0, -24.0, -20.0, -16.0, -12.0, -8.0, -4.0, 0.0, 4.0, 8.0, 12.0, 16.0]
+const CHIP_ROW_X := [
+	-36.0, -32.0, -28.0, -24.0, -20.0, -16.0,   # pre-split full-width (6 rows)
+	-10.0,  -4.0,   2.0,   8.0,                 # +Z channel only (4 rows)
+	 18.0,  22.0,  26.0,                         # post-funnel full-width (3 rows)
+]
 const CHIP_ROW_OFFSETS := [
+	# pre-split full-width
 	[-6.0, -3.0,  0.0,  3.0,  6.0],
 	[-4.5, -1.5,  1.5,  4.5,  7.0],
 	[-6.5, -3.5, -0.5,  2.5,  5.5],
 	[-5.0, -2.0,  1.0,  4.0,  7.0],
 	[-6.0, -3.0,  0.0,  3.0,  6.0],
 	[-7.0, -4.0, -1.0,  2.0,  5.0],
-	[-5.5, -2.5,  0.5,  3.5,  6.5],
-	[-4.5, -1.5,  1.5,  4.5,  7.0],
-	[-6.0, -3.0,  0.0,  3.0,  6.0],
-	[-3.0,  0.0,  3.0,  6.0,  7.5],
-	[-7.0, -4.0, -1.0,  2.0,  5.0],
+	# +Z channel only (z > 0; pins occupy the mirror -Z channel)
+	[ 1.5,  3.5,  5.5,  7.0],
+	[ 2.5,  4.5,  6.5],
+	[ 1.5,  4.0,  6.5],
+	[ 2.0,  4.5,  7.0],
+	# post-funnel full-width
 	[-5.5, -2.5,  0.5,  3.5,  6.5],
 	[-4.5, -1.5,  1.5,  4.5,  7.0],
 	[-6.0, -3.0,  0.0,  3.0,  6.0],
 ]
+
+# ─── Split corridor (Y-fork median + funnel merge) ────────────────────────
+# A wood median wall splits the table into two parallel channels in the
+# middle of the course; +Z carries chips, -Z carries kinematic pin
+# pistons. After the median ends, the channels merge naturally as marbles
+# continue rolling +X (no active funnel — the open table beyond x=FUNNEL_END_X
+# lets +Z and -Z marbles re-mingle by the time they reach the post-funnel
+# chip rows).
+const SPLIT_ENTRY_X := -14.0       # median wall starts here (uphill end)
+const FUNNEL_START_X := 10.0       # median wall ends here; channels merge
+const MEDIAN_WALL_HEIGHT := 1.8    # 3× marble diameter — can't roll over
+const MEDIAN_WALL_THICKNESS := 0.4
+
+# ─── Pin obstacles (kinematic pistons in the -Z channel) ─────────────────
+# Four boxy pistons rise and fall on a sin clock, period 90 ticks (1.5 s
+# at 60 Hz). Each pin's phase is seeded from server_seed so all four
+# don't move in sync — round to round, the timing of "blocker is up
+# right when a marble approaches" varies per round, adding variance.
+const PIN_COUNT := 4
+const PIN_X_POSITIONS := [-10.0, -4.0, 2.0, 8.0]   # mirror of +Z chip x-positions
+const PIN_Z := -4.0                                  # mid -Z channel
+const PIN_BASE_Y := -0.9                             # centre y at fully-retracted (pin top just below felt)
+const PIN_AMPLITUDE := 1.7                           # vertical sweep so pin top reaches +1.6 above felt at peak
+const PIN_PERIOD_TICKS := 90
+const PIN_SIZE := Vector3(0.7, 1.6, 0.7)
+const PIN_FRICTION := 0.45
+const PIN_BOUNCE := 0.30
 
 # ─── Pyramid rubber back wall ─────────────────────────────────────────────
 # A jagged sawtooth row before the finish; deflects marbles unpredictably.
 # Tooth count chosen so the gap between adjacent teeth is wider than a
 # marble (radius 0.3 → 0.6 diameter). With TABLE_WIDTH=14 and 5 teeth, gaps
 # average 14/5 - tooth_diagonal = 2.8 - 1.7 = 1.1m: marbles thread through.
-const PYRAMID_X := 35.0
+const PYRAMID_X := 30.0
 const PYRAMID_TOOTH_COUNT := 6
 const PYRAMID_TOOTH_HALF_WIDTH := 0.55
 const PYRAMID_TOOTH_HEIGHT := 1.2
@@ -94,10 +129,13 @@ const PYRAMID_BOUNCE := 0.55
 # Tumbling rotation is also closed-form, three independent angles each tick.
 # Centre Y is held just above the table felt at that x, so the die slides on
 # the felt rather than floating.
-const DICE_COUNT := 5              # 5 dice scattered across the long table
+const DICE_COUNT := 3              # 3 dice in the pre-split zone only —
+                                    # mid-table is the split corridor (median + pins),
+                                    # post-funnel is chip rows; dice belong to the entry
+                                    # phase where they tumble across the full felt width.
 const DICE_HALF_EXTENT := 0.6     # half-edge of the cube (so edge length 1.2 m)
 const DICE_PATH_HALF_WIDTH := 6.5  # |z| amplitude
-const DICE_PATH_X_AMP := 6.0       # along-table wiggle
+const DICE_PATH_X_AMP := 5.0       # along-table wiggle (smaller now; dice stay in pre-split)
 # Centre frequency around which per-die frequencies cluster (rad / tick).
 # At 60 Hz physics, w = 0.06 → period ~ 105 ticks ~ 1.75s. Low-frequency
 # enough to be readable, high-frequency enough to vary.
@@ -122,10 +160,15 @@ var _felt_mat: PhysicsMaterial = null
 var _wood_mat: PhysicsMaterial = null
 var _rubber_mat: PhysicsMaterial = null
 var _dice_mat: PhysicsMaterial = null
+var _pin_mat: PhysicsMaterial = null
 
 # Per-die motion parameters cached from server_seed.
 var _dice_bodies: Array[AnimatableBody3D] = []
 var _dice_params: Array = []   # array of dictionaries: {x0,z0,ax,az,wx,wz,px,pz, rx,ry,rz}
+
+# Per-pin sin-clock phases cached from server_seed.
+var _pins: Array[AnimatableBody3D] = []
+var _pin_phases: Array = []
 
 # Table tilt basis applied to the whole course (everything sits on the tilted
 # felt). Cached so dice motion code can use the same frame.
@@ -135,10 +178,13 @@ func _ready() -> void:
 	_init_materials()
 	_tilt_basis = Basis(Vector3(0, 0, 1), -deg_to_rad(TABLE_TILT_DEG))
 	_build_table()
+	_build_split_corridor()
 	_build_chip_stacks()
 	_build_pyramid_wall()
 	_init_dice_params()
 	_build_dice()
+	_init_pin_phases()
+	_build_pins()
 	_build_mood_light()
 
 func _build_mood_light() -> void:
@@ -160,6 +206,8 @@ func _physics_process(_delta: float) -> void:
 	_local_tick += 1
 	for i in range(_dice_bodies.size()):
 		_apply_dice_pose(i, float(_local_tick))
+	for i in range(_pins.size()):
+		_apply_pin_pose(i, float(_local_tick))
 
 func _apply_dice_pose(i: int, t: float) -> void:
 	var body: AnimatableBody3D = _dice_bodies[i]
@@ -193,6 +241,10 @@ func _init_materials() -> void:
 	_dice_mat = PhysicsMaterial.new()
 	_dice_mat.friction = DICE_FRICTION
 	_dice_mat.bounce = DICE_BOUNCE
+
+	_pin_mat = PhysicsMaterial.new()
+	_pin_mat.friction = PIN_FRICTION
+	_pin_mat.bounce = PIN_BOUNCE
 
 # ─── Table (felt + rails) ────────────────────────────────────────────────
 
@@ -305,7 +357,11 @@ func _init_dice_params() -> void:
 		# Use bytes 0–7 for spatial offsets, 8–15 for frequencies, 16–23 for
 		# phases, 24–29 for rotation rates. All values normalised to a
 		# friendly range.
-		var x0: float = (float(raw[0]) / 255.0 - 0.5) * 60.0          # ±30 m: dice cover the full 90m table
+		# v2-split: dice are constrained to the pre-split zone only
+		# (x = -34 .. -16, z = ±3). Mid-table is the split corridor (median
+		# wall + pins) — letting dice wander into it would jam them against
+		# the static median wall. Post-funnel is chip-stack territory.
+		var x0: float = -25.0 + (float(raw[0]) / 255.0 - 0.5) * 16.0   # x in ~[-33, -17]
 		var z0: float = (float(raw[1]) / 255.0 - 0.5) * 6.0           # ±3 m
 		var ax: float = DICE_PATH_X_AMP * (0.6 + float(raw[2]) / 511.0)
 		var az: float = DICE_PATH_HALF_WIDTH * (0.6 + float(raw[3]) / 511.0)
@@ -356,6 +412,99 @@ func _build_dice() -> void:
 		_dice_bodies.append(body)
 		# Snap to tick-0 pose so the first frame doesn't show dice at the origin.
 		_apply_dice_pose(i, 0.0)
+
+# ─── Split corridor (median wall) ────────────────────────────────────────
+
+func _build_split_corridor() -> void:
+	var wood_mat := StandardMaterial3D.new()
+	wood_mat.albedo_color = COLOR_WOOD
+	wood_mat.roughness = 0.7
+
+	var brass_accent := StandardMaterial3D.new()
+	brass_accent.albedo_color = Color(0.85, 0.72, 0.25)
+	brass_accent.metallic = 0.85
+	brass_accent.metallic_specular = 0.85
+	brass_accent.roughness = 0.30
+	brass_accent.emission_enabled = true
+	brass_accent.emission = Color(0.85, 0.72, 0.25)
+	brass_accent.emission_energy_multiplier = 0.30
+
+	var split := StaticBody3D.new()
+	split.name = "SplitCorridor"
+	split.physics_material_override = _wood_mat
+	split.transform = Transform3D(_tilt_basis, Vector3.ZERO)
+	add_child(split)
+
+	# Median wall along z=0 — divides the mid-table into +Z (chips) and
+	# -Z (pins) channels. Endpoints are SPLIT_ENTRY_X (uphill) and
+	# FUNNEL_START_X (where the channels merge again).
+	var median_len: float = FUNNEL_START_X - SPLIT_ENTRY_X
+	var median_centre_x: float = (SPLIT_ENTRY_X + FUNNEL_START_X) * 0.5
+	_add_box(split, "Median",
+		Transform3D(Basis.IDENTITY, Vector3(median_centre_x, MEDIAN_WALL_HEIGHT * 0.5, 0)),
+		Vector3(median_len, MEDIAN_WALL_HEIGHT, MEDIAN_WALL_THICKNESS),
+		wood_mat)
+
+	# Brass cap-strip on the median wall's leading edge — visual marker
+	# of the split entry, looks like a "diverter post" at the fork.
+	_add_box(split, "MedianLeadingEdge",
+		Transform3D(Basis.IDENTITY, Vector3(SPLIT_ENTRY_X, MEDIAN_WALL_HEIGHT * 0.5 + 0.2, 0)),
+		Vector3(0.6, 0.4, MEDIAN_WALL_THICKNESS + 0.2),
+		brass_accent)
+	_add_box(split, "MedianTrailingEdge",
+		Transform3D(Basis.IDENTITY, Vector3(FUNNEL_START_X, MEDIAN_WALL_HEIGHT * 0.5 + 0.2, 0)),
+		Vector3(0.6, 0.4, MEDIAN_WALL_THICKNESS + 0.2),
+		brass_accent)
+
+# ─── Pin obstacles (kinematic pistons in -Z channel) ─────────────────────
+
+func _init_pin_phases() -> void:
+	# Per-pin phase derived from server_seed so each round has a different
+	# "blocker timing" pattern — same input → same pattern, but bytes
+	# vary across rounds to keep the race interesting. Replay-stable.
+	for i in range(PIN_COUNT):
+		var raw := _hash_with_tag("pin_%d" % i)
+		_pin_phases.append(float(raw[0]) / 255.0 * TAU)
+
+func _build_pins() -> void:
+	var rubber_mat := StandardMaterial3D.new()
+	rubber_mat.albedo_color = COLOR_RUBBER
+	rubber_mat.roughness = 0.85
+	rubber_mat.emission_enabled = true
+	rubber_mat.emission = Color(0.85, 0.20, 0.20)
+	rubber_mat.emission_energy_multiplier = 0.25
+
+	for i in range(PIN_COUNT):
+		var pin := AnimatableBody3D.new()
+		pin.name = "Pin_%d" % i
+		pin.physics_material_override = _pin_mat
+		pin.sync_to_physics = true
+		add_child(pin)
+
+		var coll := CollisionShape3D.new()
+		var box := BoxShape3D.new()
+		box.size = PIN_SIZE
+		coll.shape = box
+		pin.add_child(coll)
+
+		var mesh := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = PIN_SIZE
+		mesh.mesh = bm
+		mesh.material_override = rubber_mat
+		pin.add_child(mesh)
+
+		_pins.append(pin)
+		_apply_pin_pose(i, 0.0)
+
+func _apply_pin_pose(i: int, t: float) -> void:
+	var pin: AnimatableBody3D = _pins[i]
+	var x: float = float(PIN_X_POSITIONS[i])
+	var phase: float = float(_pin_phases[i])
+	var w: float = TAU / float(PIN_PERIOD_TICKS)
+	var y: float = PIN_BASE_Y + PIN_AMPLITUDE * 0.5 * (1.0 + sin(w * t + phase))
+	var local_pos := Vector3(x, y, PIN_Z)
+	pin.global_transform = Transform3D(_tilt_basis, _tilt_basis * local_pos)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
