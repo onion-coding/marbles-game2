@@ -21,16 +21,23 @@ func _ready() -> void:
 
 	var player := PlaybackPlayer.new()
 	add_child(player)
+	player.set_track(track)
 	player.playback_finished.connect(_on_playback_finished)
 
 	var hud := HUD.new()
 	add_child(hud)
 	hud.setup(replay["header"])
+
+	var audio := AudioController.new()
+	add_child(audio)
+	audio.start_ambient(track_id, track.audio_overrides())
+
 	player.tick_advanced.connect(func(t: int) -> void:
 		hud.update_tick(t, 60.0)
 	)
 	player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
 		hud.reveal_winner(name, color)
+		audio.play_winner_jingle()
 	)
 
 	player.load_replay(replay)

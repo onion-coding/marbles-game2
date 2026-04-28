@@ -73,6 +73,12 @@ func camera_bounds() -> AABB:
 func environment_overrides() -> Dictionary:
 	return {}
 
+# Optional per-track audio asset paths. Recognised keys:
+#   ambient : String — res:// path to a looping ambient music stream
+# AudioController falls back to AMBIENT_PER_TRACK if not set.
+func audio_overrides() -> Dictionary:
+	return {}
+
 # Helper for subclasses: hash (server_seed || round_id || tag) → 32 bytes.
 # Use to derive deterministic-but-varying obstacle parameters (dice initial
 # velocity, peg row offsets, etc.) that are stable per round.

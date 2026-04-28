@@ -20,6 +20,14 @@ var _stream_done := false
 # frames (e.g. if multiple marbles cross during the race tail).
 var _winner_revealed := false
 
+# Track set by the caller for race-aware features (lead glow). Optional —
+# if null, lead glow is skipped and marbles render with their default
+# emission energy.
+var _track: Track = null
+var _current_leader_idx: int = -1
+const LEAD_GLOW_BASE := 0.45
+const LEAD_GLOW_BOOST := 1.10
+
 signal playback_finished(last_tick: int, first_marble_pos: Vector3)
 # Emitted every frame the cursor advances into a new tick — HUDs / overlays
 # use this to drive a race timer without re-implementing the lerp math.
@@ -28,6 +36,9 @@ signal tick_advanced(tick: int)
 # carries the marble-index that crossed and its color so HUD modals can
 # display the winner without re-deriving the data.
 signal winner_revealed(marble_index: int, marble_name: String, color: Color)
+
+func set_track(track: Track) -> void:
+	_track = track
 
 func load_replay(replay: Dictionary) -> void:
 	_header = replay["header"]
@@ -100,6 +111,7 @@ func _build_marbles() -> void:
 		node.material_override = mat
 		add_child(node)
 		MarbleSpawner.attach_trail(node, color)
+		MarbleSpawner.attach_name_label(node, String(m.get("name", "marble_%02d" % _marbles.size())))
 		_marbles.append(node)
 
 func _process(delta: float) -> void:
@@ -126,10 +138,16 @@ func _process(delta: float) -> void:
 		# Tail of the buffer. In file-playback this is end-of-race; in streaming
 		# it's just "next frame hasn't arrived yet" — hold unless DONE was signaled.
 		_apply_frame_state(_frames[i])
-		if not _streaming or _stream_done:
-			_finished = true
-			var last: Dictionary = _frames[_frames.size() - 1]
-			playback_finished.emit(int(last["tick"]), (last["states"][0]["pos"] as Vector3))
+	# Lead-glow refresh — runs once per cursor advance, after marble positions
+	# are set above. Skipped after the winner reveal fires (the winner's boost
+	# tween there shouldn't be overwritten by the lead glow).
+	if _track != null and not _winner_revealed:
+		_update_lead_glow()
+	# Tail-of-buffer end-of-race handling.
+	if i + 1 >= _frames.size() and (not _streaming or _stream_done):
+		_finished = true
+		var last: Dictionary = _frames[_frames.size() - 1]
+		playback_finished.emit(int(last["tick"]), (last["states"][0]["pos"] as Vector3))
 
 func _fire_winner_reveal(frame: Dictionary) -> void:
 	# Identify the "winner": the recorded frame doesn't tag which marble
@@ -168,6 +186,34 @@ func _fire_winner_reveal(frame: Dictionary) -> void:
 	if winner_idx < _marbles.size():
 		WinnerReveal.boost_winner_emission(_marbles[winner_idx], get_tree())
 	winner_revealed.emit(winner_idx, String(_header[winner_idx].get("name", "")), color)
+
+func _update_lead_glow() -> void:
+	# The "leader" is the marble whose centre is closest to the finish-line
+	# trigger. We refresh every frame; track changes are cheap because we
+	# only touch the swap-out and swap-in marble's emission energy.
+	var finish_pos: Vector3 = _track.finish_area_transform().origin
+	var best_idx := -1
+	var best_dist := INF
+	for j in range(_marbles.size()):
+		var d2: float = (_marbles[j].global_position - finish_pos).length_squared()
+		if d2 < best_dist:
+			best_dist = d2
+			best_idx = j
+	if best_idx == _current_leader_idx or best_idx < 0:
+		return
+	_set_marble_emission(_current_leader_idx, LEAD_GLOW_BASE)
+	_set_marble_emission(best_idx, LEAD_GLOW_BOOST)
+	_current_leader_idx = best_idx
+
+func _set_marble_emission(idx: int, energy: float) -> void:
+	if idx < 0 or idx >= _marbles.size():
+		return
+	var node: Node3D = _marbles[idx]
+	var mat: StandardMaterial3D = null
+	if node is MeshInstance3D:
+		mat = (node as MeshInstance3D).material_override as StandardMaterial3D
+	if mat != null:
+		mat.emission_energy_multiplier = energy
 
 func _apply_frame_state(frame: Dictionary) -> void:
 	var states: Array = frame["states"]

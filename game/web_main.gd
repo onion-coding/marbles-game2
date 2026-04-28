@@ -30,6 +30,7 @@ var _list_req: HTTPRequest
 var _bin_req: HTTPRequest
 var _player: PlaybackPlayer
 var _hud: HUD
+var _audio: AudioController
 
 func _ready() -> void:
 	# Environment is deferred until the track is known (track may pick its
@@ -53,11 +54,14 @@ func _ready() -> void:
 
 	_hud = HUD.new()
 	add_child(_hud)
+	_audio = AudioController.new()
+	add_child(_audio)
 	_player.tick_advanced.connect(func(t: int) -> void:
 		_hud.update_tick(t, 60.0)
 	)
 	_player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
 		_hud.reveal_winner(name, color)
+		_audio.play_winner_jingle()
 	)
 
 	print("WEB_CLIENT: fetching round list from %s/rounds" % _api_base)
@@ -105,11 +109,13 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 	track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
 	add_child(track)
 	_build_environment(track)
+	_audio.start_ambient(track_id, track.audio_overrides())
 	var cam := FreeCamera.new()
 	cam.track = track
 	add_child(cam)
 	print("WEB_CLIENT: playing %d frames for %d marbles (track=%s)" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size(), TrackRegistry.name_of(track_id)])
 	_hud.setup(replay["header"])
+	_player.set_track(track)
 	_player.load_replay(replay)
 
 func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:

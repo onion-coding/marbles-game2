@@ -49,7 +49,27 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 	marble.physics_material_override = PhysicsMaterials.marble()
 	marble.position = rail.slot_position(slot, drop_order)
 	attach_trail(marble, color)
+	attach_name_label(marble, marble.name)
 	return marble
+
+# Floating name label that always faces the camera. The label is parented
+# to the marble so it inherits position automatically; billboard mode
+# means rotation never matters. Public so PlaybackPlayer can attach the
+# same label to its visual-only marble nodes.
+static func attach_name_label(marble: Node3D, text: String) -> void:
+	var label := Label3D.new()
+	label.name = "NameLabel"
+	label.text = text
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.no_depth_test = true                              # always-on-top
+	label.fixed_size = true                                 # screen-space size
+	label.pixel_size = 0.005
+	label.font_size = 22
+	label.outline_size = 6
+	label.outline_modulate = Color(0, 0, 0, 0.85)
+	label.modulate = Color(1, 1, 1, 0.92)
+	label.position = Vector3(0, RADIUS + 0.5, 0)
+	marble.add_child(label)
 
 # Color-tinted streak that follows a marble. Pure visual; no effect on
 # physics or replay. Implemented as a GPUParticles3D child whose emitter

@@ -26,6 +26,7 @@ var _list_req: HTTPRequest
 var _player: PlaybackPlayer
 var _client: LiveStreamClient
 var _hud: HUD
+var _audio: AudioController
 var _poll_deadline_ms: int = 0
 
 func _ready() -> void:
@@ -45,11 +46,14 @@ func _ready() -> void:
 
 	_hud = HUD.new()
 	add_child(_hud)
+	_audio = AudioController.new()
+	add_child(_audio)
 	_player.tick_advanced.connect(func(t: int) -> void:
 		_hud.update_tick(t, 60.0)
 	)
 	_player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
 		_hud.reveal_winner(name, color)
+		_audio.play_winner_jingle()
 	)
 
 	_poll_deadline_ms = Time.get_ticks_msec() + int(LIVE_POLL_TIMEOUT_SEC * 1000.0)
@@ -120,11 +124,13 @@ func _on_header(header: Dictionary) -> void:
 	track.configure(int(header["round_id"]), header["server_seed"] as PackedByteArray)
 	add_child(track)
 	_build_environment(track)
+	_audio.start_ambient(track_id, track.audio_overrides())
 	var cam := FreeCamera.new()
 	cam.track = track
 	add_child(cam)
 	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])
 	_hud.setup(header["header"])
+	_player.set_track(track)
 	_player.begin_stream(header)
 
 var _tick_count: int = 0
