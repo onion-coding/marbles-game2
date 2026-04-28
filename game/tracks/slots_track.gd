@@ -104,9 +104,10 @@ const CHIP_WHEEL_POSITIONS := [
 const CHIP_WHEEL_W := [-0.040, 0.038, -0.045]
 
 # ─── Slow-motion gravity ──────────────────────────────────────────────────
-# Reduces effective gravity to ~0.30 m/s² inside the cabinet so the race
-# lands in the 40-50 s target window (stock gravity gives ~17 s).
-const SLOW_GRAVITY_ACCEL := 0.30
+# Reduces effective gravity to 2.0 m/s² inside the cabinet so the race
+# lands in the 40-50 s target window (8 reels + 3 chip wheels gate marbles
+# longer than Craps/Poker, so a higher gravity than those tracks is needed).
+const SLOW_GRAVITY_ACCEL := 2.0
 
 # ─── Internal state ──────────────────────────────────────────────────────
 var _cabinet_mat: PhysicsMaterial = null
