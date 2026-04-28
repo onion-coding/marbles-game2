@@ -19,8 +19,9 @@ extends Track
 
 const COURSE_LEN := 80.0           # X span between shoe and pot — long mini-golf course
 const COURSE_WIDTH := 14.0         # Z span
-const FELT_TILT_DEG := 3.0         # very gentle slope; chip rows + flipping cards do the
-                                    # slowing. 2-2.5° causes marbles to stall.
+const FELT_TILT_DEG := 0.0         # vertical orientation: gravity now aligns with the race
+                                    # direction post-root-rotation; the felt-tilt that drove
+                                    # the original horizontal mode is no longer needed.
 
 # Y of the felt's top surface at x=0 (track is locally flat; tilt rotates the
 # whole table around the world Z axis for the downhill effect).
@@ -31,11 +32,15 @@ const RAIL_THICKNESS := 0.3
 
 # ─── Spawn (inside the dealer shoe) ───────────────────────────────────────
 const SHOE_X := -38.0
-const SHOE_Y_BASE := 5.0
+# After the vertical root rotation, old +Y maps to world +Z (depth). With
+# SHOE_Y_BASE = 1.0, the shoe (and the spawn points inside it) sits 1 m
+# in front of the back wall — well within the play depth and ahead of
+# the chips/cards/wheels at z≈0.5-1.6.
+const SHOE_Y_BASE := 1.0
 const SHOE_LEN := 4.0
 const SHOE_INNER_W := 1.6
 const SHOE_INNER_H := 1.0
-const SHOE_TILT_DEG := 35.0        # nose-down to launch marbles forward
+const SHOE_TILT_DEG := 0.0         # tilt no longer needed; gravity does the launching now
 
 # Spawn 24 points inside the shoe in a 6×4 grid.
 const SPAWN_GRID_COLS := 6
@@ -120,6 +125,42 @@ var _cards: Array[AnimatableBody3D] = []
 var _card_params: Array = []
 var _local_tick: int = -1
 
+# ─── Vertical orientation (root rotation) ────────────────────────────────
+# Same logic as CrapsTrack: rigid-rotate the whole track so the original
+# +X (downhill) axis aligns with world -Y (gravity). Marbles fall along
+# the original race direction under gravity instead of rolling on a
+# tilted felt; camera looks at the back wall frontally.
+const ROOT_OFFSET_Y := 44.0
+
+# Per-wheel rotation phases cached from server_seed.
+var _chip_wheels: Array[AnimatableBody3D] = []
+var _chip_wheel_phases: Array = []
+var _chip_wheel_mat: PhysicsMaterial = null
+
+# Spinning chip wheels — three large rotating discs with peg-chips on
+# the rim, scattered between the existing chip rows / cards. Same idea
+# as CrapsTrack v2 (rim-pegs sweep through the play volume) but tinted
+# blue here for visual differentiation against the green felt.
+const CHIP_WHEEL_COUNT := 3
+const CHIP_WHEEL_RADIUS := 2.2
+const CHIP_WHEEL_THICKNESS := 0.32
+const CHIP_WHEEL_PEG_COUNT := 6
+const CHIP_WHEEL_PEG_RADIUS := 0.28
+const CHIP_WHEEL_PEG_LENGTH := 1.10
+const CHIP_WHEEL_PEG_RIM_OFFSET := 1.85
+const CHIP_WHEEL_FRICTION := 0.40
+const CHIP_WHEEL_BOUNCE := 0.35
+
+# Old-coords positions, between existing chip rows along the course.
+const CHIP_WHEEL_POSITIONS := [
+	Vector3(-22.0, 0.5,  0.0),    # between pre-card chip rows
+	Vector3(  4.0, 0.5,  3.5),    # mid-card-row, side-offset
+	Vector3( 22.0, 0.5,  0.0),    # past the cards, before the pot
+]
+const CHIP_WHEEL_W := [-0.038, 0.045, -0.040]    # rad/tick
+
+var _root_transform: Transform3D = Transform3D.IDENTITY
+
 func _ready() -> void:
 	_init_materials()
 	_tilt_basis = Basis(Vector3(0, 0, 1), -deg_to_rad(FELT_TILT_DEG))
@@ -130,7 +171,21 @@ func _ready() -> void:
 	_build_cards()
 	_build_pot()
 	_build_community_cards()
+	_init_chip_wheel_phases()
+	_build_chip_wheels()
 	_build_mood_light()
+
+	# Stand the whole track up. Same root rotation as CrapsTrack so the
+	# orientation convention is consistent between the two long-table tracks.
+	_ensure_root_transform()
+	transform = _root_transform
+
+func _ensure_root_transform() -> void:
+	if _root_transform != Transform3D.IDENTITY:
+		return
+	var b1 := Basis(Vector3(1, 0, 0), PI / 2)        # +Y → +Z, +Z → -Y
+	var b2 := Basis(Vector3(0, 0, 1), -PI / 2)       # +X → -Y, +Y → +X
+	_root_transform = Transform3D(b2 * b1, Vector3(0, ROOT_OFFSET_Y, 0))
 
 func _build_mood_light() -> void:
 	# Warm pendant-light mood — the giant lamp over a card table.
@@ -146,6 +201,8 @@ func _physics_process(_delta: float) -> void:
 	_local_tick += 1
 	for i in range(_cards.size()):
 		_apply_card_pose(i, float(_local_tick))
+	for i in range(_chip_wheels.size()):
+		_apply_chip_wheel_pose(i, float(_local_tick))
 
 # ─── Materials ────────────────────────────────────────────────────────────
 
@@ -165,6 +222,10 @@ func _init_materials() -> void:
 	_chip_mat = PhysicsMaterial.new()
 	_chip_mat.friction = CHIP_FRICTION
 	_chip_mat.bounce = CHIP_BOUNCE
+
+	_chip_wheel_mat = PhysicsMaterial.new()
+	_chip_wheel_mat.friction = CHIP_WHEEL_FRICTION
+	_chip_wheel_mat.bounce = CHIP_WHEEL_BOUNCE
 
 # ─── Table (felt + rails) ────────────────────────────────────────────────
 
@@ -195,6 +256,18 @@ func _build_table() -> void:
 			Transform3D(Basis.IDENTITY, Vector3(0, RAIL_HEIGHT * 0.5, z)),
 			Vector3(COURSE_LEN, RAIL_HEIGHT, RAIL_THICKNESS),
 			rail_mat)
+
+	# Front cover (collision-only, no mesh) — same trick as CrapsTrack.
+	# After the root rotation, this slab sits 3 m in front of the back
+	# wall along world +Z, catching marbles that bounce off cards / chips
+	# / wheels toward the camera.
+	var front_coll := CollisionShape3D.new()
+	front_coll.name = "FrontCover_shape"
+	var front_box := BoxShape3D.new()
+	front_box.size = Vector3(COURSE_LEN, 0.2, COURSE_WIDTH)
+	front_coll.shape = front_box
+	front_coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, 3.0, 0))
+	table.add_child(front_coll)
 
 # ─── Dealer shoe (start launcher) ────────────────────────────────────────
 
@@ -289,7 +362,7 @@ func _build_cards() -> void:
 		card.name = "Card_%d" % i
 		card.physics_material_override = _card_mat
 		card.sync_to_physics = true
-		card.global_transform = Transform3D(_tilt_basis, pivot_world)
+		card.transform = Transform3D(_tilt_basis, pivot_world)
 		add_child(card)
 
 		var coll := CollisionShape3D.new()
@@ -322,7 +395,7 @@ func _apply_card_pose(i: int, t: float) -> void:
 	# Rotate around the pivot's local Z axis (which is the world's tilted Z).
 	var rot_local := Basis(Vector3.FORWARD, theta)
 	var basis := _tilt_basis * rot_local
-	_cards[i].global_transform = Transform3D(basis, pivot)
+	_cards[i].transform = Transform3D(basis, pivot)
 
 # ─── Pot (finish décor) ──────────────────────────────────────────────────
 
@@ -359,6 +432,95 @@ func _build_pot() -> void:
 	mesh.mesh = cm
 	mesh.material_override = pot_mat
 	pot.add_child(mesh)
+
+# ─── Chip wheels (kinematic spinning discs with peg-chips on the rim) ────
+# Same surprise pattern as CrapsTrack v3 — three rotating discs with rim
+# pegs that sweep the play volume. Pegs are blue here for theme.
+
+func _init_chip_wheel_phases() -> void:
+	for i in range(CHIP_WHEEL_COUNT):
+		var raw := _hash_with_tag("wheel_%d" % i)
+		_chip_wheel_phases.append(float(raw[0]) / 255.0 * TAU)
+
+func _build_chip_wheels() -> void:
+	var disc_mat := StandardMaterial3D.new()
+	disc_mat.albedo_color = Color(0.85, 0.72, 0.25)   # gold disc (matches Craps for visual continuity)
+	disc_mat.metallic = 0.85
+	disc_mat.metallic_specular = 0.85
+	disc_mat.roughness = 0.30
+	disc_mat.emission_enabled = true
+	disc_mat.emission = Color(0.85, 0.72, 0.25)
+	disc_mat.emission_energy_multiplier = 0.30
+
+	var peg_mat := StandardMaterial3D.new()
+	peg_mat.albedo_color = COLOR_CHIP_BLUE                # blue chips (Poker theme)
+	peg_mat.metallic = 0.40
+	peg_mat.roughness = 0.40
+	peg_mat.emission_enabled = true
+	peg_mat.emission = COLOR_CHIP_BLUE
+	peg_mat.emission_energy_multiplier = 0.30
+
+	for i in range(CHIP_WHEEL_COUNT):
+		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
+		var wheel := AnimatableBody3D.new()
+		wheel.name = "ChipWheel_%d" % i
+		wheel.physics_material_override = _chip_wheel_mat
+		wheel.sync_to_physics = true
+		wheel.transform = Transform3D(Basis.IDENTITY, pos)
+		add_child(wheel)
+
+		var disc_coll := CollisionShape3D.new()
+		var disc_shape := CylinderShape3D.new()
+		disc_shape.radius = CHIP_WHEEL_RADIUS
+		disc_shape.height = CHIP_WHEEL_THICKNESS
+		disc_coll.shape = disc_shape
+		wheel.add_child(disc_coll)
+
+		var disc_mesh := MeshInstance3D.new()
+		var disc_cyl := CylinderMesh.new()
+		disc_cyl.top_radius = CHIP_WHEEL_RADIUS
+		disc_cyl.bottom_radius = CHIP_WHEEL_RADIUS
+		disc_cyl.height = CHIP_WHEEL_THICKNESS
+		disc_mesh.mesh = disc_cyl
+		disc_mesh.material_override = disc_mat
+		wheel.add_child(disc_mesh)
+
+		var peg_y_centre: float = CHIP_WHEEL_THICKNESS * 0.5 + CHIP_WHEEL_PEG_LENGTH * 0.5
+		for k in range(CHIP_WHEEL_PEG_COUNT):
+			var theta: float = TAU * float(k) / float(CHIP_WHEEL_PEG_COUNT)
+			var peg_pos := Vector3(
+				cos(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
+				peg_y_centre,
+				sin(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
+			)
+			var peg_coll := CollisionShape3D.new()
+			var peg_shape := CylinderShape3D.new()
+			peg_shape.radius = CHIP_WHEEL_PEG_RADIUS
+			peg_shape.height = CHIP_WHEEL_PEG_LENGTH
+			peg_coll.shape = peg_shape
+			peg_coll.transform = Transform3D(Basis.IDENTITY, peg_pos)
+			wheel.add_child(peg_coll)
+
+			var peg_mesh := MeshInstance3D.new()
+			var peg_cyl := CylinderMesh.new()
+			peg_cyl.top_radius = CHIP_WHEEL_PEG_RADIUS
+			peg_cyl.bottom_radius = CHIP_WHEEL_PEG_RADIUS
+			peg_cyl.height = CHIP_WHEEL_PEG_LENGTH
+			peg_mesh.mesh = peg_cyl
+			peg_mesh.material_override = peg_mat
+			peg_mesh.transform = Transform3D(Basis.IDENTITY, peg_pos)
+			wheel.add_child(peg_mesh)
+
+		_chip_wheels.append(wheel)
+		_apply_chip_wheel_pose(i, 0.0)
+
+func _apply_chip_wheel_pose(i: int, t: float) -> void:
+	var wheel: AnimatableBody3D = _chip_wheels[i]
+	var w: float = float(CHIP_WHEEL_W[i])
+	var phase: float = float(_chip_wheel_phases[i])
+	var angle: float = phase + w * t
+	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
+	wheel.transform = Transform3D(Basis(Vector3.UP, angle), pos)
 
 # ─── Community cards (decoration only) ───────────────────────────────────
 
@@ -405,33 +567,44 @@ func _add_box(parent: Node, node_name: String, tx: Transform3D, size: Vector3, m
 # ─── Track API overrides ─────────────────────────────────────────────────
 
 func spawn_points() -> Array:
-	# 24 points clustered in a small grid directly above the shoe's mouth, in
-	# world coords. SpawnRail then adds a world-Y drop stagger, so marbles
-	# fall straight down into the shoe under gravity. Keeping the grid small
-	# in X/Z avoids any tilted-frame projection making marbles drift past the
-	# shoe's open top.
-	var origin := Vector3(SHOE_X, SHOE_Y_BASE + 1.0, 0.0)
+	# Local-coord spawn points; _root_transform maps them to world after
+	# the vertical rotation. Keeping the grid small in old X/Z avoids any
+	# tilted-frame projection making marbles drift past the shoe's mouth.
+	_ensure_root_transform()
+	var origin := Vector3(SHOE_X, SHOE_Y_BASE, 0.0)
 	var points: Array = []
 	for r in range(SPAWN_GRID_ROWS):
 		for c in range(SPAWN_GRID_COLS):
 			var fx: float = (float(c) - float(SPAWN_GRID_COLS - 1) * 0.5) * SPAWN_GRID_DX
 			var fz: float = (float(r) - float(SPAWN_GRID_ROWS - 1) * 0.5) * SPAWN_GRID_DZ
-			points.append(origin + Vector3(fx, 0.0, fz))
+			var local := origin + Vector3(fx, 0.0, fz)
+			points.append(_root_transform * local)
 	return points
 
 func finish_area_transform() -> Transform3D:
+	_ensure_root_transform()
 	var local := Vector3(FINISH_X, FINISH_BOX_SIZE.y * 0.5, 0)
-	return Transform3D(_tilt_basis, _tilt_basis * local)
+	var local_tx := Transform3D(_tilt_basis, _tilt_basis * local)
+	return _root_transform * local_tx
 
 func finish_area_size() -> Vector3:
 	return FINISH_BOX_SIZE
 
 func camera_bounds() -> AABB:
-	# v2 frames the full 80m table. Y max accounts for the SpawnRail
-	# drop-order stagger (~3m above the top spawn row).
-	var min_v := Vector3(SHOE_X - 4.0, -4.0, -COURSE_WIDTH * 0.5 - 2.0)
-	var max_v := Vector3(FINISH_X + 5.0, SHOE_Y_BASE + 6.0, COURSE_WIDTH * 0.5 + 2.0)
+	# Vertical play volume after the root rotation.
+	var half_h: float = COURSE_LEN * 0.5 + 5.0
+	var min_v := Vector3(-COURSE_WIDTH * 0.5 - 2.0, ROOT_OFFSET_Y - half_h, -3.0)
+	var max_v := Vector3(COURSE_WIDTH * 0.5 + 2.0, ROOT_OFFSET_Y + half_h, 4.0)
 	return AABB(min_v, max_v - min_v)
+
+func camera_pose() -> Dictionary:
+	# Frontal view of the now-vertical course. Camera in front of the back
+	# wall (+Z), centred horizontally at the play volume's midpoint.
+	return {
+		"position": Vector3(0, ROOT_OFFSET_Y, 65),
+		"target": Vector3(0, ROOT_OFFSET_Y, 0),
+		"fov": 70.0,
+	}
 
 func environment_overrides() -> Dictionary:
 	# Cardroom mood pulled out of the fog + sun rather than the sky;
