@@ -427,14 +427,12 @@ func camera_bounds() -> AABB:
 	return AABB(min_v, max_v - min_v)
 
 func environment_overrides() -> Dictionary:
-	# Smoky cardroom — dim greens with warm amber pendants.
+	# Cardroom mood pulled out of the fog + sun rather than the sky;
+	# letting the daylight cloud shader render unmodified avoids the
+	# muddy interaction the dark-green sky used to produce.
 	return {
-		"sky_top": Color(0.04, 0.06, 0.04),
-		"sky_horizon": Color(0.10, 0.14, 0.08),
-		"ground_top": Color(0.06, 0.10, 0.05),
-		"ground_bottom": Color(0.02, 0.04, 0.02),
-		"ambient_energy": 0.35,
-		"fog_color": Color(0.10, 0.12, 0.08),
-		"fog_density": 0.012,
-		"sun_color": Color(1.0, 0.82, 0.50),
+		"ambient_energy": 0.60,
+		"fog_color": Color(0.55, 0.70, 0.45),
+		"fog_density": 0.006,
+		"sun_color": Color(1.0, 0.85, 0.60),
 	}

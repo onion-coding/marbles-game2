@@ -111,7 +111,10 @@ func _build_marbles() -> void:
 		node.material_override = mat
 		add_child(node)
 		MarbleSpawner.attach_trail(node, color)
-		MarbleSpawner.attach_name_label(node, String(m.get("name", "marble_%02d" % _marbles.size())))
+		# Per-marble name labels are intentionally not attached: 20 of them
+		# clustered at spawn made the screen unreadable. Names live in the
+		# HUD's marble list. A future "leader badge" can opt back in for
+		# the single leading marble via MarbleSpawner.attach_name_label.
 		_marbles.append(node)
 
 func _process(delta: float) -> void:

@@ -143,16 +143,23 @@ func _build_outer_walls() -> void:
 			Vector3(0.4, height, COURSE_DEPTH + 0.6),
 			frame_mat)
 
-	# Front + back panels (along X, on +/-Z) — keep marbles in the plane.
-	for sgn in [-1, 1]:
-		var z: float = float(sgn) * (COURSE_DEPTH * 0.5 + 0.2)
-		_add_box(frame, "WallZ_%s" % ("pos" if sgn > 0 else "neg"),
-			Transform3D(Basis.IDENTITY, Vector3(0, center_y, z)),
-			Vector3(PLAY_FIELD_WIDTH + 0.4, height, 0.4),
-			frame_mat)
+	# Back panel (-Z): full mesh + collision; serves as the dark backdrop
+	# the pegs sit against. The +Z (front) side gets collision only — no
+	# mesh — so the camera looking from +Z can see straight into the play
+	# volume without a wall blocking the view. Marbles still can't fly
+	# out the front because the collision shape stays.
+	_add_box(frame, "WallZ_neg",
+		Transform3D(Basis.IDENTITY, Vector3(0, center_y, -COURSE_DEPTH * 0.5 - 0.2)),
+		Vector3(PLAY_FIELD_WIDTH + 0.4, height, 0.4),
+		frame_mat)
 
-	# Back wall colour: a dark "felt" backdrop (mostly visual).
-	# (The Z-walls cover this; nothing more needed here.)
+	var front_coll := CollisionShape3D.new()
+	front_coll.name = "WallZ_pos_shape"
+	var front_box := BoxShape3D.new()
+	front_box.size = Vector3(PLAY_FIELD_WIDTH + 0.4, height, 0.4)
+	front_coll.shape = front_box
+	front_coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, center_y, COURSE_DEPTH * 0.5 + 0.2))
+	frame.add_child(front_coll)
 
 # ─── Hopper (funnels marbles into the peg field) ─────────────────────────
 
@@ -324,15 +331,13 @@ func camera_bounds() -> AABB:
 	return AABB(min_v, max_v - min_v)
 
 func environment_overrides() -> Dictionary:
-	# Loud arcade — magenta-and-cyan saturated with high contrast.
+	# Arcade mood pulled out of fog + sun; sky stays the daylight cloud
+	# default. Pinker sun against magenta fog reads as "loud arcade"
+	# without fighting the sky shader the way a fully magenta sky did.
 	return {
-		"sky_top": Color(0.08, 0.04, 0.10),
-		"sky_horizon": Color(0.30, 0.10, 0.30),
-		"ground_top": Color(0.10, 0.04, 0.18),
-		"ground_bottom": Color(0.03, 0.02, 0.06),
-		"ambient_energy": 0.55,
-		"fog_color": Color(0.25, 0.10, 0.30),
-		"fog_density": 0.006,
-		"sun_color": Color(1.0, 0.75, 0.95),
-		"sun_energy": 1.4,
+		"ambient_energy": 0.75,
+		"fog_color": Color(0.95, 0.55, 0.80),
+		"fog_density": 0.005,
+		"sun_color": Color(1.0, 0.78, 0.95),
+		"sun_energy": 1.3,
 	}

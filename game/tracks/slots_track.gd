@@ -377,15 +377,11 @@ func camera_bounds() -> AABB:
 	return AABB(min_v, max_v - min_v)
 
 func environment_overrides() -> Dictionary:
-	# Cool electric chrome arcade — blue-tinted ambient with crisp sun.
+	# Cool chrome mood from the fog + sun; sky stays the daylight default.
 	return {
-		"sky_top": Color(0.04, 0.06, 0.10),
-		"sky_horizon": Color(0.08, 0.18, 0.30),
-		"ground_top": Color(0.04, 0.08, 0.14),
-		"ground_bottom": Color(0.02, 0.03, 0.06),
-		"ambient_energy": 0.55,
-		"fog_color": Color(0.12, 0.20, 0.30),
-		"fog_density": 0.004,
-		"sun_color": Color(0.80, 0.92, 1.0),
-		"sun_energy": 1.5,
+		"ambient_energy": 0.80,
+		"fog_color": Color(0.70, 0.82, 0.95),
+		"fog_density": 0.003,
+		"sun_color": Color(0.85, 0.94, 1.0),
+		"sun_energy": 1.4,
 	}
