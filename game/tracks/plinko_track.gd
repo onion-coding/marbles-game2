@@ -14,7 +14,11 @@ extends Track
 # ─── Geometry ────────────────────────────────────────────────────────────
 # Course depth (Z) is shallow so marbles stay roughly in the plane.
 const COURSE_DEPTH := 1.4
-const PLAY_FIELD_WIDTH := 20.0
+# Play field width hugs the peg span (pegs at COL_SPACING 1.3-1.4 with 14
+# columns reach ±7-8 m); side walls sit just outside that so marbles can't
+# drift through gap-strips and miss the pegs. v3 narrowing forces every
+# drop to thread through the peg field.
+const PLAY_FIELD_WIDTH := 17.0
 const PLAY_FIELD_HEIGHT := 60.0
 
 # Field is dramatically taller now — three peg sections stacked over
@@ -33,7 +37,7 @@ const FIELD_BOTTOM_Y := 4.0
 const HOPPER_FLOOR_Y := 58.5             # just above FIELD_TOP_Y
 const HOPPER_INNER_W := 4.0              # plenty of room for 20 marbles
 const HOPPER_INNER_H := 4.0
-const HOPPER_OUTLET_W := 0.8             # ~1 marble wide; forces single-file egress
+const HOPPER_OUTLET_W := 0.7             # tight outlet; marbles funnel center
 const HOPPER_WALL_THICKNESS := 0.3
 const HOPPER_FRICTION := 0.35
 
@@ -53,8 +57,8 @@ const SPAWN_DZ := 0.20
 const PEG_RADIUS := 0.30
 const PEG_HEIGHT := COURSE_DEPTH
 const PEG_BASE_COLS := 14
-const PEG_FRICTION := 0.85             # very grippy: each peg drains a lot of velocity
-const PEG_BOUNCE := 0.10               # very low: marbles roll-and-slide rather than ping
+const PEG_FRICTION := 0.55             # moderate friction — fast ping-and-go feel
+const PEG_BOUNCE := 0.30               # higher bounce — marbles spread sideways more
 
 # Section 1 (top of field) — sparse, sets rhythm.
 const SECTION1_TOP_Y := FIELD_TOP_Y - 1.0
@@ -74,8 +78,8 @@ const LANE_HEIGHT := 3.5            # vertical spacing between lane floors
 const LANE_TILT_DEG := 5.0
 const LANE_FLOOR_LEN := 14.0        # x-extent of each lane's floor
 const LANE_FLOOR_THICKNESS := 0.25
-const LANE_FRICTION := 0.55
-const LANE_BOUNCE := 0.15
+const LANE_FRICTION := 0.35            # less drag on serpentine floors — faster traverse
+const LANE_BOUNCE := 0.25
 # A 2.0m wide drop hole at each lane's downhill end. Floor extends from
 # x=-LANE_HALF to (LANE_HALF - DROP_HOLE_W) on +X-flow lanes; mirrored
 # on -X-flow lanes. With LANE_HALF=8.0 + 0 margin, hole sits at x=+6 to
@@ -97,9 +101,9 @@ const SECTION2_ROWS := 16
 const SECTION2_ROW_SPACING := 0.95
 const SECTION2_COL_SPACING := 1.3
 
-# Section 3 (bottom) — funnel toward slot row.
+# Section 3 (bottom) — short funnel directly above the slot row.
 const SECTION3_TOP_Y := SECTION2_TOP_Y - SECTION2_ROWS * SECTION2_ROW_SPACING - 1.0
-const SECTION3_ROWS := 10
+const SECTION3_ROWS := 6
 const SECTION3_ROW_SPACING := 0.9
 const SECTION3_COL_SPACING := 1.3
 
@@ -122,7 +126,8 @@ const SPINNER_W := [0.010, -0.012, 0.011, -0.009]
 const SLOT_COUNT := 9
 const SLOT_DIVIDER_HEIGHT := 1.8
 const SLOT_DIVIDER_THICKNESS := 0.18
-const SLOT_FLOOR_Y := 1.5
+const SLOT_FLOOR_Y := 9.0          # raised so the gap from S3's last peg row is ~3 m
+                                    # (was 7.3 m); marbles drop quickly into the slot row
 const SLOT_FLOOR_THICKNESS := 0.4
 const SLOT_FRICTION := 0.55
 const SLOT_BOUNCE := 0.10
@@ -135,7 +140,7 @@ const SIDE_WALL_BOUNCE := 0.50
 # Spans the slot interior column — from slot-floor top (y=SLOT_FLOOR_Y) up
 # to divider top. Any marble falling into a slot necessarily overlaps the
 # slab's vertical span and triggers the body_entered signal.
-const FINISH_Y := 2.4
+const FINISH_Y := SLOT_FLOOR_Y + 0.9   # centred in the slot interior column
 const FINISH_BOX_SIZE := Vector3(PLAY_FIELD_WIDTH + 2.0, 1.8, COURSE_DEPTH + 1.0)
 
 # ─── Materials ───────────────────────────────────────────────────────────

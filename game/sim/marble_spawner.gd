@@ -18,6 +18,11 @@ static func spawn(parent: Node, rail: SpawnRail, slots: Array, colors: Array = [
 static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Color) -> RigidBody3D:
 	var marble := RigidBody3D.new()
 	marble.name = "Marble_%02d" % drop_order
+	# 1 kg per marble. With Godot's default 9.8 m/s² gravity that's the
+	# weight used in collision-response math against kinematic obstacles
+	# (paddles, dice, reels). Heavier marbles punch through lighter
+	# friction effects faster — useful for the high-energy "fast drop"
+	# feel on Plinko.
 	marble.mass = 1.0
 	marble.continuous_cd = true
 
