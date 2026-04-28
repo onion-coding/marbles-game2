@@ -77,14 +77,48 @@ const COLOR_REEL_FACE_GOLD := Color(0.92, 0.78, 0.18)
 const COLOR_REEL_FACE_BLUE := Color(0.18, 0.42, 0.95)
 const COLOR_TRAY := Color(0.85, 0.65, 0.18)
 
+# ─── Chip wheels ─────────────────────────────────────────────────────────
+# Three spinning gold discs with peg-chips on their rims, placed vertically
+# between the reel levels to deflect marbles and add visual variety consistent
+# with Craps and Poker. Slots is already vertical (no root rotation), so
+# positions are direct world coords. Rotation axis is world Z (perpendicular
+# to the cabinet front face).
+const CHIP_WHEEL_COUNT := 3
+const CHIP_WHEEL_RADIUS := 2.2        # slightly smaller than craps (2.4) to avoid reel overlap
+const CHIP_WHEEL_THICKNESS := 0.35
+const CHIP_WHEEL_PEG_COUNT := 6
+const CHIP_WHEEL_PEG_RADIUS := 0.28
+const CHIP_WHEEL_PEG_LENGTH := 1.10
+const CHIP_WHEEL_PEG_RIM_OFFSET := 1.85   # peg distance from wheel centre
+const CHIP_WHEEL_FRICTION := 0.40
+const CHIP_WHEEL_BOUNCE := 0.35
+# Between reels: reel Y positions are [44,39,34,29,24,19,14,9]
+# Wheel 0: between reel 1 and 2 (Y=41.5), wheel 1: between reel 4 and 5 (Y=26.5),
+# wheel 2: between reel 7 and 8 (Y=11.5). Small X offsets for lateral variety.
+const CHIP_WHEEL_POSITIONS := [
+	Vector3(-2.0, 41.5, 0.0),
+	Vector3( 2.0, 26.5, 0.0),
+	Vector3( 0.0, 11.5, 0.0),
+]
+# Alternating signs, slightly different speeds.
+const CHIP_WHEEL_W := [-0.040, 0.038, -0.045]
+
+# ─── Slow-motion gravity ──────────────────────────────────────────────────
+# Reduces effective gravity to ~0.30 m/s² inside the cabinet so the race
+# lands in the 40-50 s target window (stock gravity gives ~17 s).
+const SLOW_GRAVITY_ACCEL := 0.30
+
 # ─── Internal state ──────────────────────────────────────────────────────
 var _cabinet_mat: PhysicsMaterial = null
 var _reel_mat: PhysicsMaterial = null
 var _funnel_mat: PhysicsMaterial = null
 var _tray_mat: PhysicsMaterial = null
+var _chip_wheel_mat: PhysicsMaterial = null
 
 var _reels: Array[AnimatableBody3D] = []
 var _reel_phases: Array = []     # initial angle per reel (radians), from seed
+var _chip_wheels: Array[AnimatableBody3D] = []
+var _chip_wheel_phases: Array = []
 var _local_tick: int = -1
 
 func _ready() -> void:
@@ -94,6 +128,9 @@ func _ready() -> void:
 	_build_reels()
 	_build_funnel()
 	_build_tray()
+	_init_chip_wheel_phases()
+	_build_chip_wheels()
+	_build_slow_gravity_zone()
 	_build_mood_light()
 
 func _build_mood_light() -> void:
@@ -118,6 +155,8 @@ func _physics_process(_delta: float) -> void:
 	_local_tick += 1
 	for i in range(_reels.size()):
 		_apply_reel_pose(i, float(_local_tick))
+	for i in range(_chip_wheels.size()):
+		_apply_chip_wheel_pose(i, float(_local_tick))
 
 # ─── Materials ───────────────────────────────────────────────────────────
 
@@ -137,6 +176,10 @@ func _init_materials() -> void:
 	_tray_mat = PhysicsMaterial.new()
 	_tray_mat.friction = 0.55
 	_tray_mat.bounce = 0.15
+
+	_chip_wheel_mat = PhysicsMaterial.new()
+	_chip_wheel_mat.friction = CHIP_WHEEL_FRICTION
+	_chip_wheel_mat.bounce = CHIP_WHEEL_BOUNCE
 
 # ─── Cabinet (side walls + back) ─────────────────────────────────────────
 
@@ -322,6 +365,131 @@ func _build_tray() -> void:
 			Vector3(arc * TRAY_RADIUS * 1.05, TRAY_DEPTH, 0.25),
 			tray_mat)
 
+# ─── Chip wheels (kinematic spinning discs with peg-chips on the rim) ────
+
+func _init_chip_wheel_phases() -> void:
+	# Per-wheel phase from server_seed for round-varying but replay-stable start angle.
+	for i in range(CHIP_WHEEL_COUNT):
+		var raw := _hash_with_tag("wheel_%d" % i)
+		_chip_wheel_phases.append(float(raw[0]) / 255.0 * TAU)
+
+func _build_chip_wheels() -> void:
+	var disc_mat := StandardMaterial3D.new()
+	disc_mat.albedo_color = Color(0.85, 0.72, 0.25)   # gold, matches Craps
+	disc_mat.metallic = 0.85
+	disc_mat.metallic_specular = 0.85
+	disc_mat.roughness = 0.30
+	disc_mat.emission_enabled = true
+	disc_mat.emission = Color(0.85, 0.72, 0.25)
+	disc_mat.emission_energy_multiplier = 0.30
+
+	# Peg colour — Slots identity: reel-face gold / amber
+	var peg_mat := StandardMaterial3D.new()
+	peg_mat.albedo_color = COLOR_REEL_FACE_GOLD
+	peg_mat.metallic = 0.50
+	peg_mat.roughness = 0.35
+	peg_mat.emission_enabled = true
+	peg_mat.emission = COLOR_REEL_FACE_GOLD
+	peg_mat.emission_energy_multiplier = 0.35
+
+	for i in range(CHIP_WHEEL_COUNT):
+		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
+		var wheel := AnimatableBody3D.new()
+		wheel.name = "ChipWheel_%d" % i
+		wheel.physics_material_override = _chip_wheel_mat
+		wheel.sync_to_physics = true
+		# Slots has no root rotation so local transform == world transform.
+		wheel.transform = Transform3D(Basis.IDENTITY, pos)
+		add_child(wheel)
+
+		# Disc body — axis along local +Z (world Z = into cabinet front face).
+		# CylinderShape3D's axis is local +Y by default, so we rotate 90° around X
+		# to align with Z.
+		var disc_coll := CollisionShape3D.new()
+		disc_coll.name = "Disc_%d_shape" % i
+		var disc_shape := CylinderShape3D.new()
+		disc_shape.radius = CHIP_WHEEL_RADIUS
+		disc_shape.height = CHIP_WHEEL_THICKNESS
+		disc_coll.shape = disc_shape
+		# Rotate so cylinder axis points along Z (90° around X).
+		disc_coll.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), Vector3.ZERO)
+		wheel.add_child(disc_coll)
+
+		var disc_mesh := MeshInstance3D.new()
+		disc_mesh.name = "Disc_%d_mesh" % i
+		var disc_cyl := CylinderMesh.new()
+		disc_cyl.top_radius = CHIP_WHEEL_RADIUS
+		disc_cyl.bottom_radius = CHIP_WHEEL_RADIUS
+		disc_cyl.height = CHIP_WHEEL_THICKNESS
+		disc_mesh.mesh = disc_cyl
+		disc_mesh.material_override = disc_mat
+		disc_mesh.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), Vector3.ZERO)
+		wheel.add_child(disc_mesh)
+
+		# Pegs around the rim — each peg is a cylinder sticking out from the
+		# wheel's front face along local +Z, at angular position theta in XY plane.
+		var peg_z_centre: float = CHIP_WHEEL_THICKNESS * 0.5 + CHIP_WHEEL_PEG_LENGTH * 0.5
+		for k in range(CHIP_WHEEL_PEG_COUNT):
+			var theta: float = TAU * float(k) / float(CHIP_WHEEL_PEG_COUNT)
+			var peg_pos := Vector3(
+				cos(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
+				sin(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
+				peg_z_centre,
+			)
+
+			var peg_coll := CollisionShape3D.new()
+			peg_coll.name = "Peg_%d_%d_shape" % [i, k]
+			var peg_shape := CylinderShape3D.new()
+			peg_shape.radius = CHIP_WHEEL_PEG_RADIUS
+			peg_shape.height = CHIP_WHEEL_PEG_LENGTH
+			peg_coll.shape = peg_shape
+			# Rotate peg cylinder from Y-axis to Z-axis.
+			peg_coll.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), peg_pos)
+			wheel.add_child(peg_coll)
+
+			var peg_mesh := MeshInstance3D.new()
+			peg_mesh.name = "Peg_%d_%d_mesh" % [i, k]
+			var peg_cyl := CylinderMesh.new()
+			peg_cyl.top_radius = CHIP_WHEEL_PEG_RADIUS
+			peg_cyl.bottom_radius = CHIP_WHEEL_PEG_RADIUS
+			peg_cyl.height = CHIP_WHEEL_PEG_LENGTH
+			peg_mesh.mesh = peg_cyl
+			peg_mesh.material_override = peg_mat
+			peg_mesh.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), peg_pos)
+			wheel.add_child(peg_mesh)
+
+		_chip_wheels.append(wheel)
+		_apply_chip_wheel_pose(i, 0.0)
+
+func _apply_chip_wheel_pose(i: int, t: float) -> void:
+	var wheel: AnimatableBody3D = _chip_wheels[i]
+	var w: float = float(CHIP_WHEEL_W[i])
+	var phase: float = float(_chip_wheel_phases[i])
+	var angle: float = phase + w * t
+	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
+	# Spin around world Z (perpendicular to cabinet face). Local transform is
+	# fine since Slots has no root rotation — local == world.
+	wheel.transform = Transform3D(Basis(Vector3.FORWARD, angle), pos)
+
+# ─── Slow-motion gravity zone ────────────────────────────────────────────
+
+func _build_slow_gravity_zone() -> void:
+	var zone := Area3D.new()
+	zone.name = "SlowGravityZone"
+	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
+	zone.gravity_direction = Vector3(0, -1, 0)
+	zone.gravity = SLOW_GRAVITY_ACCEL
+	add_child(zone)
+
+	var coll := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	# Cover the full cabinet volume with generous margin.
+	box.size = Vector3(COURSE_WIDTH_X + 4.0, (COURSE_TOP_Y - COURSE_BOTTOM_Y) + 4.0, COURSE_DEPTH_Z + 4.0)
+	coll.shape = box
+	coll.transform = Transform3D(Basis.IDENTITY,
+		Vector3(0, (COURSE_TOP_Y + COURSE_BOTTOM_Y) * 0.5, 0))
+	zone.add_child(coll)
+
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
 func _solid_mat(c: Color) -> StandardMaterial3D:
@@ -378,6 +546,16 @@ func camera_bounds() -> AABB:
 	var min_v := Vector3(-COURSE_WIDTH_X * 0.5 - 4.0, TRAY_Y - 2.0, -COURSE_DEPTH_Z * 0.5 - 2.0)
 	var max_v := Vector3(COURSE_WIDTH_X * 0.5 + 4.0, COURSE_TOP_Y + 5.0, COURSE_DEPTH_Z * 0.5 + 2.0)
 	return AABB(min_v, max_v - min_v)
+
+func camera_pose() -> Dictionary:
+	# Frontal view of the vertical cabinet. Position camera in front of the
+	# front glass (+Z), centred on the cabinet's vertical midpoint.
+	var mid_y: float = (COURSE_TOP_Y + COURSE_BOTTOM_Y) * 0.5
+	return {
+		"position": Vector3(0, mid_y, 50),
+		"target": Vector3(0, mid_y, 0),
+		"fov": 70.0,
+	}
 
 func environment_overrides() -> Dictionary:
 	# Cool chrome mood from the fog + sun; sky stays the daylight default.
