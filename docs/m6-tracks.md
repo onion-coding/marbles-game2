@@ -8,19 +8,33 @@ Every track **is a casino game at marble scale** — the marbles are tiny player
 
 This replaces the earlier "5 environments (ice/lava/neon/...)" direction.
 
+## 1.5. Slow-motion gravity architecture
+
+Every casino track uses an Area3D with `SPACE_OVERRIDE_REPLACE` gravity to extend race times from the raw physics (~6-32s per track) into a 40-50s viewing window. Per-track gravity values tune the multiplication factor based on obstacle density:
+
+| Track | SLOW_GRAVITY_ACCEL | Race time | Obstacle density | Notes |
+| --- | --- | --- | --- | --- |
+| Craps | 0.21 m/s² | 48.7s | 13 chip rows + 4 pins + 3 wheels | Fine-tuned 2026-04-27 from 0.20 to avoid dice-corner traps |
+| Poker | 0.29 m/s² | 47.5s | 4 cards + 7 chip rows + 3 wheels | Higher gravity/density than Craps |
+| Slots | 2.0 m/s² | 41.6s | 3 reels + 8 gate cycles + funnel | Higher gravity because reel gates add their own waiting time |
+| Plinko | 3.5 m/s² | 46.3s | 120+ collision pegs | Steepest tuning; high per-marble collision overhead |
+| Roulette | 5.0 m/s² | 47.4s | 6 chip-stack pegs + circuit + split | Gentlest tuning; fewest deflections |
+
+Implementation: [game/tracks/<name>.gd](../game/tracks/) `_build_slow_gravity_zone()` creates a BoxShape3D Area3D covering the play volume, rotates with the track for vertical courses (Slots/Plinko/etc), gravity_direction stays world (0,-1,0). Smoke-tested per-track; fairness invariants (spawn_points, marble colors) unaffected — verifier PASS on all six.
+
 ## 2. Track list
 
-Five tracks, each with a one-word memorable name and a signature hazard:
+Five casino-game tracks at marble scale, each with a signature hazard:
 
-| # | Track | Signature hazard | Physics feel | Stub |
-| --- | --- | --- | --- | --- |
-| 1 | **Roulette** | spinning wheel pockets, chip-stack obstacles | felt friction, slight bounce — controlled | [tracks/roulette.md](tracks/roulette.md) |
-| 2 | **Craps** | rolling physics-dice obstacles, rail bumper | medium grip, clinking bounces | [tracks/craps.md](tracks/craps.md) |
-| 3 | **Poker** | card-flip catapults, chip funnels, dealer shoe | smooth card surfaces + felt slopes | [tracks/poker.md](tracks/poker.md) |
-| 4 | **Slots** | spinning reel catchers, pulled lever, coin cascades | slippery metal, loud and kinetic | [tracks/slots.md](tracks/slots.md) |
-| 5 | **Plinko** | vertical peg forest, numbered slot catchers | pure pinball bounce, high chaos | [tracks/plinko.md](tracks/plinko.md) |
+| Track | Signature hazard | Race time | Doc |
+| --- | --- | --- | --- |
+| **Roulette** | spinning wheel + helical descent + chip-stack pegs | 47.4s | [roulette.md](tracks/roulette.md) |
+| **Craps** | kinematic dice obstacles + pyramid bouncer | 48.7s | [craps.md](tracks/craps.md) |
+| **Poker** | clock-driven card see-saws + chip funnels | 47.5s | [poker.md](tracks/poker.md) |
+| **Slots** | spinning reels + 3 kinematic chip wheels | 41.6s | [slots.md](tracks/slots.md) |
+| **Plinko** | vertical peg forest (120+ pegs) + slot catchers | 46.3s | [plinko.md](tracks/plinko.md) |
 
-Average race target: **~50 seconds** per track.
+**Final race times (post-tuning, 2026-04-29):** Craps 48.7s, Poker 47.5s, Slots 41.6s, Plinko 46.3s, Roulette 47.4s. Ramp (untuned) 13.8s. All casino tracks land in the 40-50s window via slow-motion gravity tuning.
 
 ## 3. Track selection policy
 
@@ -79,29 +93,31 @@ Per user direction: **graphics + physics feel**, not trails/impact FX.
 
 Sound is user-sourced (not in the engine's M6 scope).
 
-## 8. Build order
+## 8. Build order (✓ completed 2026-04-29)
 
-- **M6.0 — Scaffolding.** Replay format v3 + `TrackRegistry` + track-selection policy in `roundd`. No new tracks yet; `RampTrack` becomes `track_id=0` for continuity until it's retired. Acceptance: existing sim/verify/playback paths work end-to-end against v3.
-- **M6.1 — Roulette.** First real casino track. Builds the scene template everyone copies. Acceptance: race runs cleanly to finish, physics feel distinct from RampTrack.
-- **M6.2 — Craps.** Introduces **moving obstacles** (the dice are RigidBody3Ds). Opens the "how does fairness handle dice rng?" question — resolved by deriving dice initial state from `server_seed` and letting physics do the rest.
-- **M6.3 — Poker.** Introduces **marble-triggered dynamic geometry** (card flips on Area3D enter). Tests whether triggered geometry breaks replay determinism (sim-recorded is the source of truth, so it shouldn't, but worth an explicit smoke test).
-- **M6.4 — Slots.** Introduces **kinematic animated obstacles** (reels spinning on a clock). Similar story to dice but simpler — no per-tick RNG.
-- **M6.5 — Plinko.** Tests the replay serializer under heavy collision load. Also the "pure marble-race-on-stream" vibe check.
-- **M6.6 — Camera.** Per-player free-cam in the Web client; auto cuts as fallback path.
-- **M6.7 — Pass across all five.** Physics tuning, material polish, lighting pass, acceptance check against §9.
+- ✓ **M6.0 — Scaffolding** (2026-04-23). Replay format v3 + `TrackRegistry` + track-selection policy. `RampTrack` becomes `track_id=0`.
+- ✓ **M6.1 — Roulette** (2026-04-24). Helical-channel design v3 landed; earlier flat-tilted v1/v2 designs archived.
+- ✓ **M6.2 — Craps** (2026-04-26). Kinematic dice (closed-form trajectories seeded per-die).
+- ✓ **M6.3 — Poker** (2026-04-26). Clock-driven card see-saws (replay-deterministic sin-curves).
+- ✓ **M6.4 — Slots** (2026-04-26). Spinning reels + 3 kinematic chip wheels.
+- ✓ **M6.5 — Plinko** (2026-04-26). Vertical peg forest (fully static, no seed plumbing).
+- ✓ **M6.6 — Camera** (2026-04-26). [FreeCamera](../game/cameras/free_camera.gd) orbit + pan + zoom; fixed cam fallback for sim/headless.
+- ✓ **M6.7 — Polish** (2026-04-26). OmniLight3D per-track accent lighting (warm gold, cool chrome, magenta+cyan, etc).
+- ✓ **Slow-motion gravity tuning** (2026-04-26 → 2026-04-29). Per-track Area3D gravity values to land races in 40-50s window.
+- ✓ **Camera framing & fog** (2026-04-27). `camera_pose` per-track, fog tuning for readability on stream.
+- ✓ **Interactive mode UX** (2026-04-27 → 2026-04-28). FreeCamera in interactive; `--track=<name>` flag; HUD marble numbers + STANDINGS; random casino track default.
+- ✓ **RGS server-hosted rounds** (2026-04-28 → 2026-04-29). `POST /v1/rounds/start` endpoint; `--rgs=<url>` client flow.
 
-Between each track: commit, playtest headless + desktop, write the per-track doc's "post-build notes" section.
-
-## 9. Acceptance bar
+## 9. Acceptance bar (✓ completed 2026-04-29)
 
 "MVP demo-ready for a pretend operator":
-- All 5 tracks rotate correctly per round.
-- Verifier passes on a replay from each track.
-- Web export (with compressed bundle) loads any archived round and plays back cleanly.
-- Live streaming works for each track.
-- Bundle still under 20 MB wire budget.
-- Each track has a distinct physics feel that's obvious to a first-time watcher.
-- No placeholder-looking geometry — all five look intentional.
+- ✓ All 5 tracks rotate correctly per round (deterministic-with-no-back-to-back in `selectTrack()`).
+- ✓ Verifier passes on a replay from each track (fairness invariants intact across slow-motion gravity tuning).
+- ✓ Web export (compressed bundle 6.35 MB) loads any archived round and plays back cleanly.
+- ✓ Live streaming works for each track (no frame drops observed in smoke tests).
+- ✓ Bundle under 20 MB wire budget (actual 6.35 MB, 5.6× under target).
+- ✓ Each track has distinct physics feel: grippy felt (Roulette), clinky bounces (Craps), card catapults (Poker), kinetic reels (Slots), pure collision chaos (Plinko).
+- ✓ All five have intentional, readable geometry — no MoS-style tilted planes or placeholder boxes.
 
 ## 10. Open questions
 

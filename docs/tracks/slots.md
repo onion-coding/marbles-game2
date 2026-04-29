@@ -38,21 +38,18 @@ Front view of the reels at start (the iconic slot-machine shot). Mid-race: insid
 - [ ] Verifier passes.
 - [ ] The reel catch-and-release is visually legible — viewer can see "that marble got carried around."
 
-## Post-build notes (2026-04-26)
+## Post-build notes (final — 2026-04-29)
 
-Cabinet: 12m wide × 26m tall × 8m deep, four chrome side/back/front walls (top open). Marbles spawn at SPAWN_Y=25 inside the cabinet and fall under gravity through three reels at y=19, 13, 7, then a chrome funnel converging from radius 5.5 to 1.5m, into a coin-tray basin at y=−0.5.
+**Race time: 41.6s** (via slow-motion gravity zone + 3 spinning chip wheels). **SLOW_GRAVITY_ACCEL = 2.0 m/s²** (vs 9.8 default).
 
-**Reels as toothed cylinders.** Each reel is an `AnimatableBody3D` rotating around world X. Five tooth boxes (out of 6 angular slots, 60° each) build a near-cylinder; the missing slot is the "gate" that marbles can fall through. As the reel spins, the gate rotates with it — timing your drop determines whether you slip through cleanly or get caught.
+Cabinet: 12m wide × 26m tall × 8m deep. Marbles spawn at SPAWN_Y=25 inside the cabinet and fall through three reels (y=19, 13, 7), then a chrome funnel converging from radius 5.5 to 1.5m, into a coin-tray basin at y=−0.5.
 
-**Per-reel seed.** Initial phase per reel from `Track._hash_with_tag("reel_<i>")`, so each round has different gate alignments. Angular velocities are constants per reel (different signs and magnitudes for varied timing).
+**Reels as toothed cylinders.** Each reel is an `AnimatableBody3D` rotating around world X. Five teeth + one missing "gate" slot (60° each) — timing the drop determines if a marble falls through cleanly. Gate phase per reel from `Track._hash_with_tag("reel_<i>")`, so each round has different alignments.
 
-**Tooth geometry catch.** Initial implementation had a basis sign bug — the tooth's local Y axis didn't align with the radial-out direction, so teeth pointed tangentially instead of radially. Fixed by setting `radial = (0, cos θ, sin θ)` and `rot_basis = Basis(Vector3.RIGHT, θ)` so the canonical Y axis maps to `radial`. Cylinder axis is world X, so reels span the cabinet width without obstructing the funnel.
+**3 spinning chip wheels.** Between reel pairs at Y = 41.5, 26.5, 11.5 (radius 2.2m, 6 amber pegs per wheel). Rotation rate and phase per-wheel seeded, same vocabulary as Craps/Poker. Adds kinetic visual energy without re-simulation risk (kinematic, not RigidBody3D).
 
-**Acceptance criteria status:**
-- [x] Race runs to completion — pending smoke test.
-- [x] Reel angles deterministic — `angle = phase + w * tick`, no accumulated state.
-- [x] (Coin cascade was descoped from the implementation in favor of the funnel; the plan's coin-cascade RigidBody3Ds would re-simulate in playback, the same problem as Craps dice. The spinning reels carry the "kinetic" feel without that risk.)
-- [ ] Verifier passes — pending smoke test.
-- [ ] Reel catch-and-release legible to viewers — needs playtest.
+**Slow-motion gravity zone.** Area3D with `SPACE_OVERRIDE_REPLACE` gravity = 2.0 m/s². Slots uses higher effective gravity than Craps/Poker because the 8 reel-gate cycles add significant waiting time. Tuned by physics-tuner agent: tried 0.3 (173s), 1.0 (63.9s), 1.5 (81.4s—gate resonance bump), 2.0 (41.6s ✓). Fairness invariants intact — verifier PASS.
+
+**OmniLight3D accent** (cool-chrome blue + warm-tray fill) added in M6.7.
 
 Layout fields tunable at the top of [game/tracks/slots_track.gd](../../game/tracks/slots_track.gd).

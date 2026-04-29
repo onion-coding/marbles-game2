@@ -45,9 +45,7 @@ Short-run skew (e.g. POKER 25% over 6 rounds) is expected sampling noise.
 `mean / stdev / min / max / p50 / p95` of the finish-tick over the rounds
 that ran on each track, expressed in seconds.
 
-For player experience the **target window is ~30-50 s**. Anything below 10
-s feels rushed; anything above 60 s loses attention. The current MVP build
-has races in the 5-32 s range — tuning to lift the lower end is M8.x work.
+For player experience the **target window is 40-50 s**. Anything below 10s feels rushed; anything above 60s loses attention. Post-M6 race times: Craps 48.7s, Poker 47.5s, Slots 41.6s, Plinko 46.3s, Roulette 47.4s. Ramp (legacy, untuned) 13.8s — see [docs/tracks/](tracks/) for per-track post-build notes.
 
 ### 3. Winner index distribution
 

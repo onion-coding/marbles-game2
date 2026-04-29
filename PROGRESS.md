@@ -4,7 +4,9 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M10 done (2026-04-28)** — production scaffolding for rgsd (auth, observability, graceful shutdown, deployment doc).
+**M6 done (2026-04-29)** — five casino-game tracks at marble scale + free-cam UX + slow-motion gravity tuning.
+
+Post-M6 milestones in motion: **M7 visual polish (M6.7 done: OmniLight3D per track)**, **M8 RTP/fairness tooling (done)**, **M9 RGS integration (server-hosted rounds live)**, **M10 production scaffolding (done)**.
 
 The "vero prodotto" four-block roadmap is now complete:
 - **M7** Visual + UI — PBR materials, ACES tonemap, bloom, SSAO, per-track environments + sky shader (onion), HUD overlay, marble trails + name labels + lead glow, winner reveal confetti, audio scaffolding.
@@ -17,6 +19,36 @@ Next natural moves (not started): real-wallet client to replace `MockWallet`, di
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
 ## Done
+
+### M6 — Casino-game track library (2026-04-29)
+Five playable tracks rotated per round with no back-to-back repeats: Roulette (47.4s), Craps (48.7s), Poker (47.5s), Slots (41.6s), Plinko (46.3s), plus legacy Ramp (13.8s, untuned). See [docs/m6-tracks.md](docs/m6-tracks.md) and [docs/tracks/](docs/tracks/) per-track stubs.
+
+**Slow-motion gravity pattern.** All casino tracks use an Area3D with `SPACE_OVERRIDE_REPLACE` gravity tuned per-track to extend race times into a 40-50s window, compensating for the marble-scale physics. Per-track values: Craps 0.21, Poker 0.29, Slots 2.0, Plinko 3.5, Roulette 5.0 m/s² (vs 9.8 default). Variance in values comes from per-track obstacle density — more deflections need lower gravity. Implementation in [game/tracks/<name>.gd](game/tracks/) `_build_slow_gravity_zone()`.
+
+**Track rotation policy.** `TrackRegistry.instance(track_id)` selects from `[RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO]`. Server uses deterministic-with-no-back-to-back: `hash(round_id) mod pool_size`, with an extra step preventing repeat from prior round (monotonic, not part of fairness derivation). See [server/cmd/roundd/main.go](server/cmd/roundd/main.go) `selectTrack()`.
+
+**Camera UX.** Interactive mode + Web playback use [game/cameras/free_camera.gd](game/cameras/free_camera.gd): left-drag orbit, right-drag pan, wheel zoom, R reset. Bounded by `track.camera_bounds()`. Zoom range 0.5–500m. Sim/headless scenes keep [game/cameras/fixed_camera.gd](game/cameras/fixed_camera.gd) for determinism.
+
+**Live marble tracking.** Marbles numbered via Label3D (1–20 by `drop_order`). [game/main.gd](game/main.gd) HUD displays STANDINGS sidebar: marbles sorted live by distance to finish, leader highlighted gold.
+
+**RGS server-hosted flow.** New `POST /v1/rounds/start` endpoint in [server/rgs/rgs.go](server/rgs/rgs.go): server generates `round_id`, `server_seed_hex`, `track_id` (via rotation), returns 20 empty `client_seeds`. Godot client uses `--rgs=<url>` flag to POST to this endpoint, gets the spec via HTTPRequest, runs physics locally. Fairness chain server-rooted. See [docs/rgs-integration.md](docs/rgs-integration.md).
+
+**Interactive mode defaults.** `--track=<name>` flag in [game/main.gd](game/main.gd) selects track by name (ramp/roulette/craps/poker/slots/plinko); fallback is random casino track (excludes Ramp by default as legacy).
+
+**Key commits:**
+- 273b3ed: Craps + Poker initial slow-motion gravity (0.20, 0.25 m/s²).
+- c2ca854: Craps + Poker fine-tune to 45-49s window (0.21, 0.29 m/s²).
+- 84b62ec: Roulette slow-motion gravity (5.0 m/s² → 47.4s).
+- 87a545c: Plinko slow-motion gravity (3.5 m/s² → 46.3s).
+- a526b3e / 04c5511: Slots slow-motion gravity + 3 spinning chip wheels (2.0 m/s² → 41.6s).
+- 1d45a37: Camera framing + fog tuning, camera_pose per track.
+- 77ed667: FreeCamera WASD/QE keyboard movement (Shift+wheel zoom).
+- 7072e10: Interactive mode uses FreeCamera.
+- 36952a8: --track=<name> flag + random casino track default.
+- 9ed9cf2: HUD marble numbers + STANDINGS sidebar + leaderboard.
+- 8df4690: RGS `POST /v1/rounds/start` + --rgs=<url> client flow.
+
+**Fairness audit.** Verifier passes on all six tracks; spawn_points and marble colors determinism unaffected by gravity tuning. `PROTOCOL_VERSION` remains 3 (track_id already in header from M6.0).
 
 ### Planning / docs
 - [PLAN.md](PLAN.md) written and rewritten once (Unity → Godot switch).

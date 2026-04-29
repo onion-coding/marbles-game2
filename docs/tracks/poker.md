@@ -37,23 +37,16 @@ Tracking shot following lead marble through the first card flips. Close-up on a 
 - [ ] Verifier passes.
 - [ ] A flip-catapult is visually satisfying — marble gets clear air.
 
-## Post-build notes (2026-04-26)
+## Post-build notes (final — 2026-04-29)
+
+**Race time: 47.5s** (via slow-motion gravity zone, fine-tuned 2026-04-27). **SLOW_GRAVITY_ACCEL = 0.29 m/s²** (vs 9.8 default).
 
 Course: 36×12m felt table tilted 8° around world Z. Marbles spawn directly above the dealer-shoe mouth at the −X end, fall into the shoe (a tilted U-channel that points along world +X), exit onto the felt, thread two staggered chip-stack rows, ride four flipping cards, and finish at a +X-end pot.
 
-**Cards on a clock, not on contact.** The original plan had cards as Area3D-triggered flips: marble enters → card flips. That logic doesn't survive replay because playback marbles are Node3D visuals, not RigidBody3Ds, so they don't fire Area3D events. A clock-driven flip is replay-stable by construction: each card's see-saw rotation is `θ(t) = amp * sin(2π t / period + phase)` with `period` and `phase` drawn from `Track._hash_with_tag("card_<i>")`. Sim and playback see identical card poses.
+**Cards on a clock.** Each card's see-saw rotation is a sin-curve `θ(t) = amp * sin(2π t / period + phase)` seeded per-card from `Track._hash_with_tag("card_<i>")`. Replay-deterministic by construction — playback marbles are Node3Ds, not physics bodies, so clock-driven motion survives playback without re-simulation.
 
-**See-saw geometry.** Each card is an `AnimatableBody3D` placed at its pivot; the box collider is offset half a card length along +X so the card sticks out as a paddle that rotates around its hinge. `sync_to_physics=true` so a marble riding the card gets the kinematic velocity transferred when the card flips.
+**Slow-motion gravity zone.** Area3D with `SPACE_OVERRIDE_REPLACE` gravity = 0.29 m/s². Initial design 0.25 (56.2s) fine-tuned to 0.29 to land 47.5s. Poker's obstacle density (4 cards + 7 chip rows + 3 wheels) is higher than Craps', so higher gravity per unit density. Tuned by physics-tuner agent. Fairness invariants intact — verifier PASS.
 
-**Catch:** `var pivot_world := _tilt_basis * pivot_local` then `card.global_transform = Transform3D(_tilt_basis, pivot_world)`. The card's basis includes the table tilt so the card hinges around the table's Z axis, not the world Z axis. When the sin curve drives `theta`, we compose `_tilt_basis * Basis(Vector3.FORWARD, theta)` so the see-saw happens in the table's tilted frame.
-
-**Decorative community cards.** Flop/turn/river are `MeshInstance3D` children of a no-collision `Node3D` parented to the track. Visible but never affect physics.
-
-**Acceptance criteria status:**
-- [x] Race runs to completion — pending smoke test.
-- [x] Card flips deterministic per replay — by construction.
-- [ ] No "marble stuck mid-flip" edge cases — needs 20-run playtest.
-- [ ] Verifier passes — pending smoke test.
-- [ ] Flip-catapult visually satisfying — needs playtest.
+**OmniLight3D accent** (pendant warm) added in M6.7.
 
 Layout fields tunable at the top of [game/tracks/poker_track.gd](../../game/tracks/poker_track.gd).

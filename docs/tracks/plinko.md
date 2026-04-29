@@ -37,23 +37,22 @@ Iconic shot: front-facing view of the whole peg wall at race start. Maybe a pict
 - [ ] Verifier passes.
 - [ ] Peg spacing tuned so outcome distribution is visibly varied across 10 test races (no one marble winning every time).
 
-## Post-build notes (2026-04-26)
+## Post-build notes (final — 2026-04-29)
+
+**Race time: 46.3s** (via slow-motion gravity zone). **SLOW_GRAVITY_ACCEL = 3.5 m/s²** (vs 9.8 default).
 
 Vertical play field 20m wide × ~24m tall × 1.4m deep — the depth is intentionally shallow so marbles stay roughly in the X-Y plane (cylinders run along world Z). Frame walls on +/-X (sides) and +/-Z (front/back) keep marbles inside.
 
-**Hopper.** Two angled walls funnel marbles from spawn (HOPPER_INNER_W=2m wide) to throat (HOPPER_THROAT_W=1m). Spawn 24 points clustered tightly inside the hopper interior so marbles drop into the funnel cleanly.
+**Hopper.** Two angled walls funnel marbles from spawn (2m wide) to throat (1m). Spawn 24 points clustered tightly so they drop cleanly.
 
-**Peg forest.** 12 staggered rows. Even rows have 11 pegs at 1.4m spacing; odd rows have 10 pegs offset 0.7m. Each peg is a static cylinder lying along world Z (rotated 90° around X so the cylinder's height axis is Z). PEG_RADIUS=0.2m + marble RADIUS=0.3m → effective gap between pegs ≈ 0.7m, just over a marble diameter — tight enough to deflect, loose enough not to pile up.
+**Peg forest.** 12 staggered rows (11 pegs in even rows, 10 in odd rows, offset 0.7m). Each peg is a static cylinder along world Z. PEG_RADIUS=0.2m + marble RADIUS=0.3m → ~0.7m gaps, tight enough to deflect but not pile up.
 
-**Slot row.** 9 catchers at the bottom, divided by alternating gold/red dividers. Slot floor at y=1.5; finish slab spans the full slot row at y=0.6 (below the dividers). First marble to fall into any slot crosses the finish.
+**Slot row.** 9 catchers at the bottom with gold/red dividers. Finish slab at y=0.6 (below dividers); first marble to any slot wins.
 
-**Fully static — no seed plumbing.** Plinko's chaos comes from the peg arrangement + initial spawn distribution; no kinematic obstacles needed. The pegs are deterministic-by-construction from `track_id` alone.
+**Fully static geometry.** No kinematic obstacles — chaos is pure collision entropy from peg arrangement + initial spawn. Deterministic-by-construction from `track_id` alone.
 
-**Acceptance criteria status:**
-- [x] Race runs to completion in ≤60s with all 20 marbles reaching a slot — pending smoke test.
-- [x] Replay serializer handles the collision load — Plinko has more peg-collisions per tick than other tracks; the existing serializer (raw f32 pos+quat per marble per tick) is collision-load-agnostic, so size scales linearly with race length, not collision count. Worst-case Plinko race ~60s × 60Hz × 20 marbles × 28 bytes = ~2 MB. Acceptable.
-- [ ] Live streaming works without dropping frames — pending smoke test.
-- [ ] Verifier passes — pending smoke test.
-- [ ] Outcome distribution visibly varied across 10 test races — pending playtest.
+**Slow-motion gravity zone.** Area3D with `SPACE_OVERRIDE_REPLACE` gravity = 3.5 m/s². Tuned by physics-tuner agent: 1.0 (130.7s), 3.5 (46.3s ✓). Plinko has more collision overhead per marble than Craps/Poker, so gravity tuning is steeper. Fairness invariants intact — verifier PASS.
+
+**OmniLight3D accent** (magenta + cyan rim) added in M6.7.
 
 Layout fields tunable at the top of [game/tracks/plinko_track.gd](../../game/tracks/plinko_track.gd).

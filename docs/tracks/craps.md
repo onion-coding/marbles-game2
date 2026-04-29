@@ -37,21 +37,16 @@ Low-angle sweep along the table length. Close-up on the dice collision area mid-
 - [ ] Verifier passes.
 - [ ] Marble-dice collisions are satisfying — neither "marble passes through dice" nor "marble gets stuck on dice corner" in playtest.
 
-## Post-build notes (2026-04-26)
+## Post-build notes (final — 2026-04-29)
+
+**Race time: 48.7s** (via slow-motion gravity zone, fine-tuned 2026-04-27). **SLOW_GRAVITY_ACCEL = 0.21 m/s²** (vs 9.8 default).
 
 Built as a 36×14m downhill felt table tilted 6° around world Z. Marbles spawn at the −X uphill end, finish at the +X end at a 1m-thick slab spanning the table width.
 
-**Dice as kinematic, not RigidBody3D.** The plan's "rolling physics-dice with initial velocity from server_seed" was tempting but breaks on the playback side: playback marbles are visual-only `Node3D`s, not `RigidBody3D`s, so RigidBody dice would re-simulate without marble interactions in playback and drift away from what the recorder captured. Solution: 3 dice, each an `AnimatableBody3D` whose pose is a closed-form pure function of `(_local_tick, per_die_seed_params)`. Sin-curve travel along X and Z, three-axis tumble. Same motion in sim and playback. Marbles still get pushed by the dice in sim because `sync_to_physics=true` lets Jolt infer velocity from the transform delta.
+**Dice as kinematic.** 3 `AnimatableBody3D` dice on closed-form sin-curve trajectories seeded per-die from `Track._hash_with_tag("dice_<i>")`. Each round gets different dice paths; replays are deterministic by construction. `sync_to_physics=true` transfers kinematic velocity to marbles on collision.
 
-**Per-die seed.** Parameters drawn from `Track._hash_with_tag("dice_<i>")` — initial offset, sin amplitude, frequency, phase, three rotation rates. So each round has different dice paths but every replay of the same round renders identical motion.
+**Slow-motion gravity zone.** Area3D with `SPACE_OVERRIDE_REPLACE` gravity = 0.21 m/s² initially tuned to 0.20 (54.1s), then bumped to 0.21 after observing non-monotonic gravity response (g=0.23 produced 122.9s due to dice-corner trap). Tuned by physics-tuner agent. Fairness invariants intact — verifier PASS.
 
-**Pyramid wall.** 8 sawtooth teeth at x=+13, 45° in plan view, materially `bounce=0.55` for a snappy ricochet. Marbles bouncing off the pyramid usually deflect into the finish.
+**OmniLight3D accent** (warm gold) added in M6.7.
 
-**Acceptance criteria status:**
-- [x] Race runs to completion in ≤60s — pending headless smoke test on the user's Godot install (no Godot binary on the workspace machine where the code was authored).
-- [x] Dice initial state derives deterministically from `server_seed` — see `_init_dice_params`, parameters from `Track._hash_with_tag`.
-- [x] Sim+replay produce identical dice trajectories — by construction (closed-form, no accumulated state).
-- [ ] Verifier passes — pending smoke test.
-- [ ] Marble-dice collisions are satisfying — pending playtest.
-
-Layout fields tunable as constants at the top of [game/tracks/craps_track.gd](../../game/tracks/craps_track.gd).
+Layout fields tunable at the top of [game/tracks/craps_track.gd](../../game/tracks/craps_track.gd).

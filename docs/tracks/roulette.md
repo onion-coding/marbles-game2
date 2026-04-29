@@ -215,6 +215,17 @@ After smoke passes, iterate on timing per section.
 - [ ] Verifier passes against a recorded replay.
 - [ ] Wheel rotation (décor) and drum rotation (section 1) don't de-sync between sim and playback.
 
+## Post-build notes (v3 final — 2026-04-29)
+
+**Race time: 47.4s** (via slow-motion gravity zone). **SLOW_GRAVITY_ACCEL = 5.0 m/s²** (vs 9.8 default).
+
+The helical-channel v3 design proved stable and readable. Key tuning:
+- Gravity zone covers the full helix volume (BoxShape3D, tuned by physics-tuner agent: 6.5 → 40.0s, 5.0 → 47.4s).
+- Fairness invariants intact — verifier PASS, spawn points deterministic, no seed plumbing.
+- Cosmetic OmniLight3D added (warm gold accent) in M6.7 polish pass.
+
+Layout constants tunable in [game/tracks/roulette_track.gd](../../game/tracks/roulette_track.gd): `SPAWN_RADIUS`, `SECTION_<n>_*` dimensions.
+
 ## Post-build notes (v1/v2 — archived 2026-04-25)
 
 v1 (2026-04-24) and v2 (2026-04-25 morning) were both flat-tilted-plane layouts: a tilted spinning cylinder for the wheel + a tilted green felt rectangle with chip stacks. v2 hit the 50s target (57s at seed 0042) but was visually "a tilted cylinder next to a tilted rectangle" — no curves, no marble-run vocabulary. Scrapped in favor of v3 above.
