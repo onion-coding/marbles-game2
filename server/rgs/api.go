@@ -172,16 +172,17 @@ func (h *HTTPHandler) getSession(w http.ResponseWriter, r *http.Request) {
 func (h *HTTPHandler) runRound(w http.ResponseWriter, r *http.Request) {
 	wait := r.URL.Query().Get("wait")
 	if wait == "true" || wait == "1" {
-		manifest, outcomes, err := h.mgr.RunNextRound(r.Context())
+		manifest, outcomes, roundBetOutcomes, err := h.mgr.RunNextRound(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, struct {
-			RoundID  uint64               `json:"round_id"`
-			TrackID  uint8                `json:"track_id"`
-			Winner   replayWinner         `json:"winner"`
-			Outcomes []settlementResponse `json:"outcomes"`
+			RoundID          uint64               `json:"round_id"`
+			TrackID          uint8                `json:"track_id"`
+			Winner           replayWinner         `json:"winner"`
+			Outcomes         []settlementResponse `json:"outcomes"`
+			RoundBetOutcomes []RoundBetOutcome    `json:"round_bet_outcomes"`
 		}{
 			RoundID: manifest.RoundID,
 			TrackID: manifest.TrackID,
@@ -189,14 +190,15 @@ func (h *HTTPHandler) runRound(w http.ResponseWriter, r *http.Request) {
 				MarbleIndex: manifest.Winner.MarbleIndex,
 				FinishTick:  manifest.Winner.FinishTick,
 			},
-			Outcomes: outcomesToResponse(outcomes),
+			Outcomes:         outcomesToResponse(outcomes),
+			RoundBetOutcomes: roundBetOutcomes,
 		})
 		return
 	}
 	// Fire-and-forget: the round runs in the background; client polls
 	// /v1/sessions/{id} for the SETTLED state.
 	go func() {
-		if _, _, err := h.mgr.RunNextRound(context.Background()); err != nil {
+		if _, _, _, err := h.mgr.RunNextRound(context.Background()); err != nil {
 			// In a real deployment this goes through structured logging /
 			// alerting. Here we use stderr via fmt — the simplest stable
 			// signal that doesn't pull in a logger dep.

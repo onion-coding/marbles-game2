@@ -134,7 +134,7 @@ func TestBet_RoundAlreadyRun(t *testing.T) {
 	}
 
 	// Run the round — this pops the pendingRound.
-	if _, _, err := mgr.RunNextRound(context.Background()); err != nil {
+	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestBet_PayoutOnlyWinner(t *testing.T) {
 		}
 	}
 
-	if _, _, err := mgr.RunNextRound(context.Background()); err != nil {
+	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
 

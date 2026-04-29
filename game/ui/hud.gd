@@ -258,6 +258,34 @@ func reveal_winner(name: String, color: Color, prize: String = "") -> void:
 
 	_winner_modal.visible = true
 
+# Apply server-authoritative settlement outcomes to the winner modal.
+# `outcomes` is the filtered list for the current player only.
+# Each outcome dict: {bet_id, player_id, marble_idx, amount, won, payout, winner_index}.
+# Safe to call before or after reveal_winner — if the modal is not yet
+# visible the data is written and will be visible when reveal_winner fires.
+func apply_settlement(outcomes: Array, winner_marble_idx: int) -> void:
+	if outcomes.is_empty():
+		# No bets for this player this round — hide the payout line.
+		_winner_payout_label.visible = false
+		return
+
+	var total_payout := 0.0
+	var total_wagered := 0.0
+	for o in outcomes:
+		if typeof(o) != TYPE_DICTIONARY:
+			continue
+		total_wagered += float(o.get("amount", 0.0))
+		if bool(o.get("won", false)):
+			total_payout += float(o.get("payout", 0.0))
+
+	if total_payout > 0.0:
+		_winner_payout_label.text = "+%.2f won (wagered %.2f)" % [total_payout, total_wagered]
+		_winner_payout_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.4))
+	else:
+		_winner_payout_label.text = "-%.2f lost" % total_wagered
+		_winner_payout_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	_winner_payout_label.visible = true
+
 # Called after a successful bet_placed response from RgsClient.
 # Updates the balance label and appends a row to the "Your bets" list.
 func on_bet_confirmed(bet: Dictionary) -> void:

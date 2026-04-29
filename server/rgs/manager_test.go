@@ -126,7 +126,7 @@ func TestManager_BetWinsCreditsWallet(t *testing.T) {
 	if bal, _ := wallet.Balance("alice"); bal != 900 {
 		t.Fatalf("after debit: balance %d, want 900", bal)
 	}
-	manifest, outcomes, err := mgr.RunNextRound(context.Background())
+	manifest, outcomes, _, err := mgr.RunNextRound(context.Background())
 	if err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestManager_BetLosesNoCreditButDebitStands(t *testing.T) {
 	if _, err := mgr.PlaceBet(sess.ID, 50); err != nil {
 		t.Fatalf("PlaceBet: %v", err)
 	}
-	if _, _, err := mgr.RunNextRound(context.Background()); err != nil {
+	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
 	if bal, _ := wallet.Balance("bob"); bal != 450 {
@@ -230,7 +230,7 @@ func TestManager_TwoBettorsOneWinsOneLoses(t *testing.T) {
 	if _, err := mgr.PlaceBet(s2.ID, 100); err != nil {
 		t.Fatalf("PlaceBet p2: %v", err)
 	}
-	_, outcomes, err := mgr.RunNextRound(context.Background())
+	_, outcomes, _, err := mgr.RunNextRound(context.Background())
 	if err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
@@ -261,13 +261,13 @@ func TestManager_RoundIDCollisionRetries(t *testing.T) {
 	if _, err := mgr.PlaceBet(s.ID, 100); err != nil {
 		t.Fatalf("PlaceBet 1: %v", err)
 	}
-	if _, _, err := mgr.RunNextRound(context.Background()); err != nil {
+	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound 1: %v", err)
 	}
 	if _, err := mgr.PlaceBet(s.ID, 100); err != nil {
 		t.Fatalf("PlaceBet 2: %v", err)
 	}
-	if _, _, err := mgr.RunNextRound(context.Background()); err != nil {
+	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		// Note: if this ever fails because two roundIDs landed in the same
 		// nanosecond, the test would flake. Add a stable round-id source
 		// in ManagerConfig (nextRoundID() func) if that becomes an issue.
@@ -297,7 +297,7 @@ func TestManager_SeedAlignment(t *testing.T) {
 	}
 
 	// Run the next round — must consume spec, not mint a new one.
-	manifest, _, err := mgr.RunNextRound(context.Background())
+	manifest, _, _, err := mgr.RunNextRound(context.Background())
 	if err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestManager_SeedAlignmentEmptyPending(t *testing.T) {
 		t.Fatalf("PlaceBet: %v", err)
 	}
 
-	manifest, _, err := mgr.RunNextRound(context.Background())
+	manifest, _, _, err := mgr.RunNextRound(context.Background())
 	if err != nil {
 		t.Fatalf("RunNextRound (empty pending): %v", err)
 	}

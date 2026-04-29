@@ -20,7 +20,10 @@ var _live_racing: bool = false
 
 # RGS mode state
 var _rgs_client: RgsClient = null
-var _pending_spec: Dictionary = {}   # spec dict waiting while bet window is open
+var _pending_spec: Dictionary = {}       # spec dict waiting while bet window is open
+var _pending_outcomes: Array = []        # round_bet_outcomes from server, may arrive before or after race ends
+var _race_visually_finished: bool = false  # true once FinishLine fires race_finished
+var _winner_idx_at_finish: int = -1      # marble index reported by local sim at race_finished
 
 func _ready() -> void:
 	# Three modes (evaluated in this order of priority):
@@ -124,6 +127,8 @@ func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStri
 	if _rgs_client != null:
 		_rgs_client.bet_placed.connect(_on_bet_placed)
 		_rgs_client.bet_failed.connect(_on_bet_failed)
+		_rgs_client.round_completed.connect(_on_round_completed)
+		_rgs_client.round_failed.connect(_on_round_failed)
 		# Keep the balance label in sync: refresh once now and after every bet.
 		_rgs_client.balance_loaded.connect(_hud.update_balance)
 		_rgs_client.fetch_balance()
@@ -132,9 +137,17 @@ func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStri
 	_open_bet_countdown()
 
 # Open a non-blocking countdown before the race starts.
+# When the window expires: kick off server-side round settlement (async) AND
+# start the local physics sim immediately — they run in parallel.
 func _open_bet_countdown() -> void:
 	await get_tree().create_timer(RGS_BET_WINDOW_SEC).timeout
-	print("RGS: bet window closed — starting race")
+	print("RGS: bet window closed — triggering server round + starting local race")
+	# Fire server settlement first (non-blocking — result arrives via signal).
+	if _rgs_client != null:
+		_rgs_client.run_round()
+	# Start the visual race immediately regardless; seed-aligned sim produces
+	# the same winner.  _on_round_completed / _on_round_failed handle the
+	# server response whenever it arrives.
 	_start_race(_pending_spec)
 	_pending_spec = {}
 
@@ -157,6 +170,53 @@ func _on_bet_failed(error: String) -> void:
 	push_warning("RGS: bet failed: %s" % error)
 	if _hud != null:
 		_hud.show_error_toast("Bet failed: %s" % error)
+
+# Called when POST /v1/rounds/run?wait=true returns successfully.
+# `result` shape: {round_id, winner: {marble_index, finish_tick}, round_bet_outcomes: [...]}
+# May arrive before or after the local visual race ends — handle both orders.
+func _on_round_completed(result: Dictionary) -> void:
+	var server_winner_idx: int = -1
+	var winner_dict = result.get("winner", {})
+	if typeof(winner_dict) == TYPE_DICTIONARY:
+		server_winner_idx = int(winner_dict.get("marble_index", -1))
+
+	# Filter outcomes for this player only.
+	var all_outcomes = result.get("round_bet_outcomes", [])
+	if typeof(all_outcomes) != TYPE_ARRAY:
+		all_outcomes = []
+	var my_id := _rgs_client.player_id if _rgs_client != null else ""
+	var filtered: Array = []
+	for o in all_outcomes:
+		if typeof(o) == TYPE_DICTIONARY and String(o.get("player_id", "")) == my_id:
+			filtered.append(o)
+
+	# Cross-check with local sim winner (seed alignment invariant).
+	if _winner_idx_at_finish >= 0 and server_winner_idx >= 0 and \
+			server_winner_idx != _winner_idx_at_finish:
+		push_error("RGS: server winner (%d) differs from local sim winner (%d) — " \
+				% [server_winner_idx, _winner_idx_at_finish] +
+				"seed misalignment; showing server result as authoritative")
+
+	# Use server winner index as authoritative; fall back to local if missing.
+	var authoritative_winner := server_winner_idx if server_winner_idx >= 0 else _winner_idx_at_finish
+
+	if _race_visually_finished:
+		# Race already ended locally — apply settlement now.
+		if _hud != null:
+			_hud.apply_settlement(filtered, authoritative_winner)
+	else:
+		# Race still running — store outcomes; _on_race_finished will pick them up.
+		_pending_outcomes = filtered
+		# Overwrite the local winner with the server's authoritative value so
+		# _on_race_finished uses the correct index even if it fires before this.
+		if authoritative_winner >= 0:
+			_winner_idx_at_finish = authoritative_winner
+
+# Called when POST /v1/rounds/run?wait=true fails (network, server error, etc.).
+# The visual race still runs locally; no settlement overlay is shown.
+func _on_round_failed(error: String) -> void:
+	push_warning("RGS: round settlement failed: %s — player sees the race but no payout overlay" % error)
+	_pending_outcomes = []
 
 # Core race setup.  `spec` is a Dictionary that contains the round
 # parameters (same schema as the file-based spec used in spec mode).
@@ -271,7 +331,18 @@ func _start_race(spec: Dictionary) -> void:
 			var winner_name: String = String(winner.name)
 			var winner_idx: int = int(winner_name.trim_prefix("Marble_"))
 			_live_racing = false
+			_winner_idx_at_finish = winner_idx
+			_race_visually_finished = true
 			_hud.reveal_winner(winner_name, colors[winner_idx])
+			# In RGS mode: apply settlement overlay if server result already arrived,
+			# otherwise _on_round_completed will call apply_settlement when it lands.
+			if _rgs_client != null:
+				if not _pending_outcomes.is_empty():
+					_hud.apply_settlement(_pending_outcomes, _winner_idx_at_finish)
+					_pending_outcomes = []
+				# If _pending_outcomes is empty it means either:
+				# (a) server hasn't responded yet — _on_round_completed will call apply_settlement, or
+				# (b) round_failed was emitted — no overlay shown (already push_warning'd).
 		)
 
 func _physics_process(_delta: float) -> void:

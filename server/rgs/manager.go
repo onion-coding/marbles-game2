@@ -206,8 +206,9 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 // exists (the "no-bet" path), a fresh spec is generated on-the-fly and
 // consumed immediately.
 //
-// Returns the manifest as written to disk + a per-bet outcome list.
-func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []SettlementOutcome, error) {
+// Returns the manifest as written to disk, a per-session-bet outcome list, and
+// the per-round-bet outcome list (bets placed via POST /v1/rounds/{id}/bets).
+func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []SettlementOutcome, []RoundBetOutcome, error) {
 	m.mu.Lock()
 	pending := m.pending
 	m.pending = nil
@@ -226,7 +227,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		// immediately (the caller skipped POST /v1/rounds/start).
 		var rawSeed [32]byte
 		if _, err := rand.Read(rawSeed[:]); err != nil {
-			return nil, nil, fmt.Errorf("rgs: seed: %w", err)
+			return nil, nil, nil, fmt.Errorf("rgs: seed: %w", err)
 		}
 		freshID := uint64(time.Now().UnixNano())
 		m.mu.Lock()
@@ -248,7 +249,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	// Decode the seed from the spec's hex string.
 	seedBytes, err := hex.DecodeString(pr.spec.ServerSeedHex)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rgs: decode server seed: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: decode server seed: %w", err)
 	}
 	var seed [32]byte
 	copy(seed[:], seedBytes)
@@ -259,7 +260,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	now := time.Now()
 	r := round.New(roundID, seed, m.cfg.MaxMarbles, now)
 	if err := r.OpenBuyIn(now); err != nil {
-		return nil, nil, fmt.Errorf("rgs: OpenBuyIn: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: OpenBuyIn: %w", err)
 	}
 
 	// 2. Add real bettors as participants in the order they queued. Their
@@ -270,19 +271,19 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	//    fairness-symmetry; the synthetics never bet, never get paid.
 	for _, s := range pending {
 		if err := r.AddParticipant(round.Participant{Name: s.PlayerID}); err != nil {
-			return nil, nil, fmt.Errorf("rgs: add bettor %q: %w", s.PlayerID, err)
+			return nil, nil, nil, fmt.Errorf("rgs: add bettor %q: %w", s.PlayerID, err)
 		}
 	}
 	for i := len(pending); i < m.cfg.MaxMarbles; i++ {
 		if err := r.AddParticipant(round.Participant{Name: fmt.Sprintf("filler_%02d", i)}); err != nil {
-			return nil, nil, fmt.Errorf("rgs: add filler %d: %w", i, err)
+			return nil, nil, nil, fmt.Errorf("rgs: add filler %d: %w", i, err)
 		}
 	}
 
 	// 3. Lock the marble_index assignment in each session.
 	for i, s := range pending {
 		if err := s.AssignMarble(i); err != nil {
-			return nil, nil, fmt.Errorf("rgs: assign marble %d to session %q: %w", i, s.ID, err)
+			return nil, nil, nil, fmt.Errorf("rgs: assign marble %d to session %q: %w", i, s.ID, err)
 		}
 	}
 
@@ -292,7 +293,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 
 	// 5. Run the race.
 	if err := r.StartRace(time.Now()); err != nil {
-		return nil, nil, fmt.Errorf("rgs: StartRace: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: StartRace: %w", err)
 	}
 	parts := r.Participants()
 	clientSeeds := make([]string, len(parts))
@@ -313,16 +314,16 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	}
 	simRes, err := m.cfg.Sim(ctx, simReq)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rgs: sim: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: sim: %w", err)
 	}
 
 	finish := time.Now()
 	if err := r.FinishRace(round.Result{WinnerIndex: simRes.WinnerMarbleIndex, FinishedAt: finish}, finish); err != nil {
-		return nil, nil, fmt.Errorf("rgs: FinishRace: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: FinishRace: %w", err)
 	}
 	revealed, ok := r.RevealedSeed()
 	if !ok {
-		return nil, nil, fmt.Errorf("rgs: seed unexpectedly not revealed")
+		return nil, nil, nil, fmt.Errorf("rgs: seed unexpectedly not revealed")
 	}
 
 	// 6. Compute payouts. RTP applies to total stake including filler
@@ -337,7 +338,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	}
 	prize, _, err := rtp.Settle(rtp.Config{RTPBasisPoints: m.cfg.RTPBps}, stakes, simRes.WinnerMarbleIndex)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rgs: rtp.Settle: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: rtp.Settle: %w", err)
 	}
 
 	// 7. Per-bet settlement.
@@ -351,7 +352,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 			prizeAmount = prize
 			creditTxID = bet.BetID + ":credit"
 			if cerr := m.cfg.Wallet.Credit(s.PlayerID, prizeAmount, creditTxID); cerr != nil {
-				return nil, nil, fmt.Errorf("rgs: credit winner %q: %w", s.PlayerID, cerr)
+				return nil, nil, nil, fmt.Errorf("rgs: credit winner %q: %w", s.PlayerID, cerr)
 			}
 		}
 		outcome := SettlementOutcome{
@@ -365,7 +366,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 			SettledAt:   time.Now(),
 		}
 		if err := s.Settle(outcome); err != nil {
-			return nil, nil, fmt.Errorf("rgs: session %q Settle: %w", s.ID, err)
+			return nil, nil, nil, fmt.Errorf("rgs: session %q Settle: %w", s.ID, err)
 		}
 		outcomes[i] = outcome
 	}
@@ -394,11 +395,11 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	}
 	replayFile, err := os.Open(simRes.ReplayPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rgs: open replay: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: open replay: %w", err)
 	}
 	defer replayFile.Close()
 	if err := m.cfg.Store.Save(manifest, replayFile); err != nil {
-		return nil, nil, fmt.Errorf("rgs: store.Save: %w", err)
+		return nil, nil, nil, fmt.Errorf("rgs: store.Save: %w", err)
 	}
 
 	// 9. Settle round-level bets (POST /v1/rounds/{round_id}/bets flow).
@@ -422,7 +423,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 					// Surface the error rather than silently swallowing — the
 					// caller (handler) must decide whether to retry. Pending
 					// credit recovery is M9.x (see docs/rgs-integration.md).
-					return nil, nil, fmt.Errorf("rgs: credit round-bet winner %q: %w", rb.PlayerID, cerr)
+					return nil, nil, nil, fmt.Errorf("rgs: credit round-bet winner %q: %w", rb.PlayerID, cerr)
 				}
 				totalPayout += payout
 			}
@@ -441,12 +442,10 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		fmt.Fprintf(os.Stderr, "rgs: round %d round-bets settled: count=%d total_bets=%.2f total_payout=%.2f total_loss=%.2f\n",
 			roundID, len(pr.bets), totalBets, totalPayout, totalLoss)
 	}
-	_ = roundBetOutcomes // available for callers that inspect RunNextRound return in future
-
 	m.mu.Lock()
 	m.prevTrack = int(trackID)
 	m.mu.Unlock()
-	return manifest, outcomes, nil
+	return manifest, outcomes, roundBetOutcomes, nil
 }
 
 // RoundSpec is the minimal payload the Godot client needs to run a

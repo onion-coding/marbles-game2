@@ -18,6 +18,8 @@ signal bet_placed(bet: Dictionary)       # {bet_id, marble_idx, amount, balance_
 signal bet_failed(error: String)
 signal bets_loaded(bets: Array)          # array of bet dicts from GET /bets
 signal balance_loaded(balance: float)    # from GET /wallets/<id>/balance
+signal round_completed(result: Dictionary)  # {round_id, winner: {marble_index, finish_tick}, round_bet_outcomes: [...]}
+signal round_failed(error: String)
 
 # Set by whoever owns this node (main.gd in RGS mode).
 var base_url: String = ""
@@ -54,6 +56,23 @@ func fetch_bets(round_id: int) -> void:
 		remove_child(http)
 		http.queue_free()
 
+# Trigger POST /v1/rounds/run?wait=true on the server. Blocks server-side
+# until the round sim completes and all bets are settled, then emits
+# round_completed with the full result dict, or round_failed on error.
+# Call this when the bet window closes, before (or concurrently with)
+# _start_race — the sim and the physics run in parallel.
+func run_round() -> void:
+	var url := "%s/v1/rounds/run?wait=true" % base_url
+	var http := _new_http()
+	# The Godot sim may take up to 60 s; give the HTTP layer 90 s headroom.
+	http.timeout = 90.0
+	http.request_completed.connect(_on_run_round_response.bind(http))
+	var err := http.request(url, ["Content-Type: application/json"], HTTPClient.METHOD_POST, "{}")
+	if err != OK:
+		remove_child(http)
+		http.queue_free()
+		round_failed.emit("run_round HTTPRequest.request() failed (err=%d)" % err)
+
 # Open item: no server endpoint yet. Call this once it lands.
 func fetch_balance() -> void:
 	var url := "%s/v1/wallets/%s/balance" % [base_url, player_id]
@@ -65,6 +84,22 @@ func fetch_balance() -> void:
 		http.queue_free()
 
 # ─── Callbacks ───────────────────────────────────────────────────────────────
+
+func _on_run_round_response(result: int, code: int, _headers: PackedStringArray,
+		body: PackedByteArray, http: HTTPRequest) -> void:
+	remove_child(http)
+	http.queue_free()
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		var msg := "run_round POST failed (result=%d http=%d)" % [result, code]
+		if body.size() > 0:
+			msg += ": " + body.get_string_from_utf8()
+		round_failed.emit(msg)
+		return
+	var parsed = JSON.parse_string(body.get_string_from_utf8())
+	if typeof(parsed) != TYPE_DICTIONARY:
+		round_failed.emit("run_round response is not a JSON object")
+		return
+	round_completed.emit(parsed)
 
 func _on_place_bet_response(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray, http: HTTPRequest, marble_idx: int, amount: float) -> void:
