@@ -84,9 +84,17 @@ func _ready() -> void:
 	add_child(recorder)
 	if not _status_path.is_empty():
 		recorder.finalized.connect(_on_finalized.bind(finish))
-	var cam := FixedCamera.new()
-	cam.track = track
-	add_child(cam)
+	# Interactive (no spec) → FreeCamera so the player can orbit/WASD-fly
+	# around the track. Spec mode (server-driven recording) keeps FixedCamera
+	# so the captured replay reflects a consistent canonical view.
+	if spec.is_empty():
+		var freecam := FreeCamera.new()
+		freecam.track = track
+		add_child(freecam)
+	else:
+		var cam := FixedCamera.new()
+		cam.track = track
+		add_child(cam)
 
 # Parse "--key=value" pairs from the user-args portion of the command line.
 func _load_spec_from_cli() -> Dictionary:
