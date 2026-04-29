@@ -92,6 +92,69 @@ round. Returns the updated session (now `state=BET`, with `bet` populated).
 ledger. `marble_index = -1` until the round actually starts; once the
 race begins, the index is locked at the bettor's queue position.
 
+### `POST /v1/rounds/{round_id}/bets`
+
+Place a bet directly on a pre-minted round (one returned by
+`POST /v1/rounds/start`). The player's wallet is debited immediately;
+the credit is applied after `POST /v1/rounds/run` resolves the winner.
+
+Payout multiplier: **19.0× the stake** (`PayoutMultiplier` constant in
+`server/rgs/manager.go`). With 20 equi-probable marbles this gives
+RTP = 20 × (1/20) × 19.0 = **95%**, analogous to English roulette 35:1.
+
+```json
+// Request
+{
+  "player_id":  "alice",
+  "marble_idx": 3,
+  "amount":     10.0
+}
+
+// 200 OK
+{
+  "bet_id":                "rbet_4a7f...",
+  "round_id":              17773701234567,
+  "marble_idx":            3,
+  "amount":                10.0,
+  "balance_after":         40.0,
+  "expected_payout_if_win": 190.0
+}
+```
+
+Error codes:
+
+| Code | Condition                                            |
+| ---- | ---------------------------------------------------- |
+| 404  | `round_id` never minted by `/v1/rounds/start`        |
+| 409  | round already completed (consumed by `/v1/rounds/run`) |
+| 400  | `marble_idx` outside `[0, MaxMarbles)` or `amount ≤ 0` |
+| 402  | insufficient wallet funds                            |
+
+**Currency note.** `amount` is a decimal float (e.g. `10.0` = 10 currency
+units). Internally the wallet stores cents/units × 100 as an integer;
+the conversion is transparent to the caller.
+
+### `GET /v1/rounds/{round_id}/bets[?player_id=<id>]`
+
+List bets placed on a round. Optional `player_id` query param filters
+to a single player (useful for UI reconnect / history reload).
+
+```json
+// 200 OK — array (may be empty)
+[
+  {
+    "bet_id":     "rbet_4a7f...",
+    "player_id":  "alice",
+    "round_id":   17773701234567,
+    "marble_idx": 3,
+    "amount":     10.0,
+    "placed_at":  "2026-04-29T..."
+  }
+]
+```
+
+Returns 404 if `round_id` was never minted by `/v1/rounds/start`.
+
 ### `POST /v1/rounds/start`
 
 Mint a server-authoritative round spec for a Godot client that wants to
@@ -260,3 +323,22 @@ side to verify a round's wallet flow against the audit trail.
 - **WebSocket round events.** Operators want push notifications when a
   round starts / settles instead of polling `/v1/sessions/{id}`. Reuse
   the existing live-stream WS infra in `server/stream/`.
+- **Round-bet persistence.** `pendingRounds` and `roundBets` in
+  `Manager` are in-memory only. A server restart loses all queued bets
+  and round-id registrations. Needs a Postgres-backed store (M9.x).
+- **Round-bet / session-bet seed alignment.** When `RunNextRound` is
+  called after `POST /v1/rounds/start`, it generates a fresh seed and
+  round_id rather than re-using the pre-minted spec. The round-level
+  bets are settled against the first pending round in FIFO order, but
+  the `round_id` in the audit manifest will differ from the one
+  returned to the bettor. M9.x: `RunNextRound` should consume the
+  oldest `pendingRound`'s seed + round_id so the client's round_id is
+  reflected in the replay store.
+- **Round-bet amount precision.** `amount` is stored as `float64` and
+  converted to wallet integer units by multiplying × 100 (2 decimal
+  places). This is adequate for cent-denominated currencies but will
+  lose precision for USDC-6 or satoshi units. Switch to a
+  `decimal.Decimal` or operator-supplied integer + exponent pair.
+- **Duplicate marble_idx bets.** The MVP allows a single player to
+  place multiple bets on the same marble in the same round. Add an
+  optional uniqueness constraint if the game rules require it.

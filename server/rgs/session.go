@@ -46,10 +46,14 @@ func (s SessionState) String() string {
 }
 
 var (
-	ErrWrongState   = errors.New("session in wrong state")
-	ErrBetExists    = errors.New("session already has a bet")
-	ErrNoBet        = errors.New("session has no active bet")
-	ErrSessionClosed = errors.New("session closed")
+	ErrWrongState      = errors.New("session in wrong state")
+	ErrBetExists       = errors.New("session already has a bet")
+	ErrNoBet           = errors.New("session has no active bet")
+	ErrSessionClosed   = errors.New("session closed")
+	ErrUnknownRound    = errors.New("unknown round_id")
+	ErrRoundAlreadyRun = errors.New("round already completed")
+	ErrInvalidMarbleIdx = errors.New("marble_idx out of range")
+	ErrInvalidBetAmount = errors.New("invalid bet amount")
 )
 
 // Bet captures everything the operator committed for the upcoming round.

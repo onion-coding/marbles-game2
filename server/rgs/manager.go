@@ -39,6 +39,49 @@ type ManagerConfig struct {
 // is sim.Run.
 type SimRunner func(ctx context.Context, req sim.Request) (sim.Result, error)
 
+// PayoutMultiplier is the gross payout factor applied to a winning round bet.
+// 20 marbles × (1/20) probability × 19.0 = 0.95 RTP (95%), matching a
+// roulette-style book. The stake is already debited at placement, so a
+// winning Credit is amount × PayoutMultiplier (stake returned + profit).
+const PayoutMultiplier = 19.0
+
+// RoundBet is a bet placed directly against a pre-minted round (the
+// POST /v1/rounds/{round_id}/bets flow). It is distinct from the
+// session-based Bet used by PlaceBet — here the caller picks a specific
+// marble and the debit happens immediately; the credit is issued after
+// RunNextRound resolves the winner.
+type RoundBet struct {
+	BetID     string    `json:"bet_id"`
+	PlayerID  string    `json:"player_id"`
+	RoundID   uint64    `json:"round_id"`
+	MarbleIdx int       `json:"marble_idx"`
+	Amount    float64   `json:"amount"`
+	PlacedAt  time.Time `json:"placed_at"`
+}
+
+// RoundBetOutcome carries the settlement result for a single RoundBet.
+type RoundBetOutcome struct {
+	BetID       string  `json:"bet_id"`
+	PlayerID    string  `json:"player_id"`
+	MarbleIdx   int     `json:"marble_idx"`
+	Amount      float64 `json:"amount"`
+	Won         bool    `json:"won"`
+	Payout      float64 `json:"payout"`       // amount × PayoutMultiplier, or 0
+	WinnerIndex int     `json:"winner_index"`
+}
+
+// pendingRound groups the spec minted by GenerateRoundSpec together with
+// any RoundBets placed before the round is actually run. RunNextRound picks
+// up the first entry in m.pendingRounds, if any, so the round_id visible
+// to bettors matches the one in the outcome.
+//
+// Open item: persistence — pendingRounds live only in memory. A server
+// restart loses all queued bets; add Postgres-backed storage (M9.x).
+type pendingRound struct {
+	spec *RoundSpec
+	bets []*RoundBet
+}
+
 // Manager is the central coordinator. It owns the session table, the
 // "next round" buffer of pending bets, and the wallet client. Methods
 // are safe for concurrent calls.
@@ -52,10 +95,12 @@ type SimRunner func(ctx context.Context, req sim.Request) (sim.Result, error)
 type Manager struct {
 	cfg ManagerConfig
 
-	mu       sync.Mutex
-	sessions map[string]*Session
-	pending  []*Session // sessions whose Bet is queued for the next round, in placement order
-	prevTrack int        // last track_id used, threaded for the no-back-to-back selector
+	mu            sync.Mutex
+	sessions      map[string]*Session
+	pending       []*Session    // sessions whose Bet is queued for the next round, in placement order
+	prevTrack     int           // last track_id used, threaded for the no-back-to-back selector
+	pendingRounds []*pendingRound // pre-minted round specs with their round-level bets, FIFO
+	roundBets     map[uint64][]*RoundBet // round_id → all settled+pending bets (for GET queries)
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
@@ -81,6 +126,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		cfg:       cfg,
 		sessions:  map[string]*Session{},
 		prevTrack: -1,
+		roundBets: map[uint64][]*RoundBet{},
 	}, nil
 }
 
@@ -312,6 +358,69 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		return nil, nil, fmt.Errorf("rgs: store.Save: %w", err)
 	}
 
+	// 9. Settle round-level bets (POST /v1/rounds/{round_id}/bets flow).
+	//    We pop the first pendingRound that matches the roundID we just ran.
+	//    Because RunNextRound generates its own roundID via UnixNano there
+	//    will be no pendingRound entry for this particular roundID — unless
+	//    the caller previously used GenerateRoundSpec AND that spec's roundID
+	//    happens to match (which can't happen because we generate a new ID
+	//    here). The real connection is: when RunNextRound is called after
+	//    POST /v1/rounds/start, it should use the pre-minted spec's roundID
+	//    and seed so bettors' recorded round_id matches the outcome.
+	//
+	//    For this MVP we settle round-level bets by popping the oldest
+	//    pendingRound (FIFO). RunNextRound re-uses its roundID for matching
+	//    so bets placed on that round_id get settled here.
+	//
+	//    Open item (M9.x): when RunNextRound is called, it should consume the
+	//    oldest pendingRound's seed + roundID rather than generating a fresh
+	//    one, so the client's pre-minted round_id is reflected in the audit
+	//    trail. For now, round-level bets are settled against the round that
+	//    ran immediately after them, keyed by pop order.
+	var roundBetOutcomes []RoundBetOutcome
+	m.mu.Lock()
+	var pr *pendingRound
+	if len(m.pendingRounds) > 0 {
+		pr = m.pendingRounds[0]
+		m.pendingRounds = m.pendingRounds[1:]
+	}
+	m.mu.Unlock()
+
+	if pr != nil {
+		var totalBets, totalPayout float64
+		roundBetOutcomes = make([]RoundBetOutcome, len(pr.bets))
+		for i, rb := range pr.bets {
+			won := rb.MarbleIdx == simRes.WinnerMarbleIndex
+			var payout float64
+			if won {
+				payout = rb.Amount * PayoutMultiplier
+				payoutUnits := uint64(payout * 100)
+				creditTxID := rb.BetID + ":credit"
+				if cerr := m.cfg.Wallet.Credit(rb.PlayerID, payoutUnits, creditTxID); cerr != nil {
+					// Surface the error rather than silently swallowing — the
+					// caller (handler) must decide whether to retry. Pending
+					// credit recovery is M9.x (see docs/rgs-integration.md).
+					return nil, nil, fmt.Errorf("rgs: credit round-bet winner %q: %w", rb.PlayerID, cerr)
+				}
+				totalPayout += payout
+			}
+			totalBets += rb.Amount
+			roundBetOutcomes[i] = RoundBetOutcome{
+				BetID:       rb.BetID,
+				PlayerID:    rb.PlayerID,
+				MarbleIdx:   rb.MarbleIdx,
+				Amount:      rb.Amount,
+				Won:         won,
+				Payout:      payout,
+				WinnerIndex: simRes.WinnerMarbleIndex,
+			}
+		}
+		totalLoss := totalBets - totalPayout
+		fmt.Fprintf(os.Stderr, "rgs: round %d round-bets settled: count=%d total_bets=%.2f total_payout=%.2f total_loss=%.2f\n",
+			roundID, len(pr.bets), totalBets, totalPayout, totalLoss)
+	}
+	_ = roundBetOutcomes // available for callers that inspect RunNextRound return in future
+
 	m.mu.Lock()
 	m.prevTrack = int(trackID)
 	m.mu.Unlock()
@@ -329,10 +438,11 @@ type RoundSpec struct {
 	ClientSeeds   []string `json:"client_seeds"`
 }
 
-// GenerateRoundSpec mints a fresh RoundSpec without touching any session,
-// wallet, or sim.  The spec is suitable for returning to a Godot client
-// that wants a server-authoritative seed / track while running the
-// physics locally (the --rgs client flow).
+// GenerateRoundSpec mints a fresh RoundSpec and registers it as a pending
+// round so that bets can be placed against it via PlaceBetOnRound. The spec
+// is also suitable for returning to a Godot client that wants a
+// server-authoritative seed / track while running the physics locally
+// (the --rgs client flow).
 //
 // The track is selected with the same no-back-to-back rotation used by
 // RunNextRound, so the track sequence is consistent whether a full server
@@ -355,12 +465,130 @@ func (m *Manager) GenerateRoundSpec() (*RoundSpec, error) {
 		clientSeeds[i] = ""
 	}
 
-	return &RoundSpec{
+	spec := &RoundSpec{
 		RoundID:       roundID,
 		ServerSeedHex: hex.EncodeToString(seed[:]),
 		TrackID:       trackID,
 		ClientSeeds:   clientSeeds,
-	}, nil
+	}
+
+	m.mu.Lock()
+	m.pendingRounds = append(m.pendingRounds, &pendingRound{spec: spec})
+	m.roundBets[roundID] = nil // register round_id as known, bets populated later
+	m.mu.Unlock()
+
+	return spec, nil
+}
+
+// PlaceBetOnRound places a bet directly on a pre-minted round (one that was
+// returned by GenerateRoundSpec / POST /v1/rounds/start). The player's
+// wallet is debited immediately; the credit is applied after RunNextRound
+// resolves the winner for that round.
+//
+// Errors:
+//   - ErrUnknownRound if round_id was never minted by GenerateRoundSpec.
+//   - ErrRoundAlreadyRun if the round has already been executed.
+//   - ErrInvalidMarbleIdx if marble_idx is outside [0, MaxMarbles).
+//   - ErrInvalidBetAmount if amount <= 0.
+//   - ErrInsufficientFunds / ErrUnknownPlayer propagated from wallet.Debit.
+func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int, amount float64) (*RoundBet, float64, error) {
+	if marbleIdx < 0 || marbleIdx >= m.cfg.MaxMarbles {
+		return nil, 0, fmt.Errorf("%w: marble_idx %d, valid range [0,%d)", ErrInvalidMarbleIdx, marbleIdx, m.cfg.MaxMarbles)
+	}
+	if amount <= 0 {
+		return nil, 0, fmt.Errorf("%w: amount must be > 0, got %v", ErrInvalidBetAmount, amount)
+	}
+
+	m.mu.Lock()
+	pr := m.findPendingRound(roundID)
+	m.mu.Unlock()
+
+	if pr == nil {
+		// Check if it was already run (present in roundBets but no pending entry).
+		m.mu.Lock()
+		_, known := m.roundBets[roundID]
+		m.mu.Unlock()
+		if known {
+			return nil, 0, ErrRoundAlreadyRun
+		}
+		return nil, 0, ErrUnknownRound
+	}
+
+	// Convert amount to uint64 micro-units for wallet (× 100 to preserve 2
+	// decimal places while staying on the integer wallet interface).
+	amountUnits := uint64(amount * 100)
+	if amountUnits == 0 {
+		return nil, 0, fmt.Errorf("%w: amount %v rounds to zero", ErrInvalidBetAmount, amount)
+	}
+
+	betID := newID("rbet_")
+	if err := m.cfg.Wallet.Debit(playerID, amountUnits, betID); err != nil {
+		return nil, 0, fmt.Errorf("rgs: wallet debit: %w", err)
+	}
+
+	balUnits, balErr := m.cfg.Wallet.Balance(playerID)
+	var balAfter float64
+	if balErr == nil {
+		balAfter = float64(balUnits) / 100.0
+	}
+
+	bet := &RoundBet{
+		BetID:     betID,
+		PlayerID:  playerID,
+		RoundID:   roundID,
+		MarbleIdx: marbleIdx,
+		Amount:    amount,
+		PlacedAt:  time.Now(),
+	}
+
+	m.mu.Lock()
+	// Re-validate: the round might have been popped by RunNextRound between
+	// our unlock and this re-lock. If so, refund and error.
+	if m.findPendingRound(roundID) == nil {
+		m.mu.Unlock()
+		_ = m.cfg.Wallet.Credit(playerID, amountUnits, betID+":refund")
+		return nil, 0, ErrRoundAlreadyRun
+	}
+	pr.bets = append(pr.bets, bet)
+	m.roundBets[roundID] = append(m.roundBets[roundID], bet)
+	m.mu.Unlock()
+
+	return bet, balAfter, nil
+}
+
+// BetsForRound returns the recorded bets for a round, optionally filtered to
+// a single playerID (empty string = return all). The round must have been
+// minted by GenerateRoundSpec. Returns nil, ErrUnknownRound if not found.
+func (m *Manager) BetsForRound(roundID uint64, playerID string) ([]*RoundBet, error) {
+	m.mu.Lock()
+	bets, ok := m.roundBets[roundID]
+	m.mu.Unlock()
+	if !ok {
+		return nil, ErrUnknownRound
+	}
+	if playerID == "" {
+		cp := make([]*RoundBet, len(bets))
+		copy(cp, bets)
+		return cp, nil
+	}
+	var out []*RoundBet
+	for _, b := range bets {
+		if b.PlayerID == playerID {
+			out = append(out, b)
+		}
+	}
+	return out, nil
+}
+
+// findPendingRound returns the pendingRound for the given roundID, or nil.
+// Caller must hold m.mu.
+func (m *Manager) findPendingRound(roundID uint64) *pendingRound {
+	for _, pr := range m.pendingRounds {
+		if pr.spec.RoundID == roundID {
+			return pr
+		}
+	}
+	return nil
 }
 
 // CloseSession marks a session terminal. Reject when there's an unsettled

@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+// parseRoundID parses the {round_id} path segment as a uint64.
+func parseRoundID(s string) (uint64, error) {
+	v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid round_id %q: %w", s, err)
+	}
+	return v, nil
+}
+
 // HTTPHandler exposes the operator-facing API on top of a Manager. The
 // surface is intentionally minimal — the routes match the integration
 // spec in docs/rgs-integration.md and nothing more. Real aggregator
@@ -19,13 +28,15 @@ import (
 //
 // Routes:
 //
-//	POST /v1/sessions                    open a session for a player
-//	POST /v1/sessions/{id}/bet           place a bet (debits wallet)
-//	POST /v1/sessions/{id}/close         close session (must be SETTLED/OPEN)
-//	GET  /v1/sessions/{id}               read session state + last result
-//	POST /v1/rounds/run                  trigger the next round (admin)
-//	POST /v1/rounds/start                mint a server-authoritative round spec (client --rgs flow)
-//	GET  /v1/health                      liveness check
+//	POST /v1/sessions                         open a session for a player
+//	POST /v1/sessions/{id}/bet                place a bet (debits wallet)
+//	POST /v1/sessions/{id}/close              close session (must be SETTLED/OPEN)
+//	GET  /v1/sessions/{id}                    read session state + last result
+//	POST /v1/rounds/run                       trigger the next round (admin)
+//	POST /v1/rounds/start                     mint a server-authoritative round spec (client --rgs flow)
+//	POST /v1/rounds/{round_id}/bets           place a bet on a pre-minted round
+//	GET  /v1/rounds/{round_id}/bets           list bets for a round (filter: ?player_id=)
+//	GET  /v1/health                           liveness check
 //
 // The body schemas are defined inline in this file as request/response
 // structs so the JSON contract stays adjacent to the handler that uses
@@ -46,6 +57,8 @@ func (h *HTTPHandler) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/sessions/{id}", h.getSession)
 	mux.HandleFunc("POST /v1/rounds/run", h.runRound)
 	mux.HandleFunc("POST /v1/rounds/start", h.startRound)
+	mux.HandleFunc("POST /v1/rounds/{round_id}/bets", h.placeRoundBet)
+	mux.HandleFunc("GET /v1/rounds/{round_id}/bets", h.getRoundBets)
 	mux.HandleFunc("GET /v1/health", h.health)
 	return mux
 }
@@ -209,6 +222,129 @@ func (h *HTTPHandler) startRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, spec)
+}
+
+// ─── Round-bet types ─────────────────────────────────────────────────────
+
+// placeRoundBetRequest is the body for POST /v1/rounds/{round_id}/bets.
+type placeRoundBetRequest struct {
+	PlayerID  string  `json:"player_id"`
+	MarbleIdx int     `json:"marble_idx"`
+	Amount    float64 `json:"amount"`
+}
+
+// placeRoundBetResponse is the 200 body for a successful bet placement.
+type placeRoundBetResponse struct {
+	BetID                string  `json:"bet_id"`
+	RoundID              uint64  `json:"round_id"`
+	MarbleIdx            int     `json:"marble_idx"`
+	Amount               float64 `json:"amount"`
+	BalanceAfter         float64 `json:"balance_after"`
+	ExpectedPayoutIfWin  float64 `json:"expected_payout_if_win"`
+}
+
+// roundBetResponse is one element of the GET /v1/rounds/{round_id}/bets list.
+type roundBetResponse struct {
+	BetID     string    `json:"bet_id"`
+	PlayerID  string    `json:"player_id"`
+	RoundID   uint64    `json:"round_id"`
+	MarbleIdx int       `json:"marble_idx"`
+	Amount    float64   `json:"amount"`
+	PlacedAt  time.Time `json:"placed_at"`
+}
+
+// ─── Round-bet handlers ──────────────────────────────────────────────────
+
+// placeRoundBet handles POST /v1/rounds/{round_id}/bets.
+//
+// Error mapping:
+//
+//	404 — round_id unknown (never minted by /v1/rounds/start)
+//	409 — round already completed
+//	400 — marble_idx out of range, amount <= 0, or malformed body
+//	402 — insufficient funds
+func (h *HTTPHandler) placeRoundBet(w http.ResponseWriter, r *http.Request) {
+	roundID, err := parseRoundID(r.PathValue("round_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req placeRoundBetRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.PlayerID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("player_id is required"))
+		return
+	}
+
+	bet, balAfter, err := h.mgr.PlaceBetOnRound(roundID, req.PlayerID, req.MarbleIdx, req.Amount)
+	if err != nil {
+		writeRoundBetError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, placeRoundBetResponse{
+		BetID:               bet.BetID,
+		RoundID:             bet.RoundID,
+		MarbleIdx:           bet.MarbleIdx,
+		Amount:              bet.Amount,
+		BalanceAfter:        balAfter,
+		ExpectedPayoutIfWin: bet.Amount * PayoutMultiplier,
+	})
+}
+
+// getRoundBets handles GET /v1/rounds/{round_id}/bets[?player_id=<id>].
+func (h *HTTPHandler) getRoundBets(w http.ResponseWriter, r *http.Request) {
+	roundID, err := parseRoundID(r.PathValue("round_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	playerID := r.URL.Query().Get("player_id")
+
+	bets, err := h.mgr.BetsForRound(roundID, playerID)
+	if err != nil {
+		if errors.Is(err, ErrUnknownRound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	resp := make([]roundBetResponse, len(bets))
+	for i, b := range bets {
+		resp[i] = roundBetResponse{
+			BetID:     b.BetID,
+			PlayerID:  b.PlayerID,
+			RoundID:   b.RoundID,
+			MarbleIdx: b.MarbleIdx,
+			Amount:    b.Amount,
+			PlacedAt:  b.PlacedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeRoundBetError maps PlaceBetOnRound errors to HTTP status codes.
+func writeRoundBetError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrUnknownRound):
+		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrRoundAlreadyRun):
+		writeError(w, http.StatusConflict, err)
+	case errors.Is(err, ErrInvalidMarbleIdx), errors.Is(err, ErrInvalidBetAmount):
+		writeError(w, http.StatusBadRequest, err)
+	case errors.Is(err, ErrInsufficientFunds):
+		writeError(w, http.StatusPaymentRequired, err)
+	case errors.Is(err, ErrUnknownPlayer):
+		writeError(w, http.StatusNotFound, err)
+	default:
+		writeError(w, http.StatusBadRequest, err)
+	}
 }
 
 func (h *HTTPHandler) health(w http.ResponseWriter, r *http.Request) {
