@@ -92,6 +92,36 @@ round. Returns the updated session (now `state=BET`, with `bet` populated).
 ledger. `marble_index = -1` until the round actually starts; once the
 race begins, the index is locked at the bettor's queue position.
 
+### `POST /v1/rounds/start`
+
+Mint a server-authoritative round spec for a Godot client that wants to
+run the physics locally (the `--rgs=<url>` client flow). No session,
+wallet, or sim involvement — this is a pure spec-generation call.
+
+The response is the JSON the Godot client uses directly: `server_seed_hex`
+fixes the fairness chain on the server; `round_id` is the unix-nanosecond
+timestamp generated server-side; `track_id` follows the same no-back-to-back
+rotation as `POST /v1/rounds/run`; `client_seeds` is an array of empty
+strings (one per marble, MVP — per-player seed mixing is M9.x work).
+
+```json
+// POST body: empty ({} or omit)
+
+// 200 OK
+{
+  "round_id":       17773701234567,
+  "server_seed_hex": "a3f1...64 hex chars...",
+  "track_id":       3,
+  "client_seeds":   ["", "", "...20 entries total..."]
+}
+```
+
+The Godot client is launched with `--rgs=http://localhost:8080`. When that
+flag is present (and `--round-spec` is absent), `main.gd` POSTs to this
+endpoint, waits for the response via `HTTPRequest.request_completed`, and
+passes the received JSON directly to `_start_race()`. The race physics run
+locally; only the seed and track choice are server-authoritative.
+
 ### `POST /v1/rounds/run[?wait=true]`
 
 Trigger the next round. Without `wait`, returns 202 immediately and the

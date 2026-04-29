@@ -318,6 +318,51 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	return manifest, outcomes, nil
 }
 
+// RoundSpec is the minimal payload the Godot client needs to run a
+// deterministic round locally.  It is server-authored (server_seed,
+// round_id, track_id) so the fairness chain is always server-rooted.
+// client_seeds are empty in the current MVP (no per-player seed mixing yet).
+type RoundSpec struct {
+	RoundID       uint64   `json:"round_id"`
+	ServerSeedHex string   `json:"server_seed_hex"`
+	TrackID       uint8    `json:"track_id"`
+	ClientSeeds   []string `json:"client_seeds"`
+}
+
+// GenerateRoundSpec mints a fresh RoundSpec without touching any session,
+// wallet, or sim.  The spec is suitable for returning to a Godot client
+// that wants a server-authoritative seed / track while running the
+// physics locally (the --rgs client flow).
+//
+// The track is selected with the same no-back-to-back rotation used by
+// RunNextRound, so the track sequence is consistent whether a full server
+// round or a local-physics spec round is in progress.
+func (m *Manager) GenerateRoundSpec() (*RoundSpec, error) {
+	var seed [32]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		return nil, fmt.Errorf("rgs: GenerateRoundSpec seed: %w", err)
+	}
+	roundID := uint64(time.Now().UnixNano())
+
+	m.mu.Lock()
+	prevTrack := m.prevTrack
+	trackID := m.selectTrack(roundID, prevTrack)
+	m.prevTrack = int(trackID)
+	m.mu.Unlock()
+
+	clientSeeds := make([]string, m.cfg.MaxMarbles)
+	for i := range clientSeeds {
+		clientSeeds[i] = ""
+	}
+
+	return &RoundSpec{
+		RoundID:       roundID,
+		ServerSeedHex: hex.EncodeToString(seed[:]),
+		TrackID:       trackID,
+		ClientSeeds:   clientSeeds,
+	}, nil
+}
+
 // CloseSession marks a session terminal. Reject when there's an unsettled
 // bet — the caller must wait for the next RunNextRound to settle it.
 func (m *Manager) CloseSession(sessionID string) error {

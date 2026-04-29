@@ -24,6 +24,7 @@ import (
 //	POST /v1/sessions/{id}/close         close session (must be SETTLED/OPEN)
 //	GET  /v1/sessions/{id}               read session state + last result
 //	POST /v1/rounds/run                  trigger the next round (admin)
+//	POST /v1/rounds/start                mint a server-authoritative round spec (client --rgs flow)
 //	GET  /v1/health                      liveness check
 //
 // The body schemas are defined inline in this file as request/response
@@ -44,6 +45,7 @@ func (h *HTTPHandler) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/sessions/{id}/close", h.closeSession)
 	mux.HandleFunc("GET /v1/sessions/{id}", h.getSession)
 	mux.HandleFunc("POST /v1/rounds/run", h.runRound)
+	mux.HandleFunc("POST /v1/rounds/start", h.startRound)
 	mux.HandleFunc("GET /v1/health", h.health)
 	return mux
 }
@@ -190,6 +192,23 @@ func (h *HTTPHandler) runRound(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, struct {
 		Status string `json:"status"`
 	}{Status: "round_started"})
+}
+
+// startRound mints a server-authoritative round spec (round_id,
+// server_seed, track_id, empty client_seeds) for a Godot client that
+// wants to run the physics locally but anchor the fairness chain on the
+// server.  No session, wallet, or sim involvement — this is a pure
+// spec-generation call.
+//
+// The Godot client passes --rgs=<base_url>; main.gd POSTs here instead
+// of generating a local seed when no --round-spec is present.
+func (h *HTTPHandler) startRound(w http.ResponseWriter, r *http.Request) {
+	spec, err := h.mgr.GenerateRoundSpec()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, spec)
 }
 
 func (h *HTTPHandler) health(w http.ResponseWriter, r *http.Request) {

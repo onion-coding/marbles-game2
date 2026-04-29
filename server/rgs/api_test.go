@@ -196,3 +196,47 @@ func TestHTTP_RunRoundAsyncReturns202(t *testing.T) {
 	// Avoid sleep flakiness: just confirm the 202 fired.
 	_ = context.Background()
 }
+
+func TestHTTP_StartRoundReturnsSpec(t *testing.T) {
+	url, _, _, cleanup := httpFixture(t, 0)
+	defer cleanup()
+
+	resp := postJSON(t, url+"/v1/rounds/start", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("start round: status %d, want 200", resp.StatusCode)
+	}
+	var spec RoundSpec
+	decodeBody(t, resp, &spec)
+
+	if spec.RoundID == 0 {
+		t.Fatalf("round_id is zero — expected a unix-nano timestamp")
+	}
+	if len(spec.ServerSeedHex) != 64 {
+		t.Fatalf("server_seed_hex length %d, want 64 (32-byte hex)", len(spec.ServerSeedHex))
+	}
+	if len(spec.ClientSeeds) != 20 { // MaxMarbles = 20 in test fixture
+		t.Fatalf("client_seeds count %d, want 20", len(spec.ClientSeeds))
+	}
+	// All client seeds are empty strings in MVP.
+	for i, cs := range spec.ClientSeeds {
+		if cs != "" {
+			t.Fatalf("client_seeds[%d] = %q, want empty string", i, cs)
+		}
+	}
+}
+
+func TestHTTP_StartRoundTracksRotation(t *testing.T) {
+	// Two consecutive /v1/rounds/start calls must not return the same
+	// track_id (the no-back-to-back invariant from selectTrack).
+	// This can only be guaranteed when the pool has > 1 entry, which
+	// the test fixture configures (pool = [0,1,2,3,4,5]).
+	url, _, _, cleanup := httpFixture(t, 0)
+	defer cleanup()
+
+	var spec1, spec2 RoundSpec
+	decodeBody(t, postJSON(t, url+"/v1/rounds/start", nil), &spec1)
+	decodeBody(t, postJSON(t, url+"/v1/rounds/start", nil), &spec2)
+	if spec1.TrackID == spec2.TrackID {
+		t.Fatalf("back-to-back /start calls returned same track_id %d", spec1.TrackID)
+	}
+}
