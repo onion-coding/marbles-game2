@@ -143,9 +143,8 @@ var _chip_wheel_mat: PhysicsMaterial = null
 # wants, we drop the gravity inside the play volume to ~5 % of normal.
 # Marbles still fall, but visually it reads as "slow-motion" instead of
 # "freefall".
-const SLOW_GRAVITY_ACCEL := 0.25     # m/s² (~2.5 % of project default 9.8) — produces
-                                      # ~42 s race over the 80 m drop with the chip rows,
-                                      # cards, and chip wheels deflecting marbles.
+const SLOW_GRAVITY_ACCEL := 0.29     # tuned to ~47 s race time (was 0.25 → 55.2 s).
+                                      # 0.25 × (55.2 / 47) ≈ 0.294, rounded to 0.29.
 
 # Spinning chip wheels — three large rotating discs with peg-chips on
 # the rim, scattered between the existing chip rows / cards. Same idea

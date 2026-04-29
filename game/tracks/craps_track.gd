@@ -225,7 +225,8 @@ var _chip_wheel_phases: Array = []
 # Slow-motion gravity zone — same 40-50 s target as Poker. Marbles inside
 # the play volume experience ~2.5 % of project gravity so the race reads
 # as slow-motion instead of freefall.
-const SLOW_GRAVITY_ACCEL := 0.20     # tuned to ~45 s race time. Craps has fewer
+const SLOW_GRAVITY_ACCEL := 0.21     # tuned to ~48.7 s race time (was 0.20 → 53.1 s).
+                                      # Craps has fewer
                                       # obstacles per metre than Poker (13 chip rows +
                                       # 4 pins vs 10 cards + 7 chip rows + denser layout),
                                       # so it needs slightly different gravity to land
