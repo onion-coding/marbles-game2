@@ -646,6 +646,6 @@ func environment_overrides() -> Dictionary:
 	return {
 		"ambient_energy": 0.60,
 		"fog_color": Color(0.55, 0.70, 0.45),
-		"fog_density": 0.006,
+		"fog_density": 0.002,
 		"sun_color": Color(1.0, 0.85, 0.60),
 	}

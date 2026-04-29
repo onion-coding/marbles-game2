@@ -582,6 +582,18 @@ func camera_bounds() -> AABB:
 	var max_v := Vector3(PLAY_FIELD_WIDTH * 0.5 + 2.0, HOPPER_FLOOR_Y + HOPPER_INNER_H + 4.0, COURSE_DEPTH * 0.5 + 1.0)
 	return AABB(min_v, max_v - min_v)
 
+func camera_pose() -> Dictionary:
+	# Frontal view of the vertical peg tower. The play volume spans
+	# ~9.9 m (FINISH_Y) to ~62.5 m (hopper top), a 52.6 m height, with
+	# 17 m width. At FOV 70 the half-height subtends ~26 m; distance 45 m
+	# keeps the full column in frame with margin on both sides.
+	var mid_y: float = (FINISH_Y + HOPPER_FLOOR_Y + HOPPER_INNER_H) * 0.5
+	return {
+		"position": Vector3(0.0, mid_y, 45.0),
+		"target":   Vector3(0.0, mid_y, 0.0),
+		"fov":      70.0,
+	}
+
 func environment_overrides() -> Dictionary:
 	# Arcade mood pulled out of fog + sun; sky stays the daylight cloud
 	# default. Pinker sun against magenta fog reads as "loud arcade"
@@ -589,7 +601,7 @@ func environment_overrides() -> Dictionary:
 	return {
 		"ambient_energy": 0.75,
 		"fog_color": Color(0.95, 0.55, 0.80),
-		"fog_density": 0.005,
+		"fog_density": 0.002,
 		"sun_color": Color(1.0, 0.78, 0.95),
 		"sun_energy": 1.3,
 	}

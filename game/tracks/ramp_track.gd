@@ -127,6 +127,19 @@ func camera_bounds() -> AABB:
 						bb = bb.expand(corner)
 	return bb
 
+func camera_pose() -> Dictionary:
+	# 3/4 isometric view that captures all 5 zigzag segments in a single
+	# frame. The cascade descends roughly 22 m in Y and ~82 m in -Z from
+	# the origin, so the AABB centre sits around (0, -10, -40). Placing the
+	# camera above and in front of the start at (5, 18, 22) and aiming at
+	# the AABB midpoint gives a diagonal view where every ramp level is
+	# visible without the perspective collapsing them into one another.
+	return {
+		"position": Vector3(5.0, 18.0, 22.0),
+		"target":   Vector3(0.0, -8.0, -38.0),
+		"fov":      65.0,
+	}
+
 # ─── Internal helpers ─────────────────────────────────────────────────────
 
 # World position of a point on segment i's top surface, offset

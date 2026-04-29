@@ -393,5 +393,18 @@ func camera_bounds() -> AABB:
 	var max_z := FINISH_CENTER.z + 3.0
 	return AABB(Vector3(min_x, min_y, min_z), Vector3(max_x - min_x, max_y - min_y, max_z - min_z))
 
+func camera_pose() -> Dictionary:
+	# Frontal view from +Z looking toward the helix axis. The helix spans
+	# roughly Y=5–28 (spawn overhead), X from -8 to +8 (radius). A position
+	# at Z=35 centred on the mid-height (Y≈16) keeps the entire descent and
+	# the decorative wheel visible. FOV 65 avoids perspective distortion
+	# while fitting the 16 m wide helix comfortably at this distance.
+	var mid_y: float = (SPAWN_CENTER.y + FINISH_CENTER.y) * 0.5
+	return {
+		"position": Vector3(0.0, mid_y, 35.0),
+		"target":   Vector3(0.0, mid_y - 2.0, 0.0),
+		"fov":      65.0,
+	}
+
 func environment_overrides() -> Dictionary:
 	return {}
