@@ -1,6 +1,8 @@
 extends Node3D
 
 const MARBLE_COUNT := 20
+# How many seconds the WAITING / bet-placement window is open in RGS mode.
+const RGS_BET_WINDOW_SEC := 10.0
 
 var _status_path: String = ""  # if non-empty, write status JSON on race completion
 var _round_id: int = 0
@@ -16,13 +18,17 @@ var _live_finish_pos: Vector3 = Vector3.ZERO
 var _live_tick: int = 0
 var _live_racing: bool = false
 
+# RGS mode state
+var _rgs_client: RgsClient = null
+var _pending_spec: Dictionary = {}   # spec dict waiting while bet window is open
+
 func _ready() -> void:
 	# Three modes (evaluated in this order of priority):
 	# (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>). Used
 	#     by the Go server (server/sim) to drive deterministic rounds with supplied seeds.
 	# (b) RGS mode: --rgs=<base_url> is present but no --round-spec. The client
-	#     fetches a server-authoritative spec via POST /v1/rounds/start and then
-	#     runs the physics locally. The fairness chain is rooted on the server.
+	#     fetches a server-authoritative spec via POST /v1/rounds/start, opens a
+	#     bet-placement window for RGS_BET_WINDOW_SEC seconds, then starts the race.
 	# (c) Interactive mode: neither flag → generate a fresh local seed.
 	var spec := _load_spec_from_cli()
 	if not spec.is_empty():
@@ -36,7 +42,12 @@ func _ready() -> void:
 		_start_race({})
 		return
 
-	# (b) RGS mode — fetch spec from server, then start race in callback.
+	# (b) RGS mode — create the persistent HTTP client node.
+	_rgs_client = RgsClient.new()
+	_rgs_client.base_url = rgs_url
+	add_child(_rgs_client)
+	# player_id is populated by RgsClient._ready() from user://player_id.txt.
+
 	print("RGS: fetching round spec from %s/v1/rounds/start" % rgs_url)
 	var http := HTTPRequest.new()
 	add_child(http)
@@ -72,9 +83,71 @@ func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStri
 		_start_race({})
 		return
 
-	print("RGS: received spec round_id=%d track_id=%d" \
-			% [int(parsed.get("round_id", 0)), int(parsed.get("track_id", 0))])
-	_start_race(parsed)
+	var round_id_int: int = int(parsed.get("round_id", 0))
+	print("RGS: received spec round_id=%d track_id=%d — opening %d s bet window" \
+			% [round_id_int, int(parsed.get("track_id", 0)), int(RGS_BET_WINDOW_SEC)])
+
+	# Expose round_id early so _on_bet_requested can use it during the window.
+	_round_id = round_id_int
+	# Store the spec so the countdown timer can pass it to _start_race.
+	_pending_spec = parsed
+
+	# Build the HUD now so the bet panel is visible during the waiting window.
+	# We need enough info to populate the marble selector, so we build a
+	# synthetic header from marble count (names become Marble_00…Marble_N).
+	var marble_count: int = MARBLE_COUNT
+	var client_seeds = parsed.get("client_seeds", [])
+	if client_seeds is Array and (client_seeds as Array).size() > 0:
+		marble_count = (client_seeds as Array).size()
+
+	# Build a minimal HUD header with placeholder colors.  The real colors
+	# come from FairSeed.derive_marble_colors once _start_race() runs, but
+	# for the bet-selector we only need names.  Colors will be overwritten
+	# by setup() when the race actually launches.
+	var hud_header: Array = []
+	for i in range(marble_count):
+		hud_header.append({"name": "Marble_%02d" % i, "rgba": 0})
+
+	_hud = HUD.new()
+	add_child(_hud)
+	_hud.setup(hud_header)
+
+	# setup() puts the HUD into RACING phase; enable_rgs_mode() flips it
+	# back to WAITING and reveals the bet panel.
+	_hud.enable_rgs_mode(round_id_int)
+
+	# Wire bet signal → RgsClient → HUD confirmation / error.
+	_hud.bet_requested.connect(_on_bet_requested)
+	if _rgs_client != null:
+		_rgs_client.bet_placed.connect(_on_bet_placed)
+		_rgs_client.bet_failed.connect(_on_bet_failed)
+
+	# Start the countdown; _start_race runs at expiry.
+	_open_bet_countdown()
+
+# Open a non-blocking countdown before the race starts.
+func _open_bet_countdown() -> void:
+	await get_tree().create_timer(RGS_BET_WINDOW_SEC).timeout
+	print("RGS: bet window closed — starting race")
+	_start_race(_pending_spec)
+	_pending_spec = {}
+
+# Relay bet from HUD to RgsClient.
+func _on_bet_requested(marble_idx: int, amount: float) -> void:
+	if _rgs_client == null:
+		return
+	_rgs_client.place_bet(_round_id, marble_idx, amount)
+
+# Relay confirmed bet back to HUD.
+func _on_bet_placed(bet: Dictionary) -> void:
+	if _hud != null:
+		_hud.on_bet_confirmed(bet)
+
+# Relay bet error to HUD toast.
+func _on_bet_failed(error: String) -> void:
+	push_warning("RGS: bet failed: %s" % error)
+	if _hud != null:
+		_hud.show_error_toast("Bet failed: %s" % error)
 
 # Core race setup.  `spec` is a Dictionary that contains the round
 # parameters (same schema as the file-based spec used in spec mode).
@@ -119,16 +192,13 @@ func _start_race(spec: Dictionary) -> void:
 
 	print("COMMIT: round_id=%d server_seed_hash=%s" % [round_id, FairSeed.to_hex(server_seed_hash)])
 
-	var slots := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, SpawnRail.SLOT_COUNT)
+	var slots  := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, SpawnRail.SLOT_COUNT)
 	var colors := FairSeed.derive_marble_colors(server_seed, round_id, client_seeds)
 	var marbles := MarbleSpawner.spawn(self, rail, slots, colors)
 
 	var finish := FinishLine.new()
 	finish.track = track
 	add_child(finish)
-	# Visual celebration when the first marble crosses — confetti burst at the
-	# winner's position, tinted by the winner's color, plus a brief emission
-	# boost so viewers can read which marble actually won.
 	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
 		var winner_color: Color = colors[int(String(winner.name).trim_prefix("Marble_"))]
 		WinnerReveal.spawn_confetti(self, winner.global_position, winner_color)
@@ -138,8 +208,6 @@ func _start_race(spec: Dictionary) -> void:
 	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
 	if not _replay_path.is_empty():
 		recorder.override_output_path(_replay_path)
-	# If the spec requested live streaming, try to connect before track(): track()
-	# immediately emits the HEADER message when a streamer is set.
 	var stream_addr := String(spec.get("live_stream_addr", "")) if not spec.is_empty() else ""
 	if not stream_addr.is_empty():
 		var colon := stream_addr.find(":")
@@ -156,9 +224,7 @@ func _start_race(spec: Dictionary) -> void:
 	add_child(recorder)
 	if not _status_path.is_empty():
 		recorder.finalized.connect(_on_finalized.bind(finish))
-	# Interactive (no spec, including RGS mode) → FreeCamera so the player
-	# can orbit/WASD-fly around the track. Spec mode (server-driven recording)
-	# keeps FixedCamera so the captured replay reflects a consistent view.
+
 	var is_server_driven := not spec.is_empty() and not _status_path.is_empty()
 	if is_server_driven:
 		var cam := FixedCamera.new()
@@ -169,8 +235,7 @@ func _start_race(spec: Dictionary) -> void:
 		_freecam.track = track
 		add_child(_freecam)
 
-		# Build a header array matching the replay format so HUD.setup() can
-		# populate the standings sidebar. Each marble is named "Marble_XX".
+		# Build the full HUD header with real colors.
 		var hud_header: Array = []
 		for i in range(marbles.size()):
 			var c: Color = colors[i]
@@ -178,8 +243,11 @@ func _start_race(spec: Dictionary) -> void:
 					(int(c.b * 255) << 8) | 0xFF
 			hud_header.append({"name": "Marble_%02d" % i, "rgba": rgba})
 
-		_hud = HUD.new()
-		add_child(_hud)
+		# In RGS mode the HUD was already created during the bet window.
+		# Re-call setup() with real colors; this also transitions to RACING phase.
+		if _hud == null:
+			_hud = HUD.new()
+			add_child(_hud)
 		_hud.setup(hud_header)
 		_hud.set_track_name(TrackRegistry.name_of(track_id))
 		_live_racing = true
@@ -187,11 +255,9 @@ func _start_race(spec: Dictionary) -> void:
 		_live_marbles = marbles
 		_live_finish_pos = track.finish_area_transform().origin
 
-		# Wire HUD leaderboard ↔ FreeCamera follow.
 		_hud.marble_selected.connect(_freecam.follow_marble_index)
 		_freecam.following_changed.connect(_hud.set_following)
 
-		# Wire winner reveal.
 		finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
 			var winner_name: String = String(winner.name)
 			var winner_idx: int = int(winner_name.trim_prefix("Marble_"))
@@ -200,15 +266,11 @@ func _start_race(spec: Dictionary) -> void:
 		)
 
 func _physics_process(_delta: float) -> void:
-	# Drive the HUD timer in interactive mode. Skipped (null guard) in
-	# spec/headless mode — _hud is never set on those paths.
 	if _hud == null:
 		return
 	if _live_racing:
 		_live_tick += 1
 		_hud.update_tick(_live_tick, float(Engine.physics_ticks_per_second))
-		# Live standings at ~10 Hz (every 6 physics ticks at 60 Hz). Sorting
-		# 20 marbles by distance is cheap, but we don't need per-tick refresh.
 		if _live_tick % 6 == 0:
 			_hud.update_standings(_live_marbles, _live_finish_pos)
 
@@ -219,17 +281,13 @@ func _get_rgs_url() -> String:
 	for a in args:
 		if a.begins_with("--rgs="):
 			var url := a.substr("--rgs=".length()).strip_edges()
-			# Normalise: strip trailing slash so callers can append /v1/...
-			# cleanly regardless of whether the user supplied one.
 			if url.ends_with("/"):
 				url = url.left(url.length() - 1)
 			return url
 	return ""
 
 # Pick a track for interactive mode. Honors --track=<name> if present,
-# otherwise picks one of the 5 casino tracks at random (RAMP excluded —
-# it's the bare dev track and not what a player launching the editor
-# wants to see). Falls back to PLINKO on a parse miss.
+# otherwise picks one of the 5 casino tracks at random.
 func _pick_interactive_track() -> int:
 	var args := OS.get_cmdline_user_args()
 	for a in args:
@@ -245,7 +303,6 @@ func _pick_interactive_track() -> int:
 				_:
 					push_warning("--track=%s not recognized; falling back to random casino track" % name)
 					break
-	# Random pick from casino tracks (skip index 0 = RAMP).
 	var casino: Array = [
 		TrackRegistry.ROULETTE,
 		TrackRegistry.CRAPS,
@@ -256,7 +313,6 @@ func _pick_interactive_track() -> int:
 	randomize()
 	return int(casino[randi() % casino.size()])
 
-# Parse "--key=value" pairs from the user-args portion of the command line.
 func _load_spec_from_cli() -> Dictionary:
 	var args := OS.get_cmdline_user_args()
 	var spec_path := ""

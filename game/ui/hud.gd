@@ -6,33 +6,34 @@ extends CanvasLayer
 # follow system). Connect this to FreeCamera.follow_marble_index.
 signal marble_selected(index: int)
 
+# Emitted when the player clicks "PLACE BET" in the bet panel (WAITING phase,
+# RGS mode only). The caller (main.gd) should forward this to RgsClient.
+signal bet_requested(marble_idx: int, amount: float)
+
 # Player-facing overlay for web / live scenes. Shows:
 #   - race title + phase label (top-left)
-#   - mock balance + deposit-stub button (top-right)
+#   - balance label (top-right, live from RGS server; mock in local mode)
 #   - marble list with color swatches and names (right sidebar)
 #   - race timer (bottom-center)
-#   - buy-in stub button (bottom-center, disabled during race)
-#   - winner modal centered at race end
-#
-# All elements are built programmatically against Godot 4's anchor-preset
-# system. Sim/headless paths don't add a HUD; this is the "what a player
-# sees" layer only.
+#   - bet panel (bottom-center, visible in WAITING+RGS mode only)
+#   - winner modal centered at race end (shows payout result in RGS mode)
 #
 # State machine:
-#   _ready       → build layout, hide winner modal, "WAITING" label
-#   setup(...)   → populate marble list from replay header
-#   update_tick  → drive the timer
-#   reveal_winner→ show modal, swap phase to "FINISHED"
-#   reset        → return to "WAITING"
+#   WAITING  → bet panel visible (RGS mode only), marble list unpopulated
+#   RACING   → bet panel hidden / "Bets locked" banner shown, timer ticking
+#   FINISHED → winner modal + optional payout line
+#
+# Sim/headless paths don't add a HUD; this is the "what a player sees" layer.
 
 const TIMER_FORMAT := "%02d:%02d"
-const PHASE_WAITING := "WAITING"
-const PHASE_RACING := "RACING"
+const PHASE_WAITING  := "WAITING"
+const PHASE_RACING   := "RACING"
 const PHASE_FINISHED := "FINISHED"
 
-# Mock fields — replaced by real wallet data once an RGS integration lands.
+# Fallback balance used when NOT in RGS mode.
 const MOCK_BALANCE := 1250.00
-const MOCK_BUY_IN_DEFAULT := 10.00
+
+# ─── Nodes ───────────────────────────────────────────────────────────────────
 
 var _phase_label: Label
 var _timer_label: Label
@@ -41,37 +42,79 @@ var _balance_label: Label
 var _winner_modal: Control
 var _winner_name_label: Label
 var _winner_prize_label: Label
-var _buy_in_button: Button
+var _winner_payout_label: Label   # RGS payout line inside the modal
 var _track_name_label: Label
+
+# Bet panel nodes (visible only in WAITING + RGS mode)
+var _bet_panel: Control
+var _marble_selector: OptionButton
+var _amount_label: Label
+var _place_bet_btn: Button
+var _bets_list: VBoxContainer
+var _bets_locked_label: Label
+var _toast_label: Label           # temporary error / confirmation feedback
+
+# ─── State ───────────────────────────────────────────────────────────────────
 
 var _tick_rate: float = 60.0
 var _race_started: bool = false
 var _start_tick: int = -1
 
-# Marble metadata stored at setup() time so update_standings can re-sort rows
-# without losing name/color. Each entry: {name: String, color: Color, original_index: int}.
+# Marble metadata stored at setup() time.
+# Each entry: {name: String, color: Color, original_index: int}.
 var _marble_meta: Array = []
 
-# Which original_index is currently being followed (-1 = none). Used by
-# set_following() to update the eye-marker on the correct row.
+# Which original_index is currently being followed (-1 = none).
 var _following_index: int = -1
 
-# Map from original_index → the outermost Control node for that row, rebuilt
-# on every _clear_marble_list / setup / update_standings call so set_following
-# can find the row to highlight without a linear scan.
+# Map from original_index → row Control node; rebuilt by setup/update_standings.
 var _row_by_index: Dictionary = {}
+
+# RGS betting state
+var _rgs_mode: bool = false
+var _round_id: int = 0
+var _balance: float = MOCK_BALANCE
+var _bet_amount: float = 10.0
+var _selected_marble: int = -1     # index into _marble_meta (not original_index)
+var _placed_bets: Array = []       # array of {marble_idx, amount, expected_payout_if_win}
+var _toast_timer: float = 0.0
+
+# ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 func _ready() -> void:
 	layer = 10   # above any 3D viewport but below editor overlays
 	_build_layout()
 
-# ─── Public API ──────────────────────────────────────────────────────────
+func _process(delta: float) -> void:
+	# Fade out the toast message after its display period.
+	if _toast_timer > 0.0:
+		_toast_timer -= delta
+		if _toast_timer <= 0.0:
+			_toast_label.visible = false
+			_toast_timer = 0.0
+
+# ─── Public API ──────────────────────────────────────────────────────────────
+
+# Enable RGS betting mode. Must be called before setup().
+# `round_id` is the server-authoritative round ID needed for the bet POST.
+# `initial_balance` is the balance to show until bet_placed updates it.
+# After this call the HUD is in WAITING phase with the bet panel visible.
+func enable_rgs_mode(round_id: int, initial_balance: float = MOCK_BALANCE) -> void:
+	_rgs_mode = true
+	_round_id = round_id
+	_balance = initial_balance
+	_update_balance_label()
+	_phase_label.text = PHASE_WAITING
+	_bet_panel.visible = true
+	_bets_locked_label.visible = false
 
 # Called once when the replay header is known. `header` is the list of marble
 # dicts (name + rgba) from the replay/stream protocol.
 func setup(header: Array) -> void:
 	_clear_marble_list()
 	_marble_meta.clear()
+	_marble_selector.clear()
+
 	for i in range(header.size()):
 		var m: Dictionary = header[i]
 		var marble_name := String(m.get("name", "marble_%02d" % i))
@@ -80,36 +123,36 @@ func setup(header: Array) -> void:
 		if rgba == 0:
 			color = Color.from_hsv(float(i) / max(header.size(), 1), 0.8, 0.95)
 		else:
-			color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, 1.0)
+			color = Color(
+				((rgba >> 24) & 0xFF) / 255.0,
+				((rgba >> 16) & 0xFF) / 255.0,
+				((rgba >> 8)  & 0xFF) / 255.0,
+				1.0
+			)
 		_marble_meta.append({"name": marble_name, "color": color, "original_index": i})
 		var row := _make_marble_row("%d. %s" % [i + 1, marble_name], color, false, i)
 		_row_by_index[i] = row
 		_marble_list.add_child(row)
+		_marble_selector.add_item("%02d  %s" % [i, marble_name], i)
+
 	_phase_label.text = PHASE_RACING
 	_winner_modal.visible = false
-	_buy_in_button.disabled = true   # bets are closed once the race is rolling
-	_buy_in_button.text = "Buy-in closed"
 	_race_started = false
 	_start_tick = -1
 
-# Set the track name displayed in the top-left panel. Called by web/live main
-# once the track_id is known (after replay header is parsed).
+	# Transition to RACING: hide bet placement, show lock banner if bets placed.
+	_bet_panel.visible = false
+	_bets_locked_label.visible = _rgs_mode
+
+# Set the track name displayed in the top-left panel.
 func set_track_name(track_name: String) -> void:
 	if _track_name_label != null:
 		_track_name_label.text = track_name
 
-# Update the live leaderboard based on current marble world positions relative
-# to the finish line. Safe to call when finish_pos is not yet meaningful (e.g.
-# headless / pre-race): if marbles array is empty or finish_pos is ZERO, the
-# existing order is preserved to avoid flicker.
-#
-# marbles — array of RigidBody3D or Node3D, same ordering as the replay header.
-# finish_pos — world-space position of the finish-line trigger center.
+# Drive the live leaderboard. Safe to call before the race starts.
 func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 	if marbles.is_empty() or _marble_meta.is_empty():
 		return
-
-	# Build (distance, original_index) pairs for sorting.
 	var ranked: Array = []
 	for i in range(min(marbles.size(), _marble_meta.size())):
 		var node: Node3D = marbles[i] as Node3D
@@ -117,12 +160,9 @@ func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 		if node != null and is_instance_valid(node):
 			dist = node.global_position.distance_to(finish_pos)
 		ranked.append({"dist": dist, "idx": i})
-
 	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return a["dist"] < b["dist"]
 	)
-
-	# Rebuild the marble list rows in the new rank order.
 	_clear_marble_list()
 	for rank in range(ranked.size()):
 		var entry: Dictionary = ranked[rank]
@@ -132,12 +172,10 @@ func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 		var row := _make_marble_row(row_text, meta["color"], rank == 0, orig_idx)
 		_row_by_index[orig_idx] = row
 		_marble_list.add_child(row)
-	# Re-apply the following marker after the list is rebuilt.
 	if _following_index >= 0:
 		_apply_following_marker(_following_index, true)
 
-# Drive the timer. `tick` is the current playback tick (monotonic from
-# _process). `tick_rate_hz` matches the recorder's setting (60 in M3+).
+# Drive the race timer.
 func update_tick(tick: int, tick_rate_hz: float) -> void:
 	_tick_rate = tick_rate_hz
 	if not _race_started:
@@ -147,20 +185,56 @@ func update_tick(tick: int, tick_rate_hz: float) -> void:
 	var seconds: int = int(float(elapsed_ticks) / tick_rate_hz)
 	_timer_label.text = TIMER_FORMAT % [seconds / 60, seconds % 60]
 
-# Show the winner modal. `prize` is a pre-formatted display string (e.g.
-# "1,900 USD"); pass "" if the wallet integration hasn't supplied one yet.
+# Show the winner modal. In RGS mode, payout/loss is computed from _placed_bets
+# and the winning marble index. `prize` is a pre-formatted string fallback.
 func reveal_winner(name: String, color: Color, prize: String = "") -> void:
 	_phase_label.text = PHASE_FINISHED
 	_winner_name_label.text = name
 	_winner_name_label.add_theme_color_override("font_color", color)
 	_winner_prize_label.text = prize if prize != "" else "Race complete"
+
+	# Compute payout result from placed bets if in RGS mode.
+	if _rgs_mode and not _placed_bets.is_empty():
+		# The winner's marble_idx is embedded in the name ("Marble_07" → 7).
+		var winner_idx := -1
+		var trimmed := name.trim_prefix("Marble_")
+		if trimmed.is_valid_int():
+			winner_idx = int(trimmed)
+		var total_payout := 0.0
+		var total_wagered := 0.0
+		for b in _placed_bets:
+			total_wagered += float(b["amount"])
+			if int(b["marble_idx"]) == winner_idx:
+				total_payout += float(b["expected_payout_if_win"])
+		if total_payout > 0.0:
+			_winner_payout_label.text = "+%.2f (won %.2f on %.2f wagered)" % [
+				total_payout, total_payout, total_wagered]
+			_winner_payout_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.4))
+		else:
+			_winner_payout_label.text = "-%.2f (all bets lost)" % total_wagered
+			_winner_payout_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+		_winner_payout_label.visible = true
+	else:
+		_winner_payout_label.visible = false
+
 	_winner_modal.visible = true
 
-# Called by FreeCamera.following_changed signal. Marks the row matching `index`
-# with a cyan left border to indicate "you are watching this marble". Pass -1
-# to clear all markers (e.g. when the user releases the follow lock).
+# Called after a successful bet_placed response from RgsClient.
+# Updates the balance label and appends a row to the "Your bets" list.
+func on_bet_confirmed(bet: Dictionary) -> void:
+	_balance = float(bet.get("balance_after", _balance))
+	_update_balance_label()
+	_placed_bets.append(bet)
+	_refresh_bets_list()
+	_validate_bet_button()
+	_show_toast("Bet placed: Marble_%02d — %.2f" % [int(bet.get("marble_idx", 0)), float(bet.get("amount", 0.0))])
+
+# Show a temporary error toast (e.g. after bet_failed signal).
+func show_error_toast(message: String) -> void:
+	_show_toast(message)
+
+# Called by FreeCamera.following_changed signal.
 func set_following(index: int) -> void:
-	# Clear any existing marker first.
 	if _following_index >= 0:
 		_apply_following_marker(_following_index, false)
 	_following_index = index
@@ -171,16 +245,25 @@ func reset() -> void:
 	_clear_marble_list()
 	_marble_meta.clear()
 	_following_index = -1
+	_placed_bets.clear()
+	_selected_marble = -1
+	_bet_amount = 10.0
+	_rgs_mode = false
 	_phase_label.text = PHASE_WAITING
 	_timer_label.text = TIMER_FORMAT % [0, 0]
 	_winner_modal.visible = false
-	_buy_in_button.disabled = false
-	_buy_in_button.text = "Buy-in (%.2f)" % MOCK_BUY_IN_DEFAULT
+	_bet_panel.visible = false
+	_bets_locked_label.visible = false
+	_balance = MOCK_BALANCE
+	_balance_label.text = "%.2f USD" % _balance
 	_race_started = false
 	if _track_name_label != null:
 		_track_name_label.text = ""
+	if _marble_selector != null:
+		_marble_selector.clear()
+	_refresh_bets_list()
 
-# ─── Layout ──────────────────────────────────────────────────────────────
+# ─── Layout ──────────────────────────────────────────────────────────────────
 
 func _build_layout() -> void:
 	var root := Control.new()
@@ -194,6 +277,7 @@ func _build_layout() -> void:
 	root.add_child(_build_right_sidebar())
 	root.add_child(_build_bottom_center())
 	root.add_child(_build_winner_modal())
+	root.add_child(_build_toast())
 
 func _build_top_left() -> Control:
 	var panel := PanelContainer.new()
@@ -271,7 +355,6 @@ func _build_right_sidebar() -> Control:
 	header.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
 	vb.add_child(header)
 
-	# Scrollable list under the header so 20+ marbles still fit on small windows.
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -284,35 +367,152 @@ func _build_right_sidebar() -> Control:
 	return panel
 
 func _build_bottom_center() -> Control:
-	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	panel.offset_left = -200
-	panel.offset_right = 200
-	panel.offset_top = -100
-	panel.offset_bottom = -20
-	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0, 0, 0, 0.55)))
+	# Outer anchor container that holds both the timer area and the bet panel.
+	var outer := Control.new()
+	outer.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	outer.offset_left  = -220
+	outer.offset_right =  220
+	outer.offset_top   = -340
+	outer.offset_bottom = -20
+	outer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	var vb := VBoxContainer.new()
-	vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_theme_constant_override("separation", 6)
-	panel.add_child(vb)
+	# --- Timer panel (always visible) ---
+	var timer_panel := PanelContainer.new()
+	timer_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	timer_panel.offset_top = -100
+	timer_panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0, 0, 0, 0.55)))
+	outer.add_child(timer_panel)
+
+	var timer_vb := VBoxContainer.new()
+	timer_vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	timer_vb.add_theme_constant_override("separation", 6)
+	timer_panel.add_child(timer_vb)
 
 	_timer_label = Label.new()
 	_timer_label.text = TIMER_FORMAT % [0, 0]
 	_timer_label.add_theme_font_size_override("font_size", 32)
 	_timer_label.add_theme_color_override("font_color", Color(1, 0.92, 0.7))
 	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(_timer_label)
+	timer_vb.add_child(_timer_label)
 
-	_buy_in_button = Button.new()
-	_buy_in_button.text = "Buy-in (%.2f)" % MOCK_BUY_IN_DEFAULT
-	_buy_in_button.disabled = true   # phase machine not wired through yet
-	_buy_in_button.tooltip_text = "Bets close when the race starts (RGS integration TBD)"
-	vb.add_child(_buy_in_button)
+	# "Bets locked" banner — shown in RACING when bets were placed.
+	_bets_locked_label = Label.new()
+	_bets_locked_label.text = "Bets locked"
+	_bets_locked_label.add_theme_font_size_override("font_size", 12)
+	_bets_locked_label.add_theme_color_override("font_color", Color(0.75, 0.60, 0.25))
+	_bets_locked_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_bets_locked_label.visible = false
+	timer_vb.add_child(_bets_locked_label)
+
+	# --- Bet panel (above the timer; visible only in WAITING + RGS mode) ---
+	_bet_panel = _build_bet_panel()
+	_bet_panel.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	_bet_panel.offset_bottom = 230   # leave room below for the timer panel
+	_bet_panel.visible = false
+	outer.add_child(_bet_panel)
+
+	return outer
+
+func _build_bet_panel() -> Control:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0.04, 0.04, 0.12, 0.88)))
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+
+	# Header label
+	var header := Label.new()
+	header.text = "BET PLACEMENT"
+	header.add_theme_font_size_override("font_size", 14)
+	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(header)
+
+	# Marble selector
+	var sel_label := Label.new()
+	sel_label.text = "Select marble:"
+	sel_label.add_theme_font_size_override("font_size", 11)
+	sel_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.8))
+	vb.add_child(sel_label)
+
+	_marble_selector = OptionButton.new()
+	_marble_selector.placeholder_text = "— pick a marble —"
+	_marble_selector.item_selected.connect(_on_marble_selected)
+	vb.add_child(_marble_selector)
+
+	# Amount row: preset chips + live amount label
+	var amt_header := Label.new()
+	amt_header.text = "Bet amount:"
+	amt_header.add_theme_font_size_override("font_size", 11)
+	amt_header.add_theme_color_override("font_color", Color(0.7, 0.7, 0.8))
+	vb.add_child(amt_header)
+
+	# Preset buttons
+	var presets_hb := HBoxContainer.new()
+	presets_hb.add_theme_constant_override("separation", 4)
+	vb.add_child(presets_hb)
+
+	for preset_val in [1, 5, 10, 50, 100]:
+		var pb := Button.new()
+		pb.text = "%d" % preset_val
+		pb.custom_minimum_size = Vector2(36, 26)
+		pb.pressed.connect(_on_preset_amount.bind(float(preset_val)))
+		presets_hb.add_child(pb)
+
+	# Fine-adjust row
+	var adjust_hb := HBoxContainer.new()
+	adjust_hb.add_theme_constant_override("separation", 6)
+	vb.add_child(adjust_hb)
+
+	var minus_btn := Button.new()
+	minus_btn.text = "-10"
+	minus_btn.custom_minimum_size = Vector2(42, 26)
+	minus_btn.pressed.connect(_on_adjust_amount.bind(-10.0))
+	adjust_hb.add_child(minus_btn)
+
+	_amount_label = Label.new()
+	_amount_label.text = "%.2f" % _bet_amount
+	_amount_label.add_theme_font_size_override("font_size", 18)
+	_amount_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
+	_amount_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_amount_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	adjust_hb.add_child(_amount_label)
+
+	var plus_btn := Button.new()
+	plus_btn.text = "+10"
+	plus_btn.custom_minimum_size = Vector2(42, 26)
+	plus_btn.pressed.connect(_on_adjust_amount.bind(10.0))
+	adjust_hb.add_child(plus_btn)
+
+	# Place Bet button
+	_place_bet_btn = Button.new()
+	_place_bet_btn.text = "PLACE BET"
+	_place_bet_btn.disabled = true
+	_place_bet_btn.add_theme_font_size_override("font_size", 15)
+	_place_bet_btn.pressed.connect(_on_place_bet_pressed)
+	vb.add_child(_place_bet_btn)
+
+	# "Your bets" section
+	var bets_header := Label.new()
+	bets_header.text = "Your bets:"
+	bets_header.add_theme_font_size_override("font_size", 11)
+	bets_header.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
+	vb.add_child(bets_header)
+
+	var bets_scroll := ScrollContainer.new()
+	bets_scroll.custom_minimum_size = Vector2(0, 60)
+	bets_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(bets_scroll)
+
+	_bets_list = VBoxContainer.new()
+	_bets_list.add_theme_constant_override("separation", 2)
+	_bets_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bets_scroll.add_child(_bets_list)
+
 	return panel
 
 func _build_winner_modal() -> Control:
-	# A centered overlay that's hidden by default; reveal_winner() toggles it.
 	var control := Control.new()
 	control.set_anchors_preset(Control.PRESET_FULL_RECT)
 	control.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -357,29 +557,102 @@ func _build_winner_modal() -> Control:
 	_winner_prize_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(_winner_prize_label)
 
+	# RGS payout line (hidden when not in RGS mode or no bets placed).
+	_winner_payout_label = Label.new()
+	_winner_payout_label.text = ""
+	_winner_payout_label.add_theme_font_size_override("font_size", 14)
+	_winner_payout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_winner_payout_label.visible = false
+	vb.add_child(_winner_payout_label)
+
 	control.visible = false
 	return control
 
-# ─── Helpers ─────────────────────────────────────────────────────────────
+func _build_toast() -> Control:
+	# Anchored to bottom-left, floats above the marble list area.
+	var ctrl := Control.new()
+	ctrl.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	ctrl.offset_left = 20
+	ctrl.offset_bottom = -20
+	ctrl.offset_top = -60
+	ctrl.offset_right = 380
+	ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-# Build a clickable marble row. `original_index` is the drop-order index
-# passed back via marble_selected when the row is clicked.
+	_toast_label = Label.new()
+	_toast_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_toast_label.add_theme_font_size_override("font_size", 13)
+	_toast_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.5))
+	_toast_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_toast_label.visible = false
+	ctrl.add_child(_toast_label)
+	return ctrl
+
+# ─── Bet panel callbacks ──────────────────────────────────────────────────────
+
+func _on_marble_selected(index: int) -> void:
+	_selected_marble = index
+	_validate_bet_button()
+
+func _on_preset_amount(val: float) -> void:
+	_bet_amount = val
+	_amount_label.text = "%.2f" % _bet_amount
+	_validate_bet_button()
+
+func _on_adjust_amount(delta: float) -> void:
+	_bet_amount = max(1.0, _bet_amount + delta)
+	_amount_label.text = "%.2f" % _bet_amount
+	_validate_bet_button()
+
+func _on_place_bet_pressed() -> void:
+	if _selected_marble < 0 or _bet_amount <= 0.0:
+		return
+	if _bet_amount > _balance:
+		_show_toast("Insufficient balance")
+		return
+	var original_idx: int = _marble_meta[_selected_marble]["original_index"]
+	bet_requested.emit(original_idx, _bet_amount)
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+func _validate_bet_button() -> void:
+	if not _rgs_mode:
+		_place_bet_btn.disabled = true
+		_place_bet_btn.tooltip_text = "Betting requires RGS mode (--rgs=<url>)"
+		return
+	var valid := _selected_marble >= 0 and _bet_amount > 0.0 and _bet_amount <= _balance
+	_place_bet_btn.disabled = not valid
+
+func _update_balance_label() -> void:
+	_balance_label.text = "%.2f USD" % _balance
+
+func _refresh_bets_list() -> void:
+	for c in _bets_list.get_children():
+		c.queue_free()
+	for b in _placed_bets:
+		var row := Label.new()
+		row.text = "Marble_%02d — %.2f" % [int(b.get("marble_idx", 0)), float(b.get("amount", 0.0))]
+		row.add_theme_font_size_override("font_size", 12)
+		row.add_theme_color_override("font_color", Color(0.85, 0.85, 0.95))
+		_bets_list.add_child(row)
+
+func _show_toast(message: String) -> void:
+	_toast_label.text = message
+	_toast_label.visible = true
+	_toast_timer = 3.5
+
 func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false,
 		original_index: int = -1) -> Control:
-	# Outer Button captures hover/press theming and click events.
 	var btn := Button.new()
-	btn.flat = true   # no default button chrome; we paint our own backgrounds
+	btn.flat = true
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	btn.focus_mode = Control.FOCUS_NONE  # sidebar shouldn't steal keyboard focus
+	btn.focus_mode = Control.FOCUS_NONE
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-	# Three StyleBoxFlat states: normal, hover, pressed.
-	var sb_normal := _row_stylebox(Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.0))
-	var sb_hover  := _row_stylebox(Color(1, 1, 1, 0.08), Color(0, 0, 0, 0.0))
-	var sb_press  := _row_stylebox(Color(1, 1, 1, 0.18), Color(0, 0, 0, 0.0))
+	var sb_normal := _row_stylebox(Color(0, 0, 0, 0.0),    Color(0, 0, 0, 0.0))
+	var sb_hover  := _row_stylebox(Color(1, 1, 1, 0.08),   Color(0, 0, 0, 0.0))
+	var sb_press  := _row_stylebox(Color(1, 1, 1, 0.18),   Color(0, 0, 0, 0.0))
 
 	if is_leader:
-		# Gold background + gold border for the leader regardless of hover state.
 		sb_normal = _row_stylebox(Color(0.22, 0.18, 0.04, 0.85), Color(1.0, 0.82, 0.12, 0.90))
 		sb_hover  = _row_stylebox(Color(0.28, 0.24, 0.08, 0.90), Color(1.0, 0.82, 0.12, 0.90))
 		sb_press  = _row_stylebox(Color(0.34, 0.30, 0.12, 0.95), Color(1.0, 0.82, 0.12, 0.90))
@@ -390,11 +663,8 @@ func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false
 	btn.add_theme_stylebox_override("disabled", sb_normal)
 	btn.add_theme_stylebox_override("focus",    sb_normal)
 
-	# Inner HBox: swatch + label.
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 8)
-	# The HBox must be a child of the Button (Button is a BaseButton/Control
-	# that can have a single content child drawn inside it).
 	btn.add_child(hb)
 
 	var swatch := ColorRect.new()
@@ -416,9 +686,6 @@ func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false
 
 	return btn
 
-# Apply or remove the cyan "following" left-border highlight on the row
-# identified by `orig_idx`. Safe to call when the row doesn't exist yet
-# (e.g. called before setup).
 func _apply_following_marker(orig_idx: int, active: bool) -> void:
 	if not _row_by_index.has(orig_idx):
 		return
@@ -426,10 +693,9 @@ func _apply_following_marker(orig_idx: int, active: bool) -> void:
 	if not row is Button:
 		return
 	var btn := row as Button
-	# Retrieve the existing normal stylebox, clone it, tweak the left border.
 	var sb: StyleBoxFlat = btn.get_theme_stylebox("normal").duplicate()
 	if active:
-		sb.border_color = Color(0.0, 0.85, 1.0, 1.0)   # cyan
+		sb.border_color = Color(0.0, 0.85, 1.0, 1.0)
 		sb.border_width_left = 3
 		sb.border_width_top = 0
 		sb.border_width_right = 0
@@ -437,24 +703,22 @@ func _apply_following_marker(orig_idx: int, active: bool) -> void:
 	else:
 		sb.border_color = Color(0, 0, 0, 0)
 		sb.border_width_left = 0
-	btn.add_theme_stylebox_override("normal",  sb)
+	btn.add_theme_stylebox_override("normal",   sb)
 	btn.add_theme_stylebox_override("disabled", sb)
 	btn.add_theme_stylebox_override("focus",    sb)
 
-# Minimal StyleBoxFlat for row backgrounds (no corner rounding on normal rows,
-# 4-px corners for the leader row).
 func _row_stylebox(bg: Color, border: Color) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = bg
 	sb.border_color = border
 	sb.set_border_width_all(0 if border.a == 0.0 else 2)
-	sb.corner_radius_top_left = 4
-	sb.corner_radius_top_right = 4
+	sb.corner_radius_top_left    = 4
+	sb.corner_radius_top_right   = 4
 	sb.corner_radius_bottom_left = 4
 	sb.corner_radius_bottom_right = 4
-	sb.content_margin_left = 4
-	sb.content_margin_right = 4
-	sb.content_margin_top = 2
+	sb.content_margin_left   = 4
+	sb.content_margin_right  = 4
+	sb.content_margin_top    = 2
 	sb.content_margin_bottom = 2
 	return sb
 
@@ -466,12 +730,12 @@ func _clear_marble_list() -> void:
 func _panel_stylebox(bg: Color) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = bg
-	sb.corner_radius_top_left = 6
-	sb.corner_radius_top_right = 6
+	sb.corner_radius_top_left    = 6
+	sb.corner_radius_top_right   = 6
 	sb.corner_radius_bottom_left = 6
 	sb.corner_radius_bottom_right = 6
-	sb.content_margin_left = 12
-	sb.content_margin_right = 12
-	sb.content_margin_top = 8
+	sb.content_margin_left   = 12
+	sb.content_margin_right  = 12
+	sb.content_margin_top    = 8
 	sb.content_margin_bottom = 8
 	return sb
