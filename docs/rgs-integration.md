@@ -226,6 +226,28 @@ the round after that.
 
 Close the session. Must be in `OPEN` or `SETTLED` (no orphaned bets).
 
+### `GET /v1/wallets/{player_id}/balance`
+
+Return the current balance for a player. Useful for UI display and
+reconnect flows without requiring an open session.
+
+```json
+// 200 OK
+{
+  "player_id": "alice",
+  "balance":   12.40
+}
+```
+
+`balance` is expressed in the same decimal-currency units used by
+`POST /v1/rounds/{round_id}/bets` (i.e. wallet integer units ÷ 100).
+Returns 404 if `player_id` is not known to the wallet.
+
+| Code | Condition                           |
+| ---- | ----------------------------------- |
+| 200  | player found, balance returned      |
+| 404  | player_id unknown to wallet         |
+
 ### `GET /v1/health`
 
 Liveness check for load balancers. Returns 200 / `{"status":"ok"}`.
@@ -326,14 +348,6 @@ side to verify a round's wallet flow against the audit trail.
 - **Round-bet persistence.** `pendingRounds` and `roundBets` in
   `Manager` are in-memory only. A server restart loses all queued bets
   and round-id registrations. Needs a Postgres-backed store (M9.x).
-- **Round-bet / session-bet seed alignment.** When `RunNextRound` is
-  called after `POST /v1/rounds/start`, it generates a fresh seed and
-  round_id rather than re-using the pre-minted spec. The round-level
-  bets are settled against the first pending round in FIFO order, but
-  the `round_id` in the audit manifest will differ from the one
-  returned to the bettor. M9.x: `RunNextRound` should consume the
-  oldest `pendingRound`'s seed + round_id so the client's round_id is
-  reflected in the replay store.
 - **Round-bet amount precision.** `amount` is stored as `float64` and
   converted to wallet integer units by multiplying × 100 (2 decimal
   places). This is adequate for cent-denominated currencies but will

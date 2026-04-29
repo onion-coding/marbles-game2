@@ -275,6 +275,72 @@ func TestManager_RoundIDCollisionRetries(t *testing.T) {
 	}
 }
 
+// TestManager_SeedAlignment verifies that when a player calls
+// GenerateRoundSpec (POST /v1/rounds/start), places a bet against the
+// returned round_id, and RunNextRound is called, the manifest written to
+// the audit store carries exactly the pre-minted round_id and server_seed —
+// not a freshly generated pair.
+func TestManager_SeedAlignment(t *testing.T) {
+	mgr, wallet, _ := newTestManager(t, 3)
+	wallet.SetBalance("alice", 10000)
+
+	// Mint a spec — this is what the player sees from POST /v1/rounds/start.
+	spec, err := mgr.GenerateRoundSpec()
+	if err != nil {
+		t.Fatalf("GenerateRoundSpec: %v", err)
+	}
+
+	// Place a bet on that specific round.
+	_, _, err = mgr.PlaceBetOnRound(spec.RoundID, "alice", 3, 10.0)
+	if err != nil {
+		t.Fatalf("PlaceBetOnRound: %v", err)
+	}
+
+	// Run the next round — must consume spec, not mint a new one.
+	manifest, _, err := mgr.RunNextRound(context.Background())
+	if err != nil {
+		t.Fatalf("RunNextRound: %v", err)
+	}
+
+	// The manifest's round_id must equal the spec's round_id.
+	if manifest.RoundID != spec.RoundID {
+		t.Fatalf("manifest.RoundID = %d, want %d (pre-minted spec round_id)",
+			manifest.RoundID, spec.RoundID)
+	}
+
+	// The manifest's revealed server_seed_hex must equal the spec's seed.
+	if manifest.ServerSeedHex != spec.ServerSeedHex {
+		t.Fatalf("manifest.ServerSeedHex = %q, want %q (pre-minted spec seed)",
+			manifest.ServerSeedHex, spec.ServerSeedHex)
+	}
+}
+
+// TestManager_SeedAlignmentEmptyPending verifies that RunNextRound works
+// when there are no pending rounds (no prior GenerateRoundSpec call). A
+// fresh spec must be generated on-the-fly and used immediately, producing
+// a valid manifest with a non-zero round_id and a 64-char seed hex.
+func TestManager_SeedAlignmentEmptyPending(t *testing.T) {
+	// Do NOT call GenerateRoundSpec — simulate the "skip betting" path.
+	mgr, wallet, _ := newTestManager(t, 0)
+	wallet.SetBalance("bob", 1000)
+
+	sess, _ := mgr.OpenSession("bob")
+	if _, err := mgr.PlaceBet(sess.ID, 100); err != nil {
+		t.Fatalf("PlaceBet: %v", err)
+	}
+
+	manifest, _, err := mgr.RunNextRound(context.Background())
+	if err != nil {
+		t.Fatalf("RunNextRound (empty pending): %v", err)
+	}
+	if manifest.RoundID == 0 {
+		t.Fatal("manifest.RoundID is zero — expected a unix-nano timestamp")
+	}
+	if len(manifest.ServerSeedHex) != 64 {
+		t.Fatalf("manifest.ServerSeedHex length %d, want 64", len(manifest.ServerSeedHex))
+	}
+}
+
 // Compile-time check: the real sim.Run satisfies SimRunner.
 var _ SimRunner = sim.Run
 func _() {

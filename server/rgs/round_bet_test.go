@@ -404,3 +404,48 @@ func TestHTTP_GetRoundBetsUnknownRound(t *testing.T) {
 		t.Fatalf("status %d, want 404", resp.StatusCode)
 	}
 }
+
+// ─── Wallet balance endpoint tests ───────────────────────────────────────────
+
+// TestHTTP_WalletBalance_KnownPlayer verifies 200 + correct balance for a
+// player whose balance has been set in the MockWallet.
+func TestHTTP_WalletBalance_KnownPlayer(t *testing.T) {
+	url, wallet, _, cleanup := httpFixture(t, 0)
+	defer cleanup()
+	wallet.SetBalance("alice", 1240) // 12.40 in 2-decimal units
+
+	resp, err := http.Get(url + "/v1/wallets/alice/balance")
+	if err != nil {
+		t.Fatalf("GET balance: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		PlayerID string  `json:"player_id"`
+		Balance  float64 `json:"balance"`
+	}
+	decodeBody(t, resp, &body)
+	if body.PlayerID != "alice" {
+		t.Fatalf("player_id %q, want alice", body.PlayerID)
+	}
+	// 1240 units / 100 = 12.40
+	if body.Balance != 12.40 {
+		t.Fatalf("balance %.2f, want 12.40", body.Balance)
+	}
+}
+
+// TestHTTP_WalletBalance_UnknownPlayer verifies 404 for a player_id that was
+// never registered in the wallet.
+func TestHTTP_WalletBalance_UnknownPlayer(t *testing.T) {
+	url, _, _, cleanup := httpFixture(t, 0)
+	defer cleanup()
+
+	resp, err := http.Get(url + "/v1/wallets/nobody/balance")
+	if err != nil {
+		t.Fatalf("GET balance: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status %d, want 404", resp.StatusCode)
+	}
+}

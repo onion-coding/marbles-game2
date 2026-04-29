@@ -59,6 +59,7 @@ func (h *HTTPHandler) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/rounds/start", h.startRound)
 	mux.HandleFunc("POST /v1/rounds/{round_id}/bets", h.placeRoundBet)
 	mux.HandleFunc("GET /v1/rounds/{round_id}/bets", h.getRoundBets)
+	mux.HandleFunc("GET /v1/wallets/{player_id}/balance", h.walletBalance)
 	mux.HandleFunc("GET /v1/health", h.health)
 	return mux
 }
@@ -345,6 +346,29 @@ func writeRoundBetError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusBadRequest, err)
 	}
+}
+
+// walletBalance handles GET /v1/wallets/{player_id}/balance.
+// Returns the current balance for the given player_id, or 404 if the
+// player is not known to the wallet.
+func (h *HTTPHandler) walletBalance(w http.ResponseWriter, r *http.Request) {
+	playerID := r.PathValue("player_id")
+	bal, err := h.mgr.cfg.Wallet.Balance(playerID)
+	if err != nil {
+		if errors.Is(err, ErrUnknownPlayer) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		PlayerID string  `json:"player_id"`
+		Balance  float64 `json:"balance"`
+	}{
+		PlayerID: playerID,
+		Balance:  float64(bal) / 100.0,
+	})
 }
 
 func (h *HTTPHandler) health(w http.ResponseWriter, r *http.Request) {

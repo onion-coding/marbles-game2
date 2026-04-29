@@ -199,20 +199,63 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 // fills empty seats with synthetic non-bet participants if needed,
 // invokes the sim, persists the audit entry, and settles each bet.
 //
+// Seed alignment: RunNextRound consumes the oldest pendingRound (FIFO)
+// and uses its pre-minted round_id, server_seed, and track_id so that
+// bettors who called POST /v1/rounds/start before placing their bets see
+// the same round_id and seed in the audit manifest. If no pendingRound
+// exists (the "no-bet" path), a fresh spec is generated on-the-fly and
+// consumed immediately.
+//
 // Returns the manifest as written to disk + a per-bet outcome list.
 func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []SettlementOutcome, error) {
 	m.mu.Lock()
 	pending := m.pending
 	m.pending = nil
+
+	// 1. Consume the oldest pre-minted pending round, or generate one now.
+	var pr *pendingRound
+	if len(m.pendingRounds) > 0 {
+		pr = m.pendingRounds[0]
+		m.pendingRounds = m.pendingRounds[1:]
+	}
 	prevTrack := m.prevTrack
 	m.mu.Unlock()
 
-	// 1. Fresh seed + round id.
-	var seed [32]byte
-	if _, err := rand.Read(seed[:]); err != nil {
-		return nil, nil, fmt.Errorf("rgs: seed: %w", err)
+	if pr == nil {
+		// No pre-minted spec: generate a fresh one on-the-fly and use it
+		// immediately (the caller skipped POST /v1/rounds/start).
+		var rawSeed [32]byte
+		if _, err := rand.Read(rawSeed[:]); err != nil {
+			return nil, nil, fmt.Errorf("rgs: seed: %w", err)
+		}
+		freshID := uint64(time.Now().UnixNano())
+		m.mu.Lock()
+		trackID := m.selectTrack(freshID, prevTrack)
+		m.mu.Unlock()
+		pr = &pendingRound{
+			spec: &RoundSpec{
+				RoundID:       freshID,
+				ServerSeedHex: hex.EncodeToString(rawSeed[:]),
+				TrackID:       trackID,
+			},
+		}
+		// Register in roundBets so BetsForRound is aware of this round_id.
+		m.mu.Lock()
+		m.roundBets[freshID] = nil
+		m.mu.Unlock()
 	}
-	roundID := uint64(time.Now().UnixNano())
+
+	// Decode the seed from the spec's hex string.
+	seedBytes, err := hex.DecodeString(pr.spec.ServerSeedHex)
+	if err != nil {
+		return nil, nil, fmt.Errorf("rgs: decode server seed: %w", err)
+	}
+	var seed [32]byte
+	copy(seed[:], seedBytes)
+
+	roundID := pr.spec.RoundID
+	trackID := pr.spec.TrackID
+
 	now := time.Now()
 	r := round.New(roundID, seed, m.cfg.MaxMarbles, now)
 	if err := r.OpenBuyIn(now); err != nil {
@@ -243,9 +286,9 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		}
 	}
 
-	// 4. Pick a track. selectTrack hashes the round id; same algorithm
-	//    roundd uses, kept in sync via TrackPool.
-	trackID := m.selectTrack(roundID, prevTrack)
+	// 4. trackID comes from the consumed spec (set above). Update prevTrack
+	//    after the round completes (step 9) so the next selectTrack call
+	//    respects the no-back-to-back invariant.
 
 	// 5. Run the race.
 	if err := r.StartRace(time.Now()); err != nil {
@@ -359,33 +402,12 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	}
 
 	// 9. Settle round-level bets (POST /v1/rounds/{round_id}/bets flow).
-	//    We pop the first pendingRound that matches the roundID we just ran.
-	//    Because RunNextRound generates its own roundID via UnixNano there
-	//    will be no pendingRound entry for this particular roundID — unless
-	//    the caller previously used GenerateRoundSpec AND that spec's roundID
-	//    happens to match (which can't happen because we generate a new ID
-	//    here). The real connection is: when RunNextRound is called after
-	//    POST /v1/rounds/start, it should use the pre-minted spec's roundID
-	//    and seed so bettors' recorded round_id matches the outcome.
-	//
-	//    For this MVP we settle round-level bets by popping the oldest
-	//    pendingRound (FIFO). RunNextRound re-uses its roundID for matching
-	//    so bets placed on that round_id get settled here.
-	//
-	//    Open item (M9.x): when RunNextRound is called, it should consume the
-	//    oldest pendingRound's seed + roundID rather than generating a fresh
-	//    one, so the client's pre-minted round_id is reflected in the audit
-	//    trail. For now, round-level bets are settled against the round that
-	//    ran immediately after them, keyed by pop order.
+	//    pr was popped from pendingRounds at the top of this function, so
+	//    pr.bets contains every RoundBet placed against the same round_id
+	//    and seed that the sim just ran. Seed alignment is guaranteed:
+	//    the manifest's round_id and server_seed_hex match what bettors
+	//    received from POST /v1/rounds/start.
 	var roundBetOutcomes []RoundBetOutcome
-	m.mu.Lock()
-	var pr *pendingRound
-	if len(m.pendingRounds) > 0 {
-		pr = m.pendingRounds[0]
-		m.pendingRounds = m.pendingRounds[1:]
-	}
-	m.mu.Unlock()
-
 	if pr != nil {
 		var totalBets, totalPayout float64
 		roundBetOutcomes = make([]RoundBetOutcome, len(pr.bets))
