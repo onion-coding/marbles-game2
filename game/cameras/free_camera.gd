@@ -11,6 +11,13 @@ extends Camera3D
 #   Mouse wheel          — zoom in/out (dolly along view direction)
 #   Right mouse drag     — pan target laterally inside camera_bounds
 #   R                    — reset to the default fixed-camera framing
+#   W / Up arrow         — move target forward (along camera look direction)
+#   S / Down arrow       — move target backward
+#   A / Left arrow       — strafe target left
+#   D / Right arrow      — strafe target right
+#   Q                    — move target down (world Y)
+#   E                    — move target up (world Y)
+#   Shift (held)         — multiply movement speed × 3
 #
 # All input handlers are no-ops on headless platforms (no input device), so
 # this camera works for both interactive and CI export-test runs.
@@ -42,10 +49,16 @@ var _default_distance: float = 30.0
 var _orbit_dragging: bool = false
 var _pan_dragging: bool = false
 
+# Keyboard movement state — accumulated in _input, consumed in _process.
+# Axes: x = strafe right, y = elevate up, z = forward (camera look).
+var _move_input: Vector3 = Vector3.ZERO
+
 const ORBIT_SENSITIVITY := 0.005      # rad/pixel
 const PAN_SENSITIVITY := 0.05         # m/pixel (scaled by current distance)
 const ZOOM_STEP := 1.10               # multiplicative per wheel notch
 const PITCH_LIMIT := 1.45             # ±~83° to avoid gimbal lock
+const MOVE_SPEED := 10.0              # m/s at distance == 1; scaled by _distance
+const MOVE_SHIFT_MULT := 3.0          # speed multiplier when Shift is held
 
 func _ready() -> void:
 	current = true
@@ -89,8 +102,7 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		_handle_mouse_motion(event)
 	elif event is InputEventKey:
-		if event.pressed and event.keycode == KEY_R:
-			_reset()
+		_handle_key(event)
 
 func _handle_mouse_button(e: InputEventMouseButton) -> void:
 	match e.button_index:
@@ -125,6 +137,52 @@ func _handle_mouse_motion(e: InputEventMouseMotion) -> void:
 		_target.y = clampf(_target.y, _bb.position.y, _bb.position.y + _bb.size.y)
 		_target.z = clampf(_target.z, _bb.position.z, _bb.position.z + _bb.size.z)
 		_apply_pose()
+
+func _handle_key(e: InputEventKey) -> void:
+	# R — reset
+	if e.pressed and e.keycode == KEY_R:
+		_reset()
+		return
+	# Movement keys: update the continuous _move_input vector.
+	# The vector is rebuilt from the set of currently-pressed keys so that
+	# releasing one key while another is held correctly reverts the axis.
+	var sign: float = 1.0 if e.pressed else -1.0
+	match e.keycode:
+		KEY_W, KEY_UP:
+			_move_input.z += sign         # forward
+		KEY_S, KEY_DOWN:
+			_move_input.z -= sign         # backward
+		KEY_A, KEY_LEFT:
+			_move_input.x -= sign         # strafe left
+		KEY_D, KEY_RIGHT:
+			_move_input.x += sign         # strafe right
+		KEY_Q:
+			_move_input.y -= sign         # descend
+		KEY_E:
+			_move_input.y += sign         # ascend
+	# Clamp each axis to [-1, 1] in case of double-press (two keys same axis).
+	_move_input = _move_input.clamp(Vector3(-1.0, -1.0, -1.0), Vector3(1.0, 1.0, 1.0))
+
+func _process(delta: float) -> void:
+	if _move_input == Vector3.ZERO:
+		return
+	# Speed scales with distance so far-away views feel responsive.
+	var shift: bool = Input.is_key_pressed(KEY_SHIFT)
+	var speed: float = MOVE_SPEED * _distance * delta * (MOVE_SHIFT_MULT if shift else 1.0)
+	# Decompose movement into world-space using the camera basis.
+	# Forward is projected onto the horizontal plane so W/S doesn't dive/climb
+	# with pitch — only Q/E changes world Y.
+	var cam_basis: Basis = global_transform.basis
+	var right: Vector3 = cam_basis.x                          # world right
+	var look_h: Vector3 = Vector3(-cam_basis.z.x, 0.0, -cam_basis.z.z).normalized()  # horizontal forward
+	_target += right * (_move_input.x * speed)
+	_target += look_h * (_move_input.z * speed)
+	_target.y += _move_input.y * speed
+	# Re-apply AABB clamp (same as pan handler).
+	_target.x = clampf(_target.x, _bb.position.x, _bb.position.x + _bb.size.x)
+	_target.y = clampf(_target.y, _bb.position.y, _bb.position.y + _bb.size.y)
+	_target.z = clampf(_target.z, _bb.position.z, _bb.position.z + _bb.size.z)
+	_apply_pose()
 
 func _reset() -> void:
 	_target = _default_target
