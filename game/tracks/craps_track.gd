@@ -274,15 +274,23 @@ func _ensure_root_transform() -> void:
 	_root_transform = Transform3D(b2 * b1, Vector3(0, ROOT_OFFSET_Y, 0))
 
 func _build_mood_light() -> void:
-	# Warm gold key light from above-X to give the table a casino-pit mood
-	# that contrasts with the entry scene's cool sky ambient.
+	# Neon-red fill light — reinforces the Vegas-night palette.
+	# A second cooler omni is added to avoid the scene going fully monochromatic.
 	var light := OmniLight3D.new()
 	light.name = "MoodLight"
-	light.light_color = Color(1.0, 0.92, 0.7)
-	light.light_energy = 1.6
-	light.omni_range = 60.0
+	light.light_color = Color(1.0, 0.30, 0.40)
+	light.light_energy = 2.2
+	light.omni_range = 65.0
 	light.position = Vector3(0, 12, 0)
 	add_child(light)
+
+	var fill := OmniLight3D.new()
+	fill.name = "MoodFill"
+	fill.light_color = Color(0.70, 0.60, 1.0)
+	fill.light_energy = 0.6
+	fill.omni_range = 50.0
+	fill.position = Vector3(0, 6, 8)
+	add_child(fill)
 
 func _physics_process(_delta: float) -> void:
 	# Drive each kinematic die to its closed-form pose for this tick. We work
@@ -621,21 +629,21 @@ func _init_chip_wheel_phases() -> void:
 
 func _build_chip_wheels() -> void:
 	var disc_mat := StandardMaterial3D.new()
-	disc_mat.albedo_color = Color(0.85, 0.72, 0.25)   # gold
-	disc_mat.metallic = 0.85
-	disc_mat.metallic_specular = 0.85
-	disc_mat.roughness = 0.30
+	disc_mat.albedo_color = Color(0.80, 0.45, 0.15)   # deep brass-orange, neon-lit
+	disc_mat.metallic = 0.90
+	disc_mat.metallic_specular = 0.90
+	disc_mat.roughness = 0.18
 	disc_mat.emission_enabled = true
-	disc_mat.emission = Color(0.85, 0.72, 0.25)
-	disc_mat.emission_energy_multiplier = 0.30
+	disc_mat.emission = Color(0.80, 0.45, 0.15)
+	disc_mat.emission_energy_multiplier = 0.45
 
 	var peg_mat := StandardMaterial3D.new()
-	peg_mat.albedo_color = Color(0.93, 0.20, 0.20)    # red chip
-	peg_mat.metallic = 0.40
-	peg_mat.roughness = 0.40
+	peg_mat.albedo_color = Color(0.98, 0.15, 0.30)    # vivid neon-red peg
+	peg_mat.metallic = 0.50
+	peg_mat.roughness = 0.30
 	peg_mat.emission_enabled = true
-	peg_mat.emission = Color(0.93, 0.20, 0.20)
-	peg_mat.emission_energy_multiplier = 0.30
+	peg_mat.emission = Color(0.98, 0.15, 0.30)
+	peg_mat.emission_energy_multiplier = 0.50
 
 	for i in range(CHIP_WHEEL_COUNT):
 		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
@@ -801,13 +809,17 @@ func camera_pose() -> Dictionary:
 	}
 
 func environment_overrides() -> Dictionary:
-	# Sky stays the daylight default (onion's cloud shader); per-track
-	# mood comes from a slightly hazy warm-gold fog and a softly amber
-	# sun, which is enough to push the felt and brass toward
-	# vegas-strip warm without fighting the sky.
+	# Vegas-strip night: saturated magenta-red fog, hot sun, dark sky.
+	# The dark zenith + vivid fog push instant recognition vs Poker's
+	# daytime green. ambient_energy is low so the emission bloom on the
+	# chip wheels and brass rails pops against the shadow.
 	return {
-		"ambient_energy": 0.70,
-		"fog_color": Color(0.85, 0.55, 0.40),
+		"ambient_energy": 0.55,
+		"fog_color": Color(0.95, 0.28, 0.42),
 		"fog_density": 0.002,
-		"sun_color": Color(1.0, 0.92, 0.78),
+		"fog_energy": 1.2,
+		"sun_color": Color(1.0, 0.78, 0.58),
+		"sun_energy": 1.6,
+		"sky_top": Color(0.05, 0.03, 0.10),
+		"sky_horizon": Color(0.30, 0.08, 0.18),
 	}

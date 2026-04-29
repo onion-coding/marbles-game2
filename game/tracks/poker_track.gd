@@ -198,13 +198,14 @@ func _ensure_root_transform() -> void:
 	_root_transform = Transform3D(b2 * b1, Vector3(0, ROOT_OFFSET_Y, 0))
 
 func _build_mood_light() -> void:
-	# Warm pendant-light mood — the giant lamp over a card table.
+	# Crisp outdoor-daylight fill — cool white with a faint sky-blue tint,
+	# matches the country-club environment override.
 	var light := OmniLight3D.new()
 	light.name = "MoodLight"
-	light.light_color = Color(1.0, 0.85, 0.55)
-	light.light_energy = 2.0
-	light.omni_range = 50.0
-	light.position = Vector3(0, 8, 0)
+	light.light_color = Color(0.90, 0.96, 1.0)
+	light.light_energy = 1.4
+	light.omni_range = 55.0
+	light.position = Vector3(0, 10, 0)
 	add_child(light)
 
 func _physics_process(_delta: float) -> void:
@@ -454,21 +455,21 @@ func _init_chip_wheel_phases() -> void:
 
 func _build_chip_wheels() -> void:
 	var disc_mat := StandardMaterial3D.new()
-	disc_mat.albedo_color = Color(0.85, 0.72, 0.25)   # gold disc (matches Craps for visual continuity)
-	disc_mat.metallic = 0.85
-	disc_mat.metallic_specular = 0.85
-	disc_mat.roughness = 0.30
+	disc_mat.albedo_color = Color(0.88, 0.92, 0.95)   # polished silver-chrome, country-club finish
+	disc_mat.metallic = 1.0
+	disc_mat.metallic_specular = 1.0
+	disc_mat.roughness = 0.10
 	disc_mat.emission_enabled = true
-	disc_mat.emission = Color(0.85, 0.72, 0.25)
-	disc_mat.emission_energy_multiplier = 0.30
+	disc_mat.emission = Color(0.70, 0.88, 1.0)        # cool blue-white bloom
+	disc_mat.emission_energy_multiplier = 0.25
 
 	var peg_mat := StandardMaterial3D.new()
 	peg_mat.albedo_color = COLOR_CHIP_BLUE                # blue chips (Poker theme)
-	peg_mat.metallic = 0.40
-	peg_mat.roughness = 0.40
+	peg_mat.metallic = 0.50
+	peg_mat.roughness = 0.30
 	peg_mat.emission_enabled = true
 	peg_mat.emission = COLOR_CHIP_BLUE
-	peg_mat.emission_energy_multiplier = 0.30
+	peg_mat.emission_energy_multiplier = 0.35
 
 	for i in range(CHIP_WHEEL_COUNT):
 		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
@@ -639,12 +640,16 @@ func camera_pose() -> Dictionary:
 	}
 
 func environment_overrides() -> Dictionary:
-	# Cardroom mood pulled out of the fog + sun rather than the sky;
-	# letting the daylight cloud shader render unmodified avoids the
-	# muddy interaction the dark-green sky used to produce.
+	# Country-club outdoor day: saturated pure green fog, cool bluish sun,
+	# bright ambient and a cyan-azure sky. Feels immediately "outdoor lawn /
+	# putting green / country club" versus Craps's neon night interior.
 	return {
-		"ambient_energy": 0.60,
-		"fog_color": Color(0.55, 0.70, 0.45),
+		"ambient_energy": 0.85,
+		"fog_color": Color(0.22, 0.55, 0.28),
 		"fog_density": 0.002,
-		"sun_color": Color(1.0, 0.85, 0.60),
+		"fog_energy": 1.0,
+		"sun_color": Color(0.90, 0.96, 1.0),
+		"sun_energy": 1.1,
+		"sky_top": Color(0.45, 0.72, 0.95),
+		"sky_horizon": Color(0.75, 0.92, 1.0),
 	}

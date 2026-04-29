@@ -447,4 +447,16 @@ func camera_pose() -> Dictionary:
 	}
 
 func environment_overrides() -> Dictionary:
-	return {}
+	# Mahogany wood-panelled casino interior: warm amber-brown fog, rich
+	# golden sun, muted ambient. The deep brown fog contrasts immediately
+	# with Craps (neon-red night) and Poker (outdoor green day).
+	return {
+		"ambient_energy": 0.65,
+		"fog_color": Color(0.52, 0.32, 0.18),
+		"fog_density": 0.0025,
+		"fog_energy": 1.0,
+		"sun_color": Color(1.0, 0.88, 0.62),
+		"sun_energy": 1.2,
+		"sky_top": Color(0.18, 0.10, 0.06),
+		"sky_horizon": Color(0.45, 0.28, 0.14),
+	}
