@@ -53,12 +53,17 @@ var _place_bet_btn: Button
 var _bets_list: VBoxContainer
 var _bets_locked_label: Label
 var _toast_label: Label           # temporary error / confirmation feedback
+var _bet_countdown_label: Label   # shows "Race starts in: X.Xs" inside bet panel
 
 # ─── State ───────────────────────────────────────────────────────────────────
 
 var _tick_rate: float = 60.0
 var _race_started: bool = false
 var _start_tick: int = -1
+
+# Bet-window countdown state.
+var _bet_countdown_remaining: float = 0.0
+var _bet_countdown_active: bool = false
 
 # Marble metadata stored at setup() time.
 # Each entry: {name: String, color: Color, original_index: int}.
@@ -93,6 +98,18 @@ func _process(delta: float) -> void:
 			_toast_label.visible = false
 			_toast_timer = 0.0
 
+	# Drive the bet-window countdown at 0.1 s precision.
+	if _bet_countdown_active:
+		_bet_countdown_remaining -= delta
+		if _bet_countdown_remaining <= 0.0:
+			_bet_countdown_remaining = 0.0
+			_bet_countdown_active = false
+			_bet_countdown_label.text = "Bets locked"
+			_bet_countdown_label.add_theme_color_override("font_color", Color(0.90, 0.50, 0.20))
+			_place_bet_btn.disabled = true
+		else:
+			_bet_countdown_label.text = "Race starts in: %.1fs" % _bet_countdown_remaining
+
 # ─── Public API ──────────────────────────────────────────────────────────────
 
 # Enable RGS betting mode. Must be called before setup().
@@ -107,6 +124,25 @@ func enable_rgs_mode(round_id: int, initial_balance: float = MOCK_BALANCE) -> vo
 	_phase_label.text = PHASE_WAITING
 	_bet_panel.visible = true
 	_bets_locked_label.visible = false
+
+# Start the visible bet-window countdown shown inside the bet panel.
+# Call this immediately after enable_rgs_mode().  Internally ticks every frame
+# (0.1 s display precision).  If called while a previous countdown is still
+# running it resets gracefully.
+func start_bet_countdown(seconds: float) -> void:
+	_bet_countdown_remaining = seconds
+	_bet_countdown_active = true
+	_bet_countdown_label.text = "Race starts in: %.1fs" % seconds
+	_bet_countdown_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.70))
+	_bet_countdown_label.visible = true
+
+# Update the displayed balance.  Pass -1.0 to silently ignore (sentinel for
+# a failed balance fetch — the last good value is preserved).
+func update_balance(balance: float) -> void:
+	if balance < 0.0:
+		return
+	_balance = balance
+	_update_balance_label()
 
 # Called once when the replay header is known. `header` is the list of marble
 # dicts (name + rgba) from the replay/stream protocol.
@@ -139,6 +175,9 @@ func setup(header: Array) -> void:
 	_winner_modal.visible = false
 	_race_started = false
 	_start_tick = -1
+
+	# Cancel any in-progress bet countdown (setup() means the race is starting).
+	_bet_countdown_active = false
 
 	# Transition to RACING: hide bet placement, show lock banner if bets placed.
 	_bet_panel.visible = false
@@ -257,6 +296,8 @@ func reset() -> void:
 	_balance = MOCK_BALANCE
 	_balance_label.text = "%.2f USD" % _balance
 	_race_started = false
+	_bet_countdown_active = false
+	_bet_countdown_remaining = 0.0
 	if _track_name_label != null:
 		_track_name_label.text = ""
 	if _marble_selector != null:
@@ -484,6 +525,15 @@ func _build_bet_panel() -> Control:
 	plus_btn.custom_minimum_size = Vector2(42, 26)
 	plus_btn.pressed.connect(_on_adjust_amount.bind(10.0))
 	adjust_hb.add_child(plus_btn)
+
+	# Countdown label — updated by start_bet_countdown() / _process().
+	_bet_countdown_label = Label.new()
+	_bet_countdown_label.text = ""
+	_bet_countdown_label.add_theme_font_size_override("font_size", 12)
+	_bet_countdown_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.70))
+	_bet_countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_bet_countdown_label.visible = false
+	vb.add_child(_bet_countdown_label)
 
 	# Place Bet button
 	_place_bet_btn = Button.new()

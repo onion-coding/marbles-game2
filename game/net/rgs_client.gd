@@ -104,10 +104,13 @@ func _on_balance_response(result: int, code: int, _headers: PackedStringArray,
 	remove_child(http)
 	http.queue_free()
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		balance_loaded.emit(-1.0)
 		return
 	var parsed = JSON.parse_string(body.get_string_from_utf8())
 	if typeof(parsed) == TYPE_DICTIONARY and parsed.has("balance"):
 		balance_loaded.emit(float(parsed["balance"]))
+	else:
+		balance_loaded.emit(-1.0)
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 

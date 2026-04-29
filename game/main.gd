@@ -116,11 +116,17 @@ func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStri
 	# back to WAITING and reveals the bet panel.
 	_hud.enable_rgs_mode(round_id_int)
 
+	# Start the visible countdown inside the bet panel.
+	_hud.start_bet_countdown(RGS_BET_WINDOW_SEC)
+
 	# Wire bet signal → RgsClient → HUD confirmation / error.
 	_hud.bet_requested.connect(_on_bet_requested)
 	if _rgs_client != null:
 		_rgs_client.bet_placed.connect(_on_bet_placed)
 		_rgs_client.bet_failed.connect(_on_bet_failed)
+		# Keep the balance label in sync: refresh once now and after every bet.
+		_rgs_client.balance_loaded.connect(_hud.update_balance)
+		_rgs_client.fetch_balance()
 
 	# Start the countdown; _start_race runs at expiry.
 	_open_bet_countdown()
@@ -142,6 +148,9 @@ func _on_bet_requested(marble_idx: int, amount: float) -> void:
 func _on_bet_placed(bet: Dictionary) -> void:
 	if _hud != null:
 		_hud.on_bet_confirmed(bet)
+	# Re-fetch balance to stay in sync even if balance_after drifts.
+	if _rgs_client != null:
+		_rgs_client.fetch_balance()
 
 # Relay bet error to HUD toast.
 func _on_bet_failed(error: String) -> void:
