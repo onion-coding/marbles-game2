@@ -32,6 +32,7 @@ var _player: PlaybackPlayer
 var _hud: HUD
 var _audio: AudioController
 var _track: Track
+var _freecam: FreeCamera
 
 func _ready() -> void:
 	# Environment is deferred until the track is known (track may pick its
@@ -109,9 +110,11 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 	add_child(_track)
 	_build_environment(_track)
 	_audio.start_ambient(track_id, _track.audio_overrides())
-	var cam := FreeCamera.new()
-	cam.track = _track
-	add_child(cam)
+	_freecam = FreeCamera.new()
+	_freecam.track = _track
+	add_child(_freecam)
+	_hud.marble_selected.connect(_freecam.follow_marble_index)
+	_freecam.following_changed.connect(_hud.set_following)
 	print("WEB_CLIENT: playing %d frames for %d marbles (track=%s)" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size(), TrackRegistry.name_of(track_id)])
 	_hud.setup(replay["header"])
 	_hud.set_track_name(TrackRegistry.name_of(track_id))

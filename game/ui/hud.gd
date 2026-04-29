@@ -1,6 +1,11 @@
 class_name HUD
 extends CanvasLayer
 
+# Emitted when the user clicks a marble row in the standings sidebar.
+# `index` is the drop-order original index (same key used by FreeCamera's
+# follow system). Connect this to FreeCamera.follow_marble_index.
+signal marble_selected(index: int)
+
 # Player-facing overlay for web / live scenes. Shows:
 #   - race title + phase label (top-left)
 #   - mock balance + deposit-stub button (top-right)
@@ -44,8 +49,17 @@ var _race_started: bool = false
 var _start_tick: int = -1
 
 # Marble metadata stored at setup() time so update_standings can re-sort rows
-# without losing name/color. Each entry: {name: String, color: Color}.
+# without losing name/color. Each entry: {name: String, color: Color, original_index: int}.
 var _marble_meta: Array = []
+
+# Which original_index is currently being followed (-1 = none). Used by
+# set_following() to update the eye-marker on the correct row.
+var _following_index: int = -1
+
+# Map from original_index → the outermost Control node for that row, rebuilt
+# on every _clear_marble_list / setup / update_standings call so set_following
+# can find the row to highlight without a linear scan.
+var _row_by_index: Dictionary = {}
 
 func _ready() -> void:
 	layer = 10   # above any 3D viewport but below editor overlays
@@ -68,7 +82,9 @@ func setup(header: Array) -> void:
 		else:
 			color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, 1.0)
 		_marble_meta.append({"name": marble_name, "color": color, "original_index": i})
-		_marble_list.add_child(_make_marble_row("%d. %s" % [i + 1, marble_name], color, false))
+		var row := _make_marble_row("%d. %s" % [i + 1, marble_name], color, false, i)
+		_row_by_index[i] = row
+		_marble_list.add_child(row)
 	_phase_label.text = PHASE_RACING
 	_winner_modal.visible = false
 	_buy_in_button.disabled = true   # bets are closed once the race is rolling
@@ -111,8 +127,14 @@ func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 	for rank in range(ranked.size()):
 		var entry: Dictionary = ranked[rank]
 		var meta: Dictionary = _marble_meta[entry["idx"]]
+		var orig_idx: int = meta["original_index"]
 		var row_text := "%d. %s" % [rank + 1, meta["name"]]
-		_marble_list.add_child(_make_marble_row(row_text, meta["color"], rank == 0))
+		var row := _make_marble_row(row_text, meta["color"], rank == 0, orig_idx)
+		_row_by_index[orig_idx] = row
+		_marble_list.add_child(row)
+	# Re-apply the following marker after the list is rebuilt.
+	if _following_index >= 0:
+		_apply_following_marker(_following_index, true)
 
 # Drive the timer. `tick` is the current playback tick (monotonic from
 # _process). `tick_rate_hz` matches the recorder's setting (60 in M3+).
@@ -134,9 +156,21 @@ func reveal_winner(name: String, color: Color, prize: String = "") -> void:
 	_winner_prize_label.text = prize if prize != "" else "Race complete"
 	_winner_modal.visible = true
 
+# Called by FreeCamera.following_changed signal. Marks the row matching `index`
+# with a cyan left border to indicate "you are watching this marble". Pass -1
+# to clear all markers (e.g. when the user releases the follow lock).
+func set_following(index: int) -> void:
+	# Clear any existing marker first.
+	if _following_index >= 0:
+		_apply_following_marker(_following_index, false)
+	_following_index = index
+	if index >= 0:
+		_apply_following_marker(index, true)
+
 func reset() -> void:
 	_clear_marble_list()
 	_marble_meta.clear()
+	_following_index = -1
 	_phase_label.text = PHASE_WAITING
 	_timer_label.text = TIMER_FORMAT % [0, 0]
 	_winner_modal.visible = false
@@ -328,9 +362,40 @@ func _build_winner_modal() -> Control:
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
-func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false) -> Control:
+# Build a clickable marble row. `original_index` is the drop-order index
+# passed back via marble_selected when the row is clicked.
+func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false,
+		original_index: int = -1) -> Control:
+	# Outer Button captures hover/press theming and click events.
+	var btn := Button.new()
+	btn.flat = true   # no default button chrome; we paint our own backgrounds
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	btn.focus_mode = Control.FOCUS_NONE  # sidebar shouldn't steal keyboard focus
+	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# Three StyleBoxFlat states: normal, hover, pressed.
+	var sb_normal := _row_stylebox(Color(0, 0, 0, 0.0), Color(0, 0, 0, 0.0))
+	var sb_hover  := _row_stylebox(Color(1, 1, 1, 0.08), Color(0, 0, 0, 0.0))
+	var sb_press  := _row_stylebox(Color(1, 1, 1, 0.18), Color(0, 0, 0, 0.0))
+
+	if is_leader:
+		# Gold background + gold border for the leader regardless of hover state.
+		sb_normal = _row_stylebox(Color(0.22, 0.18, 0.04, 0.85), Color(1.0, 0.82, 0.12, 0.90))
+		sb_hover  = _row_stylebox(Color(0.28, 0.24, 0.08, 0.90), Color(1.0, 0.82, 0.12, 0.90))
+		sb_press  = _row_stylebox(Color(0.34, 0.30, 0.12, 0.95), Color(1.0, 0.82, 0.12, 0.90))
+
+	btn.add_theme_stylebox_override("normal",   sb_normal)
+	btn.add_theme_stylebox_override("hover",    sb_hover)
+	btn.add_theme_stylebox_override("pressed",  sb_press)
+	btn.add_theme_stylebox_override("disabled", sb_normal)
+	btn.add_theme_stylebox_override("focus",    sb_normal)
+
+	# Inner HBox: swatch + label.
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 8)
+	# The HBox must be a child of the Button (Button is a BaseButton/Control
+	# that can have a single content child drawn inside it).
+	btn.add_child(hb)
 
 	var swatch := ColorRect.new()
 	swatch.color = color
@@ -344,16 +409,45 @@ func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false
 		Color(1.0, 0.92, 0.30) if is_leader else Color(0.92, 0.92, 0.96))
 	hb.add_child(label)
 
-	if not is_leader:
-		return hb
+	if original_index >= 0:
+		btn.pressed.connect(func() -> void:
+			marble_selected.emit(original_index)
+		)
 
-	# First-place row: wrap in a PanelContainer with a distinct gold-bordered
-	# background so the leader is immediately obvious in the standings list.
-	var panel := PanelContainer.new()
+	return btn
+
+# Apply or remove the cyan "following" left-border highlight on the row
+# identified by `orig_idx`. Safe to call when the row doesn't exist yet
+# (e.g. called before setup).
+func _apply_following_marker(orig_idx: int, active: bool) -> void:
+	if not _row_by_index.has(orig_idx):
+		return
+	var row: Control = _row_by_index[orig_idx]
+	if not row is Button:
+		return
+	var btn := row as Button
+	# Retrieve the existing normal stylebox, clone it, tweak the left border.
+	var sb: StyleBoxFlat = btn.get_theme_stylebox("normal").duplicate()
+	if active:
+		sb.border_color = Color(0.0, 0.85, 1.0, 1.0)   # cyan
+		sb.border_width_left = 3
+		sb.border_width_top = 0
+		sb.border_width_right = 0
+		sb.border_width_bottom = 0
+	else:
+		sb.border_color = Color(0, 0, 0, 0)
+		sb.border_width_left = 0
+	btn.add_theme_stylebox_override("normal",  sb)
+	btn.add_theme_stylebox_override("disabled", sb)
+	btn.add_theme_stylebox_override("focus",    sb)
+
+# Minimal StyleBoxFlat for row backgrounds (no corner rounding on normal rows,
+# 4-px corners for the leader row).
+func _row_stylebox(bg: Color, border: Color) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.22, 0.18, 0.04, 0.85)
-	sb.border_color = Color(1.0, 0.82, 0.12, 0.90)
-	sb.set_border_width_all(2)
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(0 if border.a == 0.0 else 2)
 	sb.corner_radius_top_left = 4
 	sb.corner_radius_top_right = 4
 	sb.corner_radius_bottom_left = 4
@@ -362,13 +456,12 @@ func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false
 	sb.content_margin_right = 4
 	sb.content_margin_top = 2
 	sb.content_margin_bottom = 2
-	panel.add_theme_stylebox_override("panel", sb)
-	panel.add_child(hb)
-	return panel
+	return sb
 
 func _clear_marble_list() -> void:
 	for c in _marble_list.get_children():
 		c.queue_free()
+	_row_by_index.clear()
 
 func _panel_stylebox(bg: Color) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()

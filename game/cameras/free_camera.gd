@@ -1,6 +1,11 @@
 class_name FreeCamera
 extends Camera3D
 
+# Emitted whenever the followed marble changes. idx == -1 means no marble is
+# being followed (released via F, Esc, R, or the marble was freed). HUD
+# listens to this to update its "eye" marker in the standings list.
+signal following_changed(idx: int)
+
 # Per-player free camera: orbit + zoom around the track center.
 # Used by the Web client (web_main.gd, live_main.gd) so each viewer can
 # pick their own angle. Sim and disk-playback scenes keep FixedCamera —
@@ -96,8 +101,8 @@ func _ready() -> void:
 		var dist_v: float = (extent.y * 0.5) / 0.577
 		var dist_h: float = (maxf(extent.x, extent.z) * 0.5) / (0.577 * aspect)
 		_distance = maxf(dist_v, dist_h) * 1.10 + 4.0
-	_min_dist = 0.5
-	_max_dist = 500.0
+	_min_dist = 0.05
+	_max_dist = 1000.0
 	_default_target = _target
 	_default_yaw = _yaw
 	_default_pitch = _pitch
@@ -162,20 +167,20 @@ func _handle_key(e: InputEventKey) -> void:
 
 	# R — reset (also releases follow).
 	if e.keycode == KEY_R:
-		_follow_marble = null
+		_set_follow(null)
 		_reset()
 		return
 
 	# F / Esc — release follow lock.
 	if e.keycode == KEY_F or e.keycode == KEY_ESCAPE:
-		_follow_marble = null
+		_set_follow(null)
 		return
 
 	# Digit keys 0-9: follow marble by index (Shift held → add 10).
 	var digit := _digit_from_keycode(e.keycode)
 	if digit >= 0:
 		var idx: int = digit + (10 if e.shift_pressed else 0)
-		_follow_marble = _find_marble_by_index(idx)
+		_set_follow(_find_marble_by_index(idx), idx)
 		return
 
 	# Movement keys: update the continuous _move_input vector.
@@ -250,18 +255,32 @@ func _process(delta: float) -> void:
 	if _follow_marble != null:
 		if not is_instance_valid(_follow_marble):
 			# Marble was freed (round ended); release follow gracefully.
-			_follow_marble = null
+			_set_follow(null)
 		else:
 			_target = _target.lerp(_follow_marble.global_position, 0.15)
 			_apply_pose()
 
 func _reset() -> void:
+	# Note: _set_follow(null) already called by callers before _reset().
+	# Direct assignment is fine here — no duplicate signal needed.
 	_follow_marble = null
 	_target = _default_target
 	_yaw = _default_yaw
 	_pitch = _default_pitch
 	_distance = _default_distance
 	_apply_pose()
+
+# Public API: called by HUD marble_selected signal. Finds the marble at the
+# given drop-order index and begins following it, emitting following_changed.
+func follow_marble_index(idx: int) -> void:
+	_set_follow(_find_marble_by_index(idx), idx)
+
+# Internal setter that updates _follow_marble and emits following_changed.
+# Pass marble=null to release. marble_idx is the drop-order index used for
+# the HUD marker; pass -1 when releasing (marble=null).
+func _set_follow(marble: Node3D, marble_idx: int = -1) -> void:
+	_follow_marble = marble
+	following_changed.emit(marble_idx if marble != null else -1)
 
 func _apply_pose() -> void:
 	# Camera orbit position around _target, in spherical coords (yaw, pitch,

@@ -7,6 +7,15 @@ var _round_id: int = 0
 var _server_seed_hash: PackedByteArray = PackedByteArray()
 var _replay_path: String = ""
 
+# Interactive-mode HUD + camera. Both are null in spec (headless) mode so all
+# HUD/camera code is guarded. The tick counter drives the race timer display.
+var _hud: HUD = null
+var _freecam: FreeCamera = null
+var _live_marbles: Array = []
+var _live_finish_pos: Vector3 = Vector3.ZERO
+var _live_tick: int = 0
+var _live_racing: bool = false
+
 func _ready() -> void:
 	# Three modes (evaluated in this order of priority):
 	# (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>). Used
@@ -156,9 +165,52 @@ func _start_race(spec: Dictionary) -> void:
 		cam.track = track
 		add_child(cam)
 	else:
-		var freecam := FreeCamera.new()
-		freecam.track = track
-		add_child(freecam)
+		_freecam = FreeCamera.new()
+		_freecam.track = track
+		add_child(_freecam)
+
+		# Build a header array matching the replay format so HUD.setup() can
+		# populate the standings sidebar. Each marble is named "Marble_XX".
+		var hud_header: Array = []
+		for i in range(marbles.size()):
+			var c: Color = colors[i]
+			var rgba: int = (int(c.r * 255) << 24) | (int(c.g * 255) << 16) | \
+					(int(c.b * 255) << 8) | 0xFF
+			hud_header.append({"name": "Marble_%02d" % i, "rgba": rgba})
+
+		_hud = HUD.new()
+		add_child(_hud)
+		_hud.setup(hud_header)
+		_hud.set_track_name(TrackRegistry.name_of(track_id))
+		_live_racing = true
+		_live_tick = 0
+		_live_marbles = marbles
+		_live_finish_pos = track.finish_area_transform().origin
+
+		# Wire HUD leaderboard ↔ FreeCamera follow.
+		_hud.marble_selected.connect(_freecam.follow_marble_index)
+		_freecam.following_changed.connect(_hud.set_following)
+
+		# Wire winner reveal.
+		finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
+			var winner_name: String = String(winner.name)
+			var winner_idx: int = int(winner_name.trim_prefix("Marble_"))
+			_live_racing = false
+			_hud.reveal_winner(winner_name, colors[winner_idx])
+		)
+
+func _physics_process(_delta: float) -> void:
+	# Drive the HUD timer in interactive mode. Skipped (null guard) in
+	# spec/headless mode — _hud is never set on those paths.
+	if _hud == null:
+		return
+	if _live_racing:
+		_live_tick += 1
+		_hud.update_tick(_live_tick, float(Engine.physics_ticks_per_second))
+		# Live standings at ~10 Hz (every 6 physics ticks at 60 Hz). Sorting
+		# 20 marbles by distance is cheap, but we don't need per-tick refresh.
+		if _live_tick % 6 == 0:
+			_hud.update_standings(_live_marbles, _live_finish_pos)
 
 # Return the --rgs=<url> value from the command-line user args, or empty
 # string if the flag is absent.

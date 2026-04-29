@@ -29,6 +29,7 @@ var _hud: HUD
 var _audio: AudioController
 var _poll_deadline_ms: int = 0
 var _track: Track
+var _freecam: FreeCamera
 
 func _ready() -> void:
 	# Environment is deferred until the WS HEADER tells us which track is
@@ -124,9 +125,11 @@ func _on_header(header: Dictionary) -> void:
 	add_child(_track)
 	_build_environment(_track)
 	_audio.start_ambient(track_id, _track.audio_overrides())
-	var cam := FreeCamera.new()
-	cam.track = _track
-	add_child(cam)
+	_freecam = FreeCamera.new()
+	_freecam.track = _track
+	add_child(_freecam)
+	_hud.marble_selected.connect(_freecam.follow_marble_index)
+	_freecam.following_changed.connect(_hud.set_following)
 	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])
 	_hud.setup(header["header"])
 	_hud.set_track_name(TrackRegistry.name_of(track_id))
