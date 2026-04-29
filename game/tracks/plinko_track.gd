@@ -146,6 +146,12 @@ const SIDE_WALL_BOUNCE := 0.50
 const FINISH_Y := SLOT_FLOOR_Y + 0.9   # centred in the slot interior column
 const FINISH_BOX_SIZE := Vector3(PLAY_FIELD_WIDTH + 2.0, 1.8, COURSE_DEPTH + 1.0)
 
+# ─── Slow-motion gravity ─────────────────────────────────────────────────
+# Starting at 1.0 m/s² — Plinko has many obstacles (pegs + paddles +
+# serpentine walls) that already bleed speed. Full 9.8 m/s² yields ~27 s;
+# target is 40-50 s. Tune via physics-tuner if needed.
+const SLOW_GRAVITY_ACCEL := 3.5
+
 # ─── Materials ───────────────────────────────────────────────────────────
 const COLOR_FRAME := Color(0.06, 0.06, 0.10)
 const COLOR_PEG := Color(0.96, 0.96, 0.96)
@@ -172,6 +178,7 @@ func _ready() -> void:
 	_build_serpentine()
 	_build_spinners()
 	_build_slot_row()
+	_build_slow_gravity_zone()
 	_build_mood_light()
 
 func _physics_process(_delta: float) -> void:
@@ -181,6 +188,31 @@ func _physics_process(_delta: float) -> void:
 		var pivot: Vector3 = _spinner_centers[i]
 		var angle: float = w * float(_local_tick)
 		_spinners[i].global_transform = Transform3D(Basis(Vector3.FORWARD, angle), pivot)
+
+func _build_slow_gravity_zone() -> void:
+	# Replaces the default 9.8 m/s² gravity with SLOW_GRAVITY_ACCEL over the
+	# entire play volume so the peg-bounce descent takes 40-50 s instead of ~27 s.
+	var top_y: float = HOPPER_FLOOR_Y + HOPPER_INNER_H + 1.0   # ~63 m
+	var bot_y: float = FINISH_Y                                  # ~9.9 m
+	var centre_y: float = (top_y + bot_y) * 0.5
+	var size_y: float = top_y - bot_y + 4.0                     # +2 m each end for safety
+	var size_x: float = PLAY_FIELD_WIDTH + 4.0
+	var size_z: float = COURSE_DEPTH + 4.0
+
+	var zone := Area3D.new()
+	zone.name = "SlowGravityZone"
+	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
+	zone.gravity_direction = Vector3(0, -1, 0)
+	zone.gravity = SLOW_GRAVITY_ACCEL
+	zone.position = Vector3(0, centre_y, 0)
+	add_child(zone)
+
+	var coll := CollisionShape3D.new()
+	coll.name = "SlowGravityZone_shape"
+	var box := BoxShape3D.new()
+	box.size = Vector3(size_x, size_y, size_z)
+	coll.shape = box
+	zone.add_child(coll)
 
 func _build_mood_light() -> void:
 	# Saturated magenta-arcade mood — the loudest track on the rotation.
