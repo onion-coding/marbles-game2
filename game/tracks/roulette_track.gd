@@ -66,6 +66,17 @@ const WHEEL_DECOR_RADIUS := 5.0
 const WHEEL_DECOR_HEIGHT := 1.2
 const WHEEL_DECOR_ANGULAR_VEL := 0.4
 
+# ─── Slow-motion gravity ─────────────────────────────────────────────────
+# Roulette's helix is a smooth closed channel with relatively little
+# obstacle drag (8 chip-stack pegs vs. Plinko's dense peg forest).
+# Full 9.8 m/s² → ~32 s; target is 45-49 s (+13-17 s needed).
+# Plinko (very dense obstacles) uses 3.5; Craps/Poker (table + spinning
+# chips) use ~0.21 after vertical orientation. Roulette sits in between:
+# 6.5 m/s² cuts roughly 40 % off the gravitational acceleration while
+# the helix friction (0.55) and chip pegs do the rest. If physics-tuner
+# needs to adjust, the knob is this single constant.
+const SLOW_GRAVITY_ACCEL := 5.0
+
 # ─── Materials ───────────────────────────────────────────────────────────
 const COLOR_MAHOGANY := Color(0.22, 0.08, 0.05)
 const COLOR_BRASS := Color(0.85, 0.75, 0.25)
@@ -85,6 +96,7 @@ func _ready() -> void:
 	_build_exit_chute()
 	_build_finish_rack()
 	_build_wheel_decor()
+	_build_slow_gravity_zone()
 
 func _physics_process(delta: float) -> void:
 	if _wheel_decor != null:
@@ -339,6 +351,34 @@ func _build_wheel_decor() -> void:
 		mesh.transform = Transform3D(p_basis, Vector3(cos(angle) * p_radius, WHEEL_DECOR_HEIGHT * 0.5 + 0.1, sin(angle) * p_radius))
 		mesh.material_override = divider_mat
 		_wheel_decor.add_child(mesh)
+
+# ─── Build: slow-motion gravity zone ─────────────────────────────────────
+
+func _build_slow_gravity_zone() -> void:
+	# Covers the entire helix volume so every marble in the descent
+	# experiences SLOW_GRAVITY_ACCEL instead of the default 9.8 m/s².
+	# XZ extends 2 m beyond the helix radius; Y covers spawn to finish
+	# with 2 m of clearance on each end.
+	var top_y: float = SPAWN_CENTER.y + 2.0        # ~30 m
+	var bot_y: float = FINISH_CENTER.y - 2.0        # ~2 m
+	var centre_y: float = (top_y + bot_y) * 0.5
+	var size_y: float = top_y - bot_y               # ~28 m
+	var size_xz: float = (HELIX_RADIUS + 2.0) * 2.0  # 20 m — covers full diameter
+
+	var zone := Area3D.new()
+	zone.name = "SlowGravityZone"
+	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
+	zone.gravity_direction = Vector3(0, -1, 0)
+	zone.gravity = SLOW_GRAVITY_ACCEL
+	zone.position = Vector3(HELIX_AXIS_X, centre_y, HELIX_AXIS_Z)
+	add_child(zone)
+
+	var coll := CollisionShape3D.new()
+	coll.name = "SlowGravityZone_shape"
+	var box := BoxShape3D.new()
+	box.size = Vector3(size_xz, size_y, size_xz)
+	coll.shape = box
+	zone.add_child(coll)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 
