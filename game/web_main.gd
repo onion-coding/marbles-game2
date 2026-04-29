@@ -31,6 +31,7 @@ var _bin_req: HTTPRequest
 var _player: PlaybackPlayer
 var _hud: HUD
 var _audio: AudioController
+var _track: Track
 
 func _ready() -> void:
 	# Environment is deferred until the track is known (track may pick its
@@ -56,9 +57,7 @@ func _ready() -> void:
 	add_child(_hud)
 	_audio = AudioController.new()
 	add_child(_audio)
-	_player.tick_advanced.connect(func(t: int) -> void:
-		_hud.update_tick(t, 60.0)
-	)
+	_player.tick_advanced.connect(_on_tick_advanced)
 	_player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
 		_hud.reveal_winner(name, color)
 		_audio.play_winner_jingle()
@@ -105,18 +104,28 @@ func _on_bin_response(result: int, code: int, _headers: PackedStringArray, body:
 		get_tree().quit(1)
 		return
 	var track_id := int(replay.get("track_id", TrackRegistry.RAMP))
-	var track := TrackRegistry.instance(track_id)
-	track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
-	add_child(track)
-	_build_environment(track)
-	_audio.start_ambient(track_id, track.audio_overrides())
+	_track = TrackRegistry.instance(track_id)
+	_track.configure(int(replay["round_id"]), replay["server_seed"] as PackedByteArray)
+	add_child(_track)
+	_build_environment(_track)
+	_audio.start_ambient(track_id, _track.audio_overrides())
 	var cam := FreeCamera.new()
-	cam.track = track
+	cam.track = _track
 	add_child(cam)
 	print("WEB_CLIENT: playing %d frames for %d marbles (track=%s)" % [(replay["frames"] as Array).size(), (replay["header"] as Array).size(), TrackRegistry.name_of(track_id)])
 	_hud.setup(replay["header"])
-	_player.set_track(track)
+	_hud.set_track_name(TrackRegistry.name_of(track_id))
+	_player.set_track(_track)
 	_player.load_replay(replay)
+
+func _on_tick_advanced(t: int) -> void:
+	_hud.update_tick(t, 60.0)
+	# Update standings every 6 ticks (~10 Hz) to keep the sidebar live without
+	# rebuilding 20 rows every frame. Guard against _track being null (headless
+	# or before the replay bin is received).
+	if t % 6 == 0 and _track != null:
+		var finish_pos := _track.finish_area_transform().origin
+		_hud.update_standings(_player.get_marbles(), finish_pos)
 
 func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:
 	print("WEB_CLIENT: done at tick=%d, first marble pos=%s" % [last_tick, first_marble_pos])

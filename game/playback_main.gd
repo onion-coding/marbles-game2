@@ -27,13 +27,19 @@ func _ready() -> void:
 	var hud := HUD.new()
 	add_child(hud)
 	hud.setup(replay["header"])
+	hud.set_track_name(TrackRegistry.name_of(track_id))
 
 	var audio := AudioController.new()
 	add_child(audio)
 	audio.start_ambient(track_id, track.audio_overrides())
 
+	# Capture locals for the closure (GDScript closures capture by reference but
+	# local vars go out of scope at end of _ready — store what we need).
+	var finish_pos_capture := track.finish_area_transform().origin
 	player.tick_advanced.connect(func(t: int) -> void:
 		hud.update_tick(t, 60.0)
+		if t % 6 == 0:
+			hud.update_standings(player.get_marbles(), finish_pos_capture)
 	)
 	player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
 		hud.reveal_winner(name, color)

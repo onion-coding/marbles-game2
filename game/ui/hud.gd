@@ -37,10 +37,15 @@ var _winner_modal: Control
 var _winner_name_label: Label
 var _winner_prize_label: Label
 var _buy_in_button: Button
+var _track_name_label: Label
 
 var _tick_rate: float = 60.0
 var _race_started: bool = false
 var _start_tick: int = -1
+
+# Marble metadata stored at setup() time so update_standings can re-sort rows
+# without losing name/color. Each entry: {name: String, color: Color}.
+var _marble_meta: Array = []
 
 func _ready() -> void:
 	layer = 10   # above any 3D viewport but below editor overlays
@@ -52,22 +57,62 @@ func _ready() -> void:
 # dicts (name + rgba) from the replay/stream protocol.
 func setup(header: Array) -> void:
 	_clear_marble_list()
+	_marble_meta.clear()
 	for i in range(header.size()):
 		var m: Dictionary = header[i]
-		var name := String(m.get("name", "marble_%02d" % i))
+		var marble_name := String(m.get("name", "marble_%02d" % i))
 		var rgba: int = int(m.get("rgba", 0))
 		var color: Color
 		if rgba == 0:
 			color = Color.from_hsv(float(i) / max(header.size(), 1), 0.8, 0.95)
 		else:
 			color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, 1.0)
-		_marble_list.add_child(_make_marble_row(name, color))
+		_marble_meta.append({"name": marble_name, "color": color, "original_index": i})
+		_marble_list.add_child(_make_marble_row("%d. %s" % [i + 1, marble_name], color, false))
 	_phase_label.text = PHASE_RACING
 	_winner_modal.visible = false
 	_buy_in_button.disabled = true   # bets are closed once the race is rolling
 	_buy_in_button.text = "Buy-in closed"
 	_race_started = false
 	_start_tick = -1
+
+# Set the track name displayed in the top-left panel. Called by web/live main
+# once the track_id is known (after replay header is parsed).
+func set_track_name(track_name: String) -> void:
+	if _track_name_label != null:
+		_track_name_label.text = track_name
+
+# Update the live leaderboard based on current marble world positions relative
+# to the finish line. Safe to call when finish_pos is not yet meaningful (e.g.
+# headless / pre-race): if marbles array is empty or finish_pos is ZERO, the
+# existing order is preserved to avoid flicker.
+#
+# marbles — array of RigidBody3D or Node3D, same ordering as the replay header.
+# finish_pos — world-space position of the finish-line trigger center.
+func update_standings(marbles: Array, finish_pos: Vector3) -> void:
+	if marbles.is_empty() or _marble_meta.is_empty():
+		return
+
+	# Build (distance, original_index) pairs for sorting.
+	var ranked: Array = []
+	for i in range(min(marbles.size(), _marble_meta.size())):
+		var node: Node3D = marbles[i] as Node3D
+		var dist: float = INF
+		if node != null and is_instance_valid(node):
+			dist = node.global_position.distance_to(finish_pos)
+		ranked.append({"dist": dist, "idx": i})
+
+	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["dist"] < b["dist"]
+	)
+
+	# Rebuild the marble list rows in the new rank order.
+	_clear_marble_list()
+	for rank in range(ranked.size()):
+		var entry: Dictionary = ranked[rank]
+		var meta: Dictionary = _marble_meta[entry["idx"]]
+		var row_text := "%d. %s" % [rank + 1, meta["name"]]
+		_marble_list.add_child(_make_marble_row(row_text, meta["color"], rank == 0))
 
 # Drive the timer. `tick` is the current playback tick (monotonic from
 # _process). `tick_rate_hz` matches the recorder's setting (60 in M3+).
@@ -91,12 +136,15 @@ func reveal_winner(name: String, color: Color, prize: String = "") -> void:
 
 func reset() -> void:
 	_clear_marble_list()
+	_marble_meta.clear()
 	_phase_label.text = PHASE_WAITING
 	_timer_label.text = TIMER_FORMAT % [0, 0]
 	_winner_modal.visible = false
 	_buy_in_button.disabled = false
 	_buy_in_button.text = "Buy-in (%.2f)" % MOCK_BUY_IN_DEFAULT
 	_race_started = false
+	if _track_name_label != null:
+		_track_name_label.text = ""
 
 # ─── Layout ──────────────────────────────────────────────────────────────
 
@@ -127,6 +175,12 @@ func _build_top_left() -> Control:
 	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color(1, 0.92, 0.7))
 	vb.add_child(title)
+
+	_track_name_label = Label.new()
+	_track_name_label.text = ""
+	_track_name_label.add_theme_font_size_override("font_size", 11)
+	_track_name_label.add_theme_color_override("font_color", Color(0.65, 0.85, 0.65))
+	vb.add_child(_track_name_label)
 
 	_phase_label = Label.new()
 	_phase_label.text = PHASE_WAITING
@@ -178,7 +232,7 @@ func _build_right_sidebar() -> Control:
 	panel.add_child(vb)
 
 	var header := Label.new()
-	header.text = "MARBLES"
+	header.text = "STANDINGS"
 	header.add_theme_font_size_override("font_size", 12)
 	header.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
 	vb.add_child(header)
@@ -274,7 +328,7 @@ func _build_winner_modal() -> Control:
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
-func _make_marble_row(name: String, color: Color) -> Control:
+func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false) -> Control:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 8)
 
@@ -284,11 +338,33 @@ func _make_marble_row(name: String, color: Color) -> Control:
 	hb.add_child(swatch)
 
 	var label := Label.new()
-	label.text = name
+	label.text = marble_name
 	label.add_theme_font_size_override("font_size", 12)
-	label.add_theme_color_override("font_color", Color(0.92, 0.92, 0.96))
+	label.add_theme_color_override("font_color",
+		Color(1.0, 0.92, 0.30) if is_leader else Color(0.92, 0.92, 0.96))
 	hb.add_child(label)
-	return hb
+
+	if not is_leader:
+		return hb
+
+	# First-place row: wrap in a PanelContainer with a distinct gold-bordered
+	# background so the leader is immediately obvious in the standings list.
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.22, 0.18, 0.04, 0.85)
+	sb.border_color = Color(1.0, 0.82, 0.12, 0.90)
+	sb.set_border_width_all(2)
+	sb.corner_radius_top_left = 4
+	sb.corner_radius_top_right = 4
+	sb.corner_radius_bottom_left = 4
+	sb.corner_radius_bottom_right = 4
+	sb.content_margin_left = 4
+	sb.content_margin_right = 4
+	sb.content_margin_top = 2
+	sb.content_margin_bottom = 2
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.add_child(hb)
+	return panel
 
 func _clear_marble_list() -> void:
 	for c in _marble_list.get_children():

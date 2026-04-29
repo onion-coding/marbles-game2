@@ -11,6 +11,7 @@ static func spawn(parent: Node, rail: SpawnRail, slots: Array, colors: Array = [
 	for i in range(slots.size()):
 		var color: Color = colors[i] if i < colors.size() else Color.from_hsv(float(i) / max(slots.size(), 1), 0.8, 0.95)
 		var marble := _make_marble(rail, i, int(slots[i]), color)
+		attach_number_label(marble, i)
 		parent.add_child(marble)
 		marbles.append(marble)
 	return marbles
@@ -53,6 +54,7 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 
 	marble.physics_material_override = PhysicsMaterials.marble()
 	marble.position = rail.slot_position(slot, drop_order)
+	marble.add_to_group("marbles")
 	attach_trail(marble, color)
 	return marble
 
@@ -77,6 +79,24 @@ static func attach_name_label(marble: Node3D, text: String) -> void:
 	label.outline_modulate = Color(0, 0, 0, 0.85)
 	label.modulate = Color(1, 1, 1, 0.92)
 	label.position = Vector3(0, RADIUS + 0.5, 0)
+	marble.add_child(label)
+
+# Compact drop-order number (0-19) rendered above the marble, more discreet
+# than the full name label. pixel_size 0.002 + font_size 14 keeps it readable
+# from a few metres without cluttering a wide-angle view. Always-on-top so it
+# shows through the marble mesh itself. Called from spawn() for every marble.
+static func attach_number_label(marble: Node3D, drop_order: int) -> void:
+	var label := Label3D.new()
+	label.name = "NumberLabel"
+	label.text = str(drop_order)
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.no_depth_test = true
+	label.pixel_size = 0.002
+	label.font_size = 14
+	label.outline_size = 4
+	label.outline_modulate = Color(0, 0, 0, 1.0)
+	label.modulate = Color(1, 1, 1, 1.0)
+	label.position = Vector3(0, RADIUS + 0.35, 0)
 	marble.add_child(label)
 
 # Color-tinted streak that follows a marble. Pure visual; no effect on

@@ -28,6 +28,7 @@ var _client: LiveStreamClient
 var _hud: HUD
 var _audio: AudioController
 var _poll_deadline_ms: int = 0
+var _track: Track
 
 func _ready() -> void:
 	# Environment is deferred until the WS HEADER tells us which track is
@@ -48,9 +49,7 @@ func _ready() -> void:
 	add_child(_hud)
 	_audio = AudioController.new()
 	add_child(_audio)
-	_player.tick_advanced.connect(func(t: int) -> void:
-		_hud.update_tick(t, 60.0)
-	)
+	_player.tick_advanced.connect(_on_tick_advanced)
 	_player.winner_revealed.connect(func(_idx: int, name: String, color: Color) -> void:
 		_hud.reveal_winner(name, color)
 		_audio.play_winner_jingle()
@@ -120,17 +119,18 @@ func _subscribe(round_id: String) -> void:
 func _on_header(header: Dictionary) -> void:
 	var marbles: int = (header["header"] as Array).size()
 	var track_id := int(header.get("track_id", TrackRegistry.RAMP))
-	var track := TrackRegistry.instance(track_id)
-	track.configure(int(header["round_id"]), header["server_seed"] as PackedByteArray)
-	add_child(track)
-	_build_environment(track)
-	_audio.start_ambient(track_id, track.audio_overrides())
+	_track = TrackRegistry.instance(track_id)
+	_track.configure(int(header["round_id"]), header["server_seed"] as PackedByteArray)
+	add_child(_track)
+	_build_environment(_track)
+	_audio.start_ambient(track_id, _track.audio_overrides())
 	var cam := FreeCamera.new()
-	cam.track = track
+	cam.track = _track
 	add_child(cam)
 	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])
 	_hud.setup(header["header"])
-	_player.set_track(track)
+	_hud.set_track_name(TrackRegistry.name_of(track_id))
+	_player.set_track(_track)
 	_player.begin_stream(header)
 
 var _tick_count: int = 0
@@ -158,6 +158,12 @@ func _on_ws_closed() -> void:
 	# was already called from _on_done.
 	print("LIVE_CLIENT: socket closed (ticks=%d)" % _tick_count)
 	_player.end_stream()
+
+func _on_tick_advanced(t: int) -> void:
+	_hud.update_tick(t, 60.0)
+	if t % 6 == 0 and _track != null:
+		var finish_pos := _track.finish_area_transform().origin
+		_hud.update_standings(_player.get_marbles(), finish_pos)
 
 func _on_playback_finished(last_tick: int, first_marble_pos: Vector3) -> void:
 	print("LIVE_CLIENT: playback done tick=%d first_marble_pos=%s" % [last_tick, first_marble_pos])

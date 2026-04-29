@@ -40,6 +40,12 @@ signal winner_revealed(marble_index: int, marble_name: String, color: Color)
 func set_track(track: Track) -> void:
 	_track = track
 
+# Returns the current array of visual marble nodes so callers (e.g. HUD) can
+# read their world positions for live standings. Read-only intent — callers
+# must not free or reparent these nodes.
+func get_marbles() -> Array[Node3D]:
+	return _marbles
+
 func load_replay(replay: Dictionary) -> void:
 	_header = replay["header"]
 	_frames = replay["frames"]
@@ -109,8 +115,10 @@ func _build_marbles() -> void:
 		mat.emission = color
 		mat.emission_energy_multiplier = 0.45
 		node.material_override = mat
+		node.add_to_group("marbles")
 		add_child(node)
 		MarbleSpawner.attach_trail(node, color)
+		MarbleSpawner.attach_number_label(node, _marbles.size())
 		# Per-marble name labels are intentionally not attached: 20 of them
 		# clustered at spawn made the screen unreadable. Names live in the
 		# HUD's marble list. A future "leader badge" can opt back in for
