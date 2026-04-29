@@ -25,7 +25,11 @@ func _ready() -> void:
 		client_count = MARBLE_COUNT
 		for i in range(client_count):
 			client_seeds.append("")  # MVP: no per-player seed mixing yet
-		track_id = TrackRegistry.RAMP
+		# Interactive mode: prefer the rich casino tracks. RAMP (the dev
+		# track) is intentionally sparse — the player who launches the
+		# editor expects to see the obstacle-heavy maps. Honor an explicit
+		# --track=<name> flag, otherwise pick a random casino track.
+		track_id = _pick_interactive_track()
 	else:
 		round_id = int(spec["round_id"])
 		server_seed = FairSeed.from_hex(String(spec["server_seed_hex"]))
@@ -95,6 +99,36 @@ func _ready() -> void:
 		var cam := FixedCamera.new()
 		cam.track = track
 		add_child(cam)
+
+# Pick a track for interactive mode. Honors --track=<name> if present,
+# otherwise picks one of the 5 casino tracks at random (RAMP excluded —
+# it's the bare dev track and not what a player launching the editor
+# wants to see). Falls back to PLINKO on a parse miss.
+func _pick_interactive_track() -> int:
+	var args := OS.get_cmdline_user_args()
+	for a in args:
+		if a.begins_with("--track="):
+			var name := a.substr("--track=".length()).to_lower()
+			match name:
+				"ramp":     return TrackRegistry.RAMP
+				"roulette": return TrackRegistry.ROULETTE
+				"craps":    return TrackRegistry.CRAPS
+				"poker":    return TrackRegistry.POKER
+				"slots":    return TrackRegistry.SLOTS
+				"plinko":   return TrackRegistry.PLINKO
+				_:
+					push_warning("--track=%s not recognized; falling back to random casino track" % name)
+					break
+	# Random pick from casino tracks (skip index 0 = RAMP).
+	var casino: Array = [
+		TrackRegistry.ROULETTE,
+		TrackRegistry.CRAPS,
+		TrackRegistry.POKER,
+		TrackRegistry.SLOTS,
+		TrackRegistry.PLINKO,
+	]
+	randomize()
+	return int(casino[randi() % casino.size()])
 
 # Parse "--key=value" pairs from the user-args portion of the command line.
 func _load_spec_from_cli() -> Dictionary:
