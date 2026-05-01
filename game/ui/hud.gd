@@ -43,6 +43,7 @@ var _winner_modal: Control
 var _winner_name_label: Label
 var _winner_prize_label: Label
 var _winner_payout_label: Label   # RGS payout line inside the modal
+var _winner_next_round_label: Label  # "Next round in X.Xs" countdown inside modal
 var _track_name_label: Label
 
 # Bet panel nodes (visible only in WAITING + RGS mode)
@@ -64,6 +65,10 @@ var _start_tick: int = -1
 # Bet-window countdown state.
 var _bet_countdown_remaining: float = 0.0
 var _bet_countdown_active: bool = false
+
+# Next-round countdown state (shown inside the winner modal after a race).
+var _next_round_countdown_remaining: float = 0.0
+var _next_round_countdown_active: bool = false
 
 # Marble metadata stored at setup() time.
 # Each entry: {name: String, color: Color, original_index: int}.
@@ -110,6 +115,18 @@ func _process(delta: float) -> void:
 		else:
 			_bet_countdown_label.text = "Race starts in: %.1fs" % _bet_countdown_remaining
 
+	# Drive the next-round countdown displayed inside the winner modal.
+	if _next_round_countdown_active:
+		_next_round_countdown_remaining -= delta
+		if _next_round_countdown_remaining <= 0.0:
+			_next_round_countdown_remaining = 0.0
+			_next_round_countdown_active = false
+			if _winner_next_round_label != null:
+				_winner_next_round_label.text = "Starting next round..."
+		else:
+			if _winner_next_round_label != null:
+				_winner_next_round_label.text = "Next round in %.1fs..." % _next_round_countdown_remaining
+
 # ─── Public API ──────────────────────────────────────────────────────────────
 
 # Enable RGS betting mode. Must be called before setup().
@@ -135,6 +152,16 @@ func start_bet_countdown(seconds: float) -> void:
 	_bet_countdown_label.text = "Race starts in: %.1fs" % seconds
 	_bet_countdown_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.70))
 	_bet_countdown_label.visible = true
+
+# Show a countdown in the winner modal: "Next round in X.Xs…".
+# Call this immediately after reveal_winner() during RGS auto-restart.
+# The label ticks down in _process() and resets with reset().
+func start_next_round_countdown(seconds: float) -> void:
+	_next_round_countdown_remaining = seconds
+	_next_round_countdown_active = true
+	if _winner_next_round_label != null:
+		_winner_next_round_label.text = "Next round in %.1fs..." % seconds
+		_winner_next_round_label.visible = true
 
 # Update the displayed balance.  Pass -1.0 to silently ignore (sentinel for
 # a failed balance fetch — the last good value is preserved).
@@ -326,6 +353,11 @@ func reset() -> void:
 	_race_started = false
 	_bet_countdown_active = false
 	_bet_countdown_remaining = 0.0
+	_next_round_countdown_active = false
+	_next_round_countdown_remaining = 0.0
+	if _winner_next_round_label != null:
+		_winner_next_round_label.visible = false
+		_winner_next_round_label.text = ""
 	if _track_name_label != null:
 		_track_name_label.text = ""
 	if _marble_selector != null:
@@ -642,6 +674,15 @@ func _build_winner_modal() -> Control:
 	_winner_payout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_winner_payout_label.visible = false
 	vb.add_child(_winner_payout_label)
+
+	# Next-round countdown (shown during RGS auto-restart delay).
+	_winner_next_round_label = Label.new()
+	_winner_next_round_label.text = ""
+	_winner_next_round_label.add_theme_font_size_override("font_size", 13)
+	_winner_next_round_label.add_theme_color_override("font_color", Color(0.55, 0.75, 0.95))
+	_winner_next_round_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_winner_next_round_label.visible = false
+	vb.add_child(_winner_next_round_label)
 
 	control.visible = false
 	return control

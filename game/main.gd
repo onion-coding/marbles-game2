@@ -3,6 +3,8 @@ extends Node3D
 const MARBLE_COUNT := 20
 # How many seconds the WAITING / bet-placement window is open in RGS mode.
 const RGS_BET_WINDOW_SEC := 10.0
+# How many seconds to display the winner modal before starting the next round.
+const RGS_BETWEEN_ROUNDS_SEC := 15.0
 
 var _status_path: String = ""  # if non-empty, write status JSON on race completion
 var _round_id: int = 0
@@ -24,6 +26,13 @@ var _pending_spec: Dictionary = {}       # spec dict waiting while bet window is
 var _pending_outcomes: Array = []        # round_bet_outcomes from server, may arrive before or after race ends
 var _race_visually_finished: bool = false  # true once FinishLine fires race_finished
 var _winner_idx_at_finish: int = -1      # marble index reported by local sim at race_finished
+
+# Nodes created per-round (freed by _cleanup_round between rounds).
+# These are populated inside _start_race and cleared by _cleanup_round.
+var _live_track: Node = null
+var _live_recorder: Node = null
+var _live_finish: Node = null
+var _live_streamer: Node = null   # may be null if no live_stream_addr
 
 func _ready() -> void:
 	# Three modes (evaluated in this order of priority):
@@ -111,8 +120,13 @@ func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStri
 	for i in range(marble_count):
 		hud_header.append({"name": "Marble_%02d" % i, "rgba": 0})
 
-	_hud = HUD.new()
-	add_child(_hud)
+	# Reuse the existing HUD on auto-restart (round 2+). _cleanup_round()
+	# keeps _hud alive across rounds; building a fresh HUD here would stack
+	# overlays and double-connect every RgsClient signal below.
+	var hud_is_new: bool = (_hud == null)
+	if hud_is_new:
+		_hud = HUD.new()
+		add_child(_hud)
 	_hud.setup(hud_header)
 
 	# setup() puts the HUD into RACING phase; enable_rgs_mode() flips it
@@ -122,15 +136,22 @@ func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStri
 	# Start the visible countdown inside the bet panel.
 	_hud.start_bet_countdown(RGS_BET_WINDOW_SEC)
 
-	# Wire bet signal → RgsClient → HUD confirmation / error.
-	_hud.bet_requested.connect(_on_bet_requested)
+	# Wire bet signals only on first build — _hud and _rgs_client both
+	# survive _cleanup_round, so re-connecting on auto-restart would
+	# double-fire every callback.
+	if hud_is_new:
+		_hud.bet_requested.connect(_on_bet_requested)
+		if _rgs_client != null:
+			_rgs_client.bet_placed.connect(_on_bet_placed)
+			_rgs_client.bet_failed.connect(_on_bet_failed)
+			_rgs_client.round_completed.connect(_on_round_completed)
+			_rgs_client.round_failed.connect(_on_round_failed)
+			# Keep the balance label in sync: refresh once now and after every bet.
+			_rgs_client.balance_loaded.connect(_hud.update_balance)
+
+	# Always refresh balance at the start of each round (display gets
+	# wiped by _cleanup_round → _hud.reset()).
 	if _rgs_client != null:
-		_rgs_client.bet_placed.connect(_on_bet_placed)
-		_rgs_client.bet_failed.connect(_on_bet_failed)
-		_rgs_client.round_completed.connect(_on_round_completed)
-		_rgs_client.round_failed.connect(_on_round_failed)
-		# Keep the balance label in sync: refresh once now and after every bet.
-		_rgs_client.balance_loaded.connect(_hud.update_balance)
 		_rgs_client.fetch_balance()
 
 	# Start the countdown; _start_race runs at expiry.
@@ -252,6 +273,7 @@ func _start_race(spec: Dictionary) -> void:
 	var track := TrackRegistry.instance(track_id)
 	track.configure(round_id, server_seed)
 	add_child(track)
+	_live_track = track
 	_build_environment(track)
 	var rail := SpawnRail.new(track)
 
@@ -268,6 +290,7 @@ func _start_race(spec: Dictionary) -> void:
 	var finish := FinishLine.new()
 	finish.track = track
 	add_child(finish)
+	_live_finish = finish
 	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
 		var winner_color: Color = colors[int(String(winner.name).trim_prefix("Marble_"))]
 		WinnerReveal.spawn_confetti(self, winner.global_position, winner_color)
@@ -278,6 +301,7 @@ func _start_race(spec: Dictionary) -> void:
 	if not _replay_path.is_empty():
 		recorder.override_output_path(_replay_path)
 	var stream_addr := String(spec.get("live_stream_addr", "")) if not spec.is_empty() else ""
+	_live_streamer = null
 	if not stream_addr.is_empty():
 		var colon := stream_addr.find(":")
 		if colon > 0:
@@ -286,11 +310,13 @@ func _start_race(spec: Dictionary) -> void:
 			var streamer := TickStreamer.new()
 			if streamer.connect_to(host, port, round_id):
 				recorder.set_streamer(streamer)
+				_live_streamer = streamer
 				print("STREAM: connected to %s:%d" % [host, port])
 			else:
 				print("STREAM: connect to %s:%d failed, continuing without live stream" % [host, port])
 	recorder.track(marbles, finish)
 	add_child(recorder)
+	_live_recorder = recorder
 	if not _status_path.is_empty():
 		recorder.finalized.connect(_on_finalized.bind(finish))
 
@@ -343,7 +369,78 @@ func _start_race(spec: Dictionary) -> void:
 				# If _pending_outcomes is empty it means either:
 				# (a) server hasn't responded yet — _on_round_completed will call apply_settlement, or
 				# (b) round_failed was emitted — no overlay shown (already push_warning'd).
+
+				# Start the between-rounds countdown and then trigger the next round.
+				_hud.start_next_round_countdown(RGS_BETWEEN_ROUNDS_SEC)
+				await get_tree().create_timer(RGS_BETWEEN_ROUNDS_SEC).timeout
+				_cleanup_round()
+				_fetch_rgs_spec()
 		)
+
+# Free all per-round nodes and reset per-round state, keeping HUD and RgsClient alive.
+# Safe to call even if some nodes were never created (guards against null).
+func _cleanup_round() -> void:
+	# Free marbles (direct children, tracked in _live_marbles).
+	for m in _live_marbles:
+		if is_instance_valid(m):
+			m.queue_free()
+	_live_marbles = []
+
+	# Free named per-round nodes.
+	if is_instance_valid(_live_streamer):
+		_live_streamer.queue_free()
+	_live_streamer = null
+	if is_instance_valid(_live_recorder):
+		_live_recorder.queue_free()
+	_live_recorder = null
+	if is_instance_valid(_live_finish):
+		_live_finish.queue_free()
+	_live_finish = null
+	if is_instance_valid(_live_track):
+		_live_track.queue_free()
+	_live_track = null
+
+	# Free FreeCamera (recreated each round; HUD is kept).
+	if is_instance_valid(_freecam):
+		_freecam.queue_free()
+	_freecam = null
+
+	# Reset per-round state.
+	_live_racing = false
+	_live_tick = 0
+	_live_finish_pos = Vector3.ZERO
+	_winner_idx_at_finish = -1
+	_race_visually_finished = false
+	_pending_outcomes = []
+
+	# Reset the HUD so it shows WAITING for the next round.
+	if _hud != null:
+		_hud.reset()
+
+# Kick off a fresh RGS spec fetch, identical to the sequence in _ready.
+# Called by the auto-restart loop after _cleanup_round().
+func _fetch_rgs_spec() -> void:
+	var rgs_url := _get_rgs_url()
+	if rgs_url.is_empty():
+		push_error("RGS auto-restart: could not read --rgs URL; staying on finished screen")
+		return
+
+	print("RGS: fetching next round spec from %s/v1/rounds/start" % rgs_url)
+	var http := HTTPRequest.new()
+	add_child(http)
+	http.request_completed.connect(_on_rgs_spec_received.bind(http))
+	var err := http.request(
+		rgs_url + "/v1/rounds/start",
+		["Content-Type: application/json"],
+		HTTPClient.METHOD_POST,
+		"{}"
+	)
+	if err != OK:
+		push_error("RGS auto-restart: HTTPRequest.request() failed (err=%d); staying on finished screen" % err)
+		remove_child(http)
+		http.queue_free()
+		if _hud != null:
+			_hud.show_error_toast("Auto-restart failed: network error. Reload to play again.")
 
 func _physics_process(_delta: float) -> void:
 	if _hud == null:
