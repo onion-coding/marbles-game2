@@ -252,6 +252,40 @@ Returns 404 if `player_id` is not known to the wallet.
 
 Liveness check for load balancers. Returns 200 / `{"status":"ok"}`.
 
+## Client flow (Godot `--rgs=<url>` mode)
+
+The Godot client launched with `--rgs=http://localhost:8080` runs the
+public end-to-end loop wired to the endpoints above. One iteration:
+
+1. **Boot.** `POST /v1/rounds/start` → receive `{round_id, server_seed_hex, track_id, client_seeds[]}`.
+   The server-side `pendingRounds` queue locks the seed at this point so it
+   can't be retargeted per-bet; `RunNextRound` consumes the head of the queue
+   in FIFO order.
+2. **Bet window (10 s).** HUD shows the bet placement panel. Each bet hits
+   `POST /v1/rounds/{round_id}/bets`; the wallet is debited immediately and
+   `balance_after` is shown back to the player. `GET /v1/wallets/{player_id}/balance`
+   refreshes the display whenever the player would otherwise see stale data
+   (session open, after each bet, at the start of every auto-restart round).
+3. **Race.** Bet window expires → client posts `POST /v1/rounds/run?wait=true`
+   *and* starts the local visual race in parallel. Both follow the same
+   server-supplied seed, so the local winner agrees with the server outcome
+   (cross-checked in `_on_round_completed`; mismatch → `push_error` +
+   server result wins).
+4. **Settlement.** Server response carries `outcomes[]` with per-bet
+   `won/lost`, `prize_amount`, `credit_tx_id`. HUD overlays the result on
+   the winner modal. Bets that won are credited via the wallet by then.
+5. **Auto-restart.** After a 15 s display window (constant
+   `RGS_BETWEEN_ROUNDS_SEC` in [game/main.gd](../game/main.gd)), the client
+   tears down per-round nodes (track, marbles, recorder, finish line,
+   streamer, free-cam) via `_cleanup_round()` and loops back to step 1. HUD
+   and `RgsClient` survive the cleanup; signal connections from the
+   `RgsClient` to the HUD are wired only on the first round to avoid
+   double-firing.
+
+The player ID is a UUID v4 persisted to `user://player_id.txt` on first
+run and reused across sessions, so the same wallet balance follows the
+player across restarts and auto-restart loops alike.
+
 ## Wallet contract
 
 The [Wallet](../server/rgs/wallet.go) interface is what `rgsd` calls into

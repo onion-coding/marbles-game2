@@ -4,9 +4,9 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M6 done (2026-04-29)** — five casino-game tracks at marble scale + free-cam UX + slow-motion gravity tuning.
+**M9 done (2026-04-29)** — RGS betting end-to-end (client `--rgs=<url>` → bet window → settlement overlay) + HUD interactive mode (clickable standings, zoom 0.05–1000m, marble lookup keys, bet placement panel, countdown timers, balance refresh).
 
-Post-M6 milestones in motion: **M7 visual polish (M6.7 done: OmniLight3D per track)**, **M8 RTP/fairness tooling (done)**, **M9 RGS integration (server-hosted rounds live)**, **M10 production scaffolding (done)**.
+Prior completed: **M6** (casino-game track library, slow-motion gravity, free-cam), **M7** (visual polish), **M8** (RTP/fairness tooling), **M10** (production scaffolding).
 
 The "vero prodotto" four-block roadmap is now complete:
 - **M7** Visual + UI — PBR materials, ACES tonemap, bloom, SSAO, per-track environments + sky shader (onion), HUD overlay, marble trails + name labels + lead glow, winner reveal confetti, audio scaffolding.
@@ -19,6 +19,53 @@ Next natural moves (not started): real-wallet client to replace `MockWallet`, di
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
 ## Done
+
+### M9 — RGS betting end-to-end (2026-04-29)
+Closes the MVP loop: client places bet on marble → 10s window → server runs physics → marble wins → settlement payout → balance credited. See [docs/rgs-integration.md §Public HTTP API](docs/rgs-integration.md#public-http-api) for the endpoint contract.
+
+**Bet flow.** [game/main.gd](game/main.gd) with `--rgs=<url>` posts to `POST /v1/rounds/start` → gets `round_id, server_seed_hex, track_id, client_seeds[]` → spawns race → after 10s bet window closes, posts `POST /v1/rounds/run?wait=true` → waits for settlement overlay (each bet_id marked won/lost with payout).
+
+**New endpoints** (all in [server/rgs/api.go](server/rgs/api.go)):
+- `POST /v1/rounds/{round_id}/bets` — place bet on a marble with amount (debits wallet immediately).
+- `GET /v1/rounds/{round_id}/bets[?player_id=<id>]` — list all bets on a round.
+- `GET /v1/wallets/{player_id}/balance` — live wallet balance (fallback on balance_after from place_bet).
+- Updated `POST /v1/rounds/run?wait=true` — returns outcomes[] with per-bet won/lost, prize_amount, credit_tx_id, settled_at.
+
+**Payout math** (in [server/rgs/manager.go](server/rgs/manager.go) `PayoutMultiplier = 19.0`). With 20 equi-probable marbles: RTP = 20 × (1/20) × 19.0 = **95%** (analogous English roulette 35:1).
+
+**Manager state** — in-memory `pendingRounds` + `roundBets` map with mutex. FairSeed issue fixed: [server/rgs/manager.go](server/rgs/manager.go) `RunNextRound` now consumes `pendingRounds[0]` (FIFO) instead of minting a fresh seed — this keeps `server_seed` locked at round start so operators can't retarget per-bet. Fairness-auditor verified OK.
+
+**Player persistence** — Player ID is a UUID v4 written to `user://player_id.txt` on first run; subsequent sessions reuse the same ID so wallet balance follows the player across rounds.
+
+**HUD interactive mode** (continuation of M7 cosmetics):
+- **Zoom range expansion:** 0.05m–1000m (was 0.5–500m) for marble-scale detail + stadium views.
+- **Clickable standings:** clicking a row emits `marble_selected` signal; row keys 0–9 + Shift+0–9 still work. Selected marble gets cyan border in HUD.
+- **Bet placement panel:** marble OptionButton (dropdown from standings), preset chips 1/5/10/50/100, ±10 adjust buttons, PLACE BET button. Disabled during race (non-interactive 10s).
+- **Countdown timers:** bet window (10s, red text when <3s), inter-round auto-restart timer (10s, for chained rounds).
+- **Balance polling:** `GET /v1/wallets/{player_id}/balance` on session open + after bet placed; fallback on `balance_after` from `POST .../bets` response. `balance_loaded` signal fired when refreshed.
+
+**Marble scale UX notes:**
+- Zoom now supports sub-meter camera for close-up marbles (0.05m ~ 5cm in real space).
+- No audio yet (operator-sourced, M10.x).
+- Vertical orientation + spinning chip wheels already live on Craps/Poker tracks (M6 prereq).
+
+**Test coverage added:** server/rgs test count 28 → 32 (TestManager_SeedAlignment[Empty], TestHTTP_WalletBalance_[Known|Unknown]).
+
+**Key commits:**
+- b6a3edd: bet placement + payout flow (19.0× multiplier, in-memory).
+- 0c0c6da: seed alignment fix (consume pendingRounds[0], not mint fresh seed).
+- 085265a: HUD bet placement panel + RGS client mode wiring.
+- 7154f37: bet countdown timer + balance refresh.
+- 599b254: end-to-end settlement (client triggers /v1/rounds/run, waits for overlay).
+- f8b7efb: clickable standings + zoom 0.05–1000m.
+- cb0b10d: visual palette differentiation (Craps/Poker/Roulette distinct fog/sky).
+
+**Open items pushed to production readiness:**
+- In-memory `pendingRounds` + `roundBets` need Postgres persistence (no restart safety).
+- MockWallet must be replaced with real operator wallet client before launch.
+- No distributed locks on pendingRounds (multi-host deployment blocker).
+- Settlement signal push (WebSocket?) deferred — currently clients poll `/v1/rounds/run?wait=true` (blocking sync, adequate for demo).
+- Multi-round concurrency (N lobbies) is a future enhancement; MVP runs serially.
 
 ### M6 — Casino-game track library (2026-04-29)
 Five playable tracks rotated per round with no back-to-back repeats: Roulette (47.4s), Craps (48.7s), Poker (47.5s), Slots (41.6s), Plinko (46.3s), plus legacy Ramp (13.8s, untuned). See [docs/m6-tracks.md](docs/m6-tracks.md) and [docs/tracks/](docs/tracks/) per-track stubs.
