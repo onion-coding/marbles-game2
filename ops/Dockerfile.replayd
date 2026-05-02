@@ -1,0 +1,32 @@
+# Marbles Game — replayd container
+#
+# replayd is read-only over the replay archive: HTTP GETs for
+# manifest / replay.bin, plus a WebSocket fan-out from sim TCP frames
+# to live subscribers. No Godot subprocess, no wallet, no payouts.
+# That makes the container much smaller and safer than rgsd.
+
+# ---- Stage 1: build ----------------------------------------------
+FROM golang:1.26-bookworm AS go-builder
+
+WORKDIR /src/server
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+
+COPY server/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/replayd ./cmd/replayd
+
+# ---- Stage 2: runtime --------------------------------------------
+# Distroless static — no shell, no package manager, just the binary
+# and CA certs. Smallest reasonable runtime for a Go service.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=go-builder /out/replayd /usr/local/bin/replayd
+
+ENV REPLAYD_ADDR=:8087 \
+    REPLAYD_REPLAY_ROOT=/var/lib/marbles-game/replays
+
+EXPOSE 8087 8088
+VOLUME ["/var/lib/marbles-game/replays"]
+
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/replayd"]

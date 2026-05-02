@@ -35,3 +35,12 @@ tmp/
 
 # Go binaries from server/ workspace
 /server/*.exe
+
+# Local env file copied from .env.example
+.env
+
+# Local Docker volume data
+ops/data/
+
+# Per-host Godot install path overrides
+.makerc

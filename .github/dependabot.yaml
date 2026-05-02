@@ -1,0 +1,43 @@
+# Dependabot keeps Go modules and GitHub Actions versions current.
+# Reviews go to whoever has CODEOWNERS for the directory; auto-merge
+# is opt-in per PR (no blanket auto-merge — we want eyeballs on
+# anything bumping crypto / wallet / HTTP code).
+
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "Chore"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "Chore"
+      include: scope
+    labels:
+      - dependencies
+      - ci
+
+  - package-ecosystem: docker
+    directory: /ops
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "Chore"
+      include: scope
+    labels:
+      - dependencies
+      - docker

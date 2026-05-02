@@ -1,0 +1,24 @@
+# Prometheus scrape config for the local docker-compose stack.
+#
+# rgsd exposes Prometheus exposition format on /metrics with no auth
+# (skip-listed in the HMAC middleware). Production deployments should
+# either keep /metrics on a private network or front it with a reverse
+# proxy that adds bearer auth — the metrics names themselves carry no
+# secrets, but request volume and error rates can leak business state.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: rgsd
+    static_configs:
+      - targets: ["rgsd:8090"]
+    metrics_path: /metrics
+
+  # replayd doesn't expose /metrics yet; uncomment once the metrics
+  # package is wired into cmd/replayd (phase 2 — observability hardening).
+  # - job_name: replayd
+  #   static_configs:
+  #     - targets: ["replayd:8087"]
+  #   metrics_path: /metrics

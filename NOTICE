@@ -1,0 +1,39 @@
+Marbles Game
+Copyright (c) 2026 Onion Coding
+
+This product bundles, links against, or depends on the following
+third-party components. Each is governed by its upstream license; the
+Marbles Game proprietary license (see LICENSE) does not relicense them.
+
+================================================================
+Godot Engine
+  Website: https://godotengine.org
+  License: MIT
+  Copyright: (c) 2014-present Godot Engine contributors
+             (c) 2007-2014 Juan Linietsky, Ariel Manzur
+  Bundled in: game/ (project + Web export)
+
+JoltPhysics (via Godot)
+  Website: https://github.com/jrouwe/JoltPhysics
+  License: MIT
+  Copyright: (c) 2021 Jorrit Rouwe
+  Used as: 3D physics backend (default in Godot 4.4+)
+
+Go programming language standard library
+  Website: https://go.dev
+  License: BSD-3-Clause
+  Copyright: (c) 2009 The Go Authors
+
+github.com/coder/websocket
+  Website: https://github.com/coder/websocket
+  License: ISC
+  Used in: server/stream/ live-stream WebSocket fan-out
+
+================================================================
+
+Audio assets, fonts, textures and any other binary media bundled with
+the Marbles Game Web export (under game/audio/, game/visuals/, …) are
+either authored by Onion Coding or sourced under permissive licenses
+(CC0, CC-BY, OFL). The full per-asset attribution sheet lives in
+docs/asset-attribution.md once the asset library lands (see plan
+phase 4).

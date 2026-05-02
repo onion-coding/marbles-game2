@@ -1,0 +1,97 @@
+# Marbles Game — rgsd container
+#
+# rgsd needs three things at runtime:
+#   1. the Go binary (built from server/cmd/rgsd)
+#   2. the Godot 4.6.2 headless executable (subprocess for the sim)
+#   3. the game/ project directory (read-only, the sim loads scenes from it)
+#
+# We pin Godot to 4.6.2-stable. Bumping it is a deliberate decision: a
+# new Godot version can change Jolt's RNG / iteration order, which
+# breaks the fairness chain for in-flight replays. Update the pin AND
+# regenerate fairness-vectors.json in the same change.
+
+# ---- Stage 1: download Godot --------------------------------------
+FROM debian:bookworm-slim AS godot-fetch
+
+ARG GODOT_VERSION=4.6.2-stable
+ARG GODOT_PLATFORM=linux.x86_64
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /tmp/godot.zip \
+      "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_${GODOT_PLATFORM}.zip" \
+ && unzip -q /tmp/godot.zip -d /tmp/godot \
+ && mv "/tmp/godot/Godot_v${GODOT_VERSION}_${GODOT_PLATFORM}" /usr/local/bin/godot \
+ && chmod +x /usr/local/bin/godot \
+ && rm -rf /tmp/godot /tmp/godot.zip
+
+# ---- Stage 2: build the Go binary ---------------------------------
+FROM golang:1.26-bookworm AS go-builder
+
+WORKDIR /src/server
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+
+COPY server/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/rgsd ./cmd/rgsd
+
+# ---- Stage 3: import the Godot project (cache the .godot/ output) -
+# Doing the --import once at build time means container start is fast
+# (Godot would otherwise re-import on first run inside an immutable
+# rootfs, which is slow and chatty in logs).
+FROM debian:bookworm-slim AS godot-import
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libxcursor1 libxinerama1 libxrandr2 libxi6 \
+      libgl1 libglu1-mesa libxkbcommon0 libasound2 \
+      libpulse0 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=godot-fetch /usr/local/bin/godot /usr/local/bin/godot
+COPY game /srv/marbles-game/game
+RUN /usr/local/bin/godot --headless --path /srv/marbles-game/game --import || true
+
+# ---- Stage 4: runtime --------------------------------------------
+FROM debian:bookworm-slim
+
+# Godot headless still needs the X11 / GL shared libs even with
+# --headless (they're dlopen'd lazily). Skipping them gives "library
+# not found" surprises at first run.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libxcursor1 libxinerama1 libxrandr2 libxi6 \
+      libgl1 libglu1-mesa libxkbcommon0 libasound2 \
+      libpulse0 ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --create-home --home-dir /home/marbles marbles
+
+COPY --from=godot-fetch  /usr/local/bin/godot              /usr/local/bin/godot
+COPY --from=go-builder   /out/rgsd                          /usr/local/bin/rgsd
+COPY --from=godot-import /srv/marbles-game/game             /srv/marbles-game/game
+
+# replay-root is a volume so the audit trail survives container
+# restarts. In production this becomes an object-store mount or an
+# S3-backed CSI driver.
+RUN mkdir -p /var/lib/marbles-game/replays \
+ && chown -R marbles:marbles /var/lib/marbles-game /home/marbles
+
+USER marbles
+WORKDIR /home/marbles
+
+ENV RGSD_GODOT_BIN=/usr/local/bin/godot \
+    RGSD_PROJECT_PATH=/srv/marbles-game/game \
+    RGSD_REPLAY_ROOT=/var/lib/marbles-game/replays \
+    RGSD_ADDR=:8090
+
+EXPOSE 8090
+
+VOLUME ["/var/lib/marbles-game/replays"]
+
+# tini reaps Godot subprocess zombies if rgsd crashes; without it the
+# kernel leaks defunct PIDs every round.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/rgsd"]
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8090/v1/health >/dev/null 2>&1 || exit 1

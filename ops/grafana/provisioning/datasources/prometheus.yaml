@@ -1,0 +1,12 @@
+# Auto-provisions a Prometheus datasource so a fresh Grafana container
+# already has rgsd metrics queryable on first boot.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

@@ -1,0 +1,105 @@
+# Local development stack — rgsd + replayd + Postgres + Prometheus + Grafana.
+#
+#   make docker-up        # bring it up
+#   make docker-logs      # tail logs
+#   make docker-down      # tear down + remove volumes
+#
+# Postgres is provisioned but not yet wired into rgsd (phase 1 work).
+# It's here so phase 1 can land without re-doing the compose file.
+#
+# Volumes survive `down` unless `down -v` is used. The replay archive
+# is the most important volume — it's the audit trail.
+
+name: marbles-game
+
+services:
+  rgsd:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.rgsd
+    image: marbles-game/rgsd:dev
+    environment:
+      RGSD_ADDR: ":8090"
+      RGSD_GODOT_BIN: /usr/local/bin/godot
+      RGSD_PROJECT_PATH: /srv/marbles-game/game
+      RGSD_REPLAY_ROOT: /var/lib/marbles-game/replays
+      RGSD_RTP_BPS: ${RGSD_RTP_BPS:-9500}
+      RGSD_BUY_IN: ${RGSD_BUY_IN:-100}
+      RGSD_MARBLES: ${RGSD_MARBLES:-20}
+      RGSD_HMAC_SECRET: ${RGSD_HMAC_SECRET:-}
+    volumes:
+      - replays:/var/lib/marbles-game/replays
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/v1/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  replayd:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.replayd
+    image: marbles-game/replayd:dev
+    environment:
+      REPLAYD_ADDR: ":8087"
+      REPLAYD_REPLAY_ROOT: /var/lib/marbles-game/replays
+    volumes:
+      - replays:/var/lib/marbles-game/replays:ro
+    ports:
+      - "8087:8087"
+      - "8088:8088"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-marbles}
+      POSTGRES_USER: ${POSTGRES_USER:-marbles}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-locally}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-marbles} -d ${POSTGRES_DB:-marbles}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - rgsd
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  replays:
+  postgres-data:
+  prometheus-data:
+  grafana-data:

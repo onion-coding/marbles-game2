@@ -1,0 +1,142 @@
+# Marbles Game — CI gate
+#
+# Runs on every push and PR. Three jobs in parallel:
+#   - go-test     : go vet + go test ./... + race detector
+#   - go-lint     : staticcheck + gosec + govulncheck
+#   - godot-smoke : headless --import + verify_main + test_vectors_main
+#
+# Anything red blocks merge to main.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel older runs on the same ref when a new one starts.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    name: go test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -count=1 ./...
+
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  go-lint:
+    name: go lint (staticcheck + gosec + govulncheck)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: Install lint tooling
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: staticcheck
+        run: staticcheck ./...
+
+      - name: gosec
+        run: gosec -quiet -severity medium ./...
+
+      - name: govulncheck
+        run: govulncheck ./...
+
+  godot-smoke:
+    name: godot smoke (import + verify + vectors)
+    runs-on: ubuntu-latest
+    env:
+      GODOT_VERSION: "4.6.2-stable"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Godot binary
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-linux
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} (linux x86_64)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/godot
+          cd ~/godot
+          curl -sL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${{ env.GODOT_VERSION }}/Godot_v${{ env.GODOT_VERSION }}_linux.x86_64.zip"
+          unzip -q godot.zip
+          mv Godot_v${{ env.GODOT_VERSION }}_linux.x86_64 godot
+          chmod +x godot
+
+      - name: godot --import (smoke)
+        run: ~/godot/godot --headless --path game --import || true
+        # First-time import emits warnings on a fresh runner; we don't
+        # gate on it. The verify/vectors steps below catch real errors.
+
+      - name: verify_main (latest replay)
+        run: |
+          # Generate a fresh round so verify has something to check.
+          ~/godot/godot --headless --path game --quit-after 8000 || true
+          ~/godot/godot --headless --path game res://verify_main.tscn
+
+      - name: test_vectors_main (fairness regression)
+        run: ~/godot/godot --headless --path game res://test_vectors_main.tscn
+
+  python-vectors:
+    name: python fairness reference vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate fairness vectors
+        run: python scripts/gen_fairness_vectors.py
+
+      - name: Drift check (no diff vs committed file)
+        run: |
+          if ! git diff --exit-code -- docs/fairness-vectors.json; then
+            echo "::error::Fairness vectors drifted; commit the regen output."
+            exit 1
+          fi
