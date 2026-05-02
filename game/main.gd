@@ -32,7 +32,7 @@ var _winner_idx_at_finish: int = -1      # marble index reported by local sim at
 var _live_track: Node = null
 var _live_recorder: Node = null
 var _live_finish: Node = null
-var _live_streamer: Node = null   # may be null if no live_stream_addr
+var _live_streamer = null   # TickStreamer (RefCounted) or null; untyped to avoid Node constraint
 
 func _ready() -> void:
 	# Three modes (evaluated in this order of priority):
@@ -295,6 +295,14 @@ func _start_race(spec: Dictionary) -> void:
 		var winner_color: Color = colors[int(String(winner.name).trim_prefix("Marble_"))]
 		WinnerReveal.spawn_confetti(self, winner.global_position, winner_color)
 		WinnerReveal.boost_winner_emission(winner, get_tree())
+		# Headless smoke-test convenience: when running with --headless and
+		# no display server, auto-quit ~3s after race finishes so batch
+		# scripts don't have to rely on --quit-after frame counts. With a
+		# display attached (live editor / interactive mode), no quit — the
+		# user wants to keep watching the confetti.
+		if DisplayServer.get_name() == "headless":
+			var quit_timer := get_tree().create_timer(3.0)
+			quit_timer.timeout.connect(func() -> void: get_tree().quit())
 	)
 	var recorder := TickRecorder.new()
 	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
@@ -477,6 +485,7 @@ func _pick_interactive_track() -> int:
 				"poker":    return TrackRegistry.POKER
 				"slots":    return TrackRegistry.SLOTS
 				"plinko":   return TrackRegistry.PLINKO
+				"stadium":  return TrackRegistry.STADIUM
 				_:
 					push_warning("--track=%s not recognized; falling back to random casino track" % name)
 					break

@@ -1,569 +1,205 @@
 class_name SlotsTrack
 extends Track
 
-# M6.4 — Slots. Marbles drop down a vertical chute through three spinning reels
-# that periodically gate the path, ricochet inside a chrome funnel, then exit
-# through a coin tray to the finish.
+# SlotsTrack — REBUILT as "Cavern Run" (post-M6 visual overhaul).
 #
-# Determinism story: reels are kinematic AnimatableBody3Ds rotating on fixed
-# axes at constant angular velocity. Each reel's initial phase is seeded from
-# (server_seed, round_id, reel index) so each round has a unique gate
-# alignment, but every replay of the same round renders the same motion.
+# Class name kept as SlotsTrack so existing replays with track_id=4 still
+# decode through TrackRegistry. The old slot-machine reels are gone; this
+# is now an underground cavern course with bigger crystal pillars (stalactites)
+# and dim mood lighting.
 #
-# The course is built around world +Y running from spawn (top) to finish
-# (bottom). Marbles fall under gravity, deflected by reel slots, side walls,
-# and a chrome funnel.
+# Drop-cascade design (real gravity, no slow-motion):
+#   y=42 spawn → F1 V-funnel (deep purple) → F2-F4 cave ramps → F5 crystal
+#   stalactites (bigger, sparser) → F6 crystal magenta gate.
+#
+# Palette + sky from TrackPalette.theme_for(SLOTS).
 
-# ─── Layout ────────────────────────────────────────────────────────────────
-const COURSE_TOP_Y := 50.0       # taller cabinet — 7 reels stacked over 50 m of drop
-const COURSE_BOTTOM_Y := 0.0
-const COURSE_WIDTH_X := 12.0
-const COURSE_DEPTH_Z := 8.0
-const CABINET_WALL_THICKNESS := 0.4
-const CABINET_FRICTION := 0.45    # stickier cabinet so marbles bouncing off side
-                                   # walls don't accelerate downward
-const CABINET_BOUNCE := 0.30
+const FIELD_W      := 40.0
+const FIELD_DEPTH  := 5.0
+const WALL_THICK   := 0.5
+const FLOOR_THICK  := 0.5
 
-# ─── Spawn ────────────────────────────────────────────────────────────────
-const SPAWN_Y := COURSE_TOP_Y - 1.0
-const SPAWN_COLS := 6
-const SPAWN_ROWS := 4
-const SPAWN_DX := 0.9
-const SPAWN_DZ := 0.7
+const SPAWN_Y      := 40.0
+const F1_Y         := 38.0
+const F2_Y         := 32.0
+const F3_Y         := 26.0
+const F4_Y         := 20.0
+const F5_TOP_Y     := 14.0
+const F5_BOT_Y     := 4.0
+const F6_Y         := 0.0
+const FLOOR_BASE_Y := -6.0
 
-# ─── Reels ────────────────────────────────────────────────────────────────
-# Three horizontal cylinders rotating around world X. Each reel has a slot
-# cut through its middle (modeled as an arc of "blockers" — short box arcs
-# spanning ~270° of the cylinder, leaving a 90° gap that marbles can slip
-# through).
-const REEL_COUNT := 8                # more reels stacked through the taller cabinet
-const REEL_RADIUS := 2.4             # bigger discs catch and carry marbles longer
-const REEL_LENGTH := 11.0
-const REEL_BLOCKER_THICKNESS := 0.45
-const REEL_BLOCKER_HEIGHT := 1.00    # taller teeth deflect marbles more aggressively
-const REEL_BLOCKER_COUNT := 10       # 10 segments → gap is 36° wide; gate aligns less often
-const REEL_GATE_INDEX := 0
-const REEL_FRICTION := 0.50
-const REEL_BOUNCE := 0.30
-# Y positions of the eight reels descending through the cabinet, spaced
-# ~5 m apart so each reel has a clear chance to interact with marbles
-# before the next one.
-const REEL_YS := [44.0, 39.0, 34.0, 29.0, 24.0, 19.0, 14.0, 9.0]
-# Angular velocities (rad/tick at 60Hz). Slower than v1 — at 0.015 rad/tick
-# = 0.9 rad/s, gate aligns once every ~7 s, so marbles often have to wait
-# multiple cycles before slipping through.
-const REEL_W := [0.015, -0.013, 0.017, -0.014, 0.016, -0.015, 0.013, -0.017]
+# Tuning matches StadiumTrack defaults. Theme variation stays visual + the
+# bigger-and-sparser peg field below.
+const F1_GAP_W     := 4.0
+const RAMP_GAP_W   := 4.0
+const F1_TILT_DEG  := 6.0
+const RAMP_TILT_DEG := 8.0
+const F5_PEG_RADIUS := 0.85           # bigger crystal stalactites
+const F5_ROWS      := 6
+const F5_COLS      := 7               # fewer cols (sparser)
+const F5_COL_SPACING := 5.5            # wider spacing for fewer pegs across same field
+const F6_LANES     := 20
 
-# ─── Funnel (after the bottom reel) ──────────────────────────────────────
-const FUNNEL_TOP_Y := 6.0
-const FUNNEL_BOTTOM_Y := 1.5
-const FUNNEL_TOP_RADIUS := 5.5
-const FUNNEL_BOTTOM_RADIUS := 1.0    # tighter throat — marbles bottleneck a bit
-const FUNNEL_SEGMENTS := 12
-const FUNNEL_FRICTION := 0.45
-const FUNNEL_BOUNCE := 0.25
+const SPAWN_COLS := 8
+const SPAWN_ROWS := 3
+const SPAWN_DX   := 1.6
+const SPAWN_DZ   := 1.0
 
-# ─── Tray (finish) ───────────────────────────────────────────────────────
-const TRAY_Y := -0.5
-const TRAY_RADIUS := 6.0
-const TRAY_DEPTH := 0.8
-const FINISH_BOX_SIZE := Vector3(COURSE_WIDTH_X + 4.0, 1.5, COURSE_DEPTH_Z + 4.0)
+const FINISH_Y_OFF := 2.5
+const FINISH_BOX   := Vector3(FIELD_W + 2.0, 5.0, FIELD_DEPTH + 1.0)
 
-# ─── Materials ───────────────────────────────────────────────────────────
-const COLOR_CHROME := Color(0.78, 0.78, 0.85)
-const COLOR_REEL_BODY := Color(0.92, 0.92, 0.96)
-const COLOR_REEL_FACE_RED := Color(0.95, 0.2, 0.18)
-const COLOR_REEL_FACE_GOLD := Color(0.92, 0.78, 0.18)
-const COLOR_REEL_FACE_BLUE := Color(0.18, 0.42, 0.95)
-const COLOR_TRAY := Color(0.85, 0.65, 0.18)
-
-# ─── Chip wheels ─────────────────────────────────────────────────────────
-# Three spinning gold discs with peg-chips on their rims, placed vertically
-# between the reel levels to deflect marbles and add visual variety consistent
-# with Craps and Poker. Slots is already vertical (no root rotation), so
-# positions are direct world coords. Rotation axis is world Z (perpendicular
-# to the cabinet front face).
-const CHIP_WHEEL_COUNT := 3
-const CHIP_WHEEL_RADIUS := 2.2        # slightly smaller than craps (2.4) to avoid reel overlap
-const CHIP_WHEEL_THICKNESS := 0.35
-const CHIP_WHEEL_PEG_COUNT := 6
-const CHIP_WHEEL_PEG_RADIUS := 0.28
-const CHIP_WHEEL_PEG_LENGTH := 1.10
-const CHIP_WHEEL_PEG_RIM_OFFSET := 1.85   # peg distance from wheel centre
-const CHIP_WHEEL_FRICTION := 0.40
-const CHIP_WHEEL_BOUNCE := 0.35
-# Between reels: reel Y positions are [44,39,34,29,24,19,14,9]
-# Wheel 0: between reel 1 and 2 (Y=41.5), wheel 1: between reel 4 and 5 (Y=26.5),
-# wheel 2: between reel 7 and 8 (Y=11.5). Small X offsets for lateral variety.
-const CHIP_WHEEL_POSITIONS := [
-	Vector3(-2.0, 41.5, 0.0),
-	Vector3( 2.0, 26.5, 0.0),
-	Vector3( 0.0, 11.5, 0.0),
-]
-# Alternating signs, slightly different speeds.
-const CHIP_WHEEL_W := [-0.040, 0.038, -0.045]
-
-# ─── Slow-motion gravity ──────────────────────────────────────────────────
-# Reduces effective gravity to 2.0 m/s² inside the cabinet so the race
-# lands in the 40-50 s target window (8 reels + 3 chip wheels gate marbles
-# longer than Craps/Poker, so a higher gravity than those tracks is needed).
-const SLOW_GRAVITY_ACCEL := 2.0
-
-# ─── Internal state ──────────────────────────────────────────────────────
-var _cabinet_mat: PhysicsMaterial = null
-var _reel_mat: PhysicsMaterial = null
-var _funnel_mat: PhysicsMaterial = null
-var _tray_mat: PhysicsMaterial = null
-var _chip_wheel_mat: PhysicsMaterial = null
-
-var _reels: Array[AnimatableBody3D] = []
-var _reel_phases: Array = []     # initial angle per reel (radians), from seed
-var _chip_wheels: Array[AnimatableBody3D] = []
-var _chip_wheel_phases: Array = []
-var _local_tick: int = -1
+var _theme: Dictionary
+var _mat_floor: PhysicsMaterial = null
+var _mat_peg:   PhysicsMaterial = null
+var _mat_wall:  PhysicsMaterial = null
+var _mat_gate:  PhysicsMaterial = null
 
 func _ready() -> void:
-	_init_materials()
-	_build_cabinet()
-	_init_reel_phases()
-	_build_reels()
-	_build_funnel()
-	_build_tray()
-	_init_chip_wheel_phases()
-	_build_chip_wheels()
-	_build_slow_gravity_zone()
-	_build_mood_light()
+	_theme = TrackPalette.theme_for(TrackRegistry.SLOTS)
+	_init_physics_materials()
+	_build_outer_frame()
+	_build_floor1()
+	_build_directed_floor("F2", F2_Y, +1, _theme["floor_b"])
+	_build_directed_floor("F3", F3_Y, -1, _theme["floor_c"])
+	_build_directed_floor("F4", F4_Y, +1, _theme["floor_d"])
+	_build_peg_field()
+	_build_gate()
+	_build_catchment()
+	_build_mood_lights()
 
-func _build_mood_light() -> void:
-	# Cool electric-blue mood — chrome cabinet vibe.
-	var light := OmniLight3D.new()
-	light.name = "MoodLight"
-	light.light_color = Color(0.78, 0.88, 1.0)
-	light.light_energy = 1.8
-	light.omni_range = 40.0
-	light.position = Vector3(0, 14, 0)
-	add_child(light)
-	# Secondary fill from below to read the tray.
-	var fill := OmniLight3D.new()
-	fill.name = "FillLight"
-	fill.light_color = Color(1.0, 0.7, 0.3)
-	fill.light_energy = 0.8
-	fill.omni_range = 20.0
-	fill.position = Vector3(0, TRAY_Y + 1.5, 4.0)
-	add_child(fill)
+func _init_physics_materials() -> void:
+	# Stadium-aligned physics for reliable finish.
+	_mat_floor = PhysicsMaterial.new()
+	_mat_floor.friction = 0.40
+	_mat_floor.bounce   = 0.20
+	_mat_peg = PhysicsMaterial.new()
+	_mat_peg.friction = 0.25
+	_mat_peg.bounce   = 0.55
+	_mat_wall = PhysicsMaterial.new()
+	_mat_wall.friction = 0.30
+	_mat_wall.bounce   = 0.30
+	_mat_gate = PhysicsMaterial.new()
+	_mat_gate.friction = 0.55
+	_mat_gate.bounce   = 0.10
 
-func _physics_process(_delta: float) -> void:
-	_local_tick += 1
-	for i in range(_reels.size()):
-		_apply_reel_pose(i, float(_local_tick))
-	for i in range(_chip_wheels.size()):
-		_apply_chip_wheel_pose(i, float(_local_tick))
+func _build_outer_frame() -> void:
+	var wall_mat := TrackBlocks.std_mat(_theme["wall"], 0.10, 0.85)
+	var frame := StaticBody3D.new()
+	frame.name = "OuterFrame"
+	frame.physics_material_override = _mat_wall
+	add_child(frame)
+	TrackBlocks.build_outer_frame(frame, "Frame",
+		SPAWN_Y + 3.0, FLOOR_BASE_Y - 1.0,
+		FIELD_W, FIELD_DEPTH, WALL_THICK, wall_mat)
 
-# ─── Materials ───────────────────────────────────────────────────────────
+func _build_floor1() -> void:
+	var floor_mat := TrackBlocks.std_mat_emit(_theme["floor_a"], 0.30, 0.55, 0.25)
+	var body := StaticBody3D.new()
+	body.name = "F1_PurpleFunnel"
+	body.physics_material_override = _mat_floor
+	add_child(body)
+	TrackBlocks.build_v_funnel(body, "F1",
+		F1_Y, FIELD_W, F1_GAP_W, FIELD_DEPTH, FLOOR_THICK,
+		F1_TILT_DEG, floor_mat)
 
-func _init_materials() -> void:
-	_cabinet_mat = PhysicsMaterial.new()
-	_cabinet_mat.friction = CABINET_FRICTION
-	_cabinet_mat.bounce = CABINET_BOUNCE
+func _build_directed_floor(prefix: String, y_pos: float, gap_dir: int,
+		col: Color) -> void:
+	var floor_mat := TrackBlocks.std_mat_emit(col, 0.20, 0.60, 0.20)
+	var curb_mat  := TrackBlocks.std_mat(_theme["wall"], 0.10, 0.80)
+	var body := StaticBody3D.new()
+	body.name = "%s_Ramp" % prefix
+	body.physics_material_override = _mat_floor
+	add_child(body)
+	TrackBlocks.build_directed_ramp(body, prefix,
+		y_pos, FIELD_W, RAMP_GAP_W, FIELD_DEPTH, FLOOR_THICK,
+		RAMP_TILT_DEG, gap_dir, floor_mat, curb_mat)
 
-	_reel_mat = PhysicsMaterial.new()
-	_reel_mat.friction = REEL_FRICTION
-	_reel_mat.bounce = REEL_BOUNCE
+func _build_peg_field() -> void:
+	# Crystal stalactites: glow with crystal magenta.
+	var peg_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.50, 0.25, 0.55)
+	var pegs := StaticBody3D.new()
+	pegs.name = "F5_Stalactites"
+	pegs.physics_material_override = _mat_peg
+	add_child(pegs)
+	TrackBlocks.build_peg_forest(pegs, "F5",
+		F5_TOP_Y, F5_BOT_Y, FIELD_W, FIELD_DEPTH,
+		F5_ROWS, F5_COLS, F5_PEG_RADIUS, F5_COL_SPACING, peg_mat)
 
-	_funnel_mat = PhysicsMaterial.new()
-	_funnel_mat.friction = FUNNEL_FRICTION
-	_funnel_mat.bounce = FUNNEL_BOUNCE
+func _build_gate() -> void:
+	var floor_mat := TrackBlocks.std_mat_emit(_theme["gate"], 0.50, 0.30, 0.65)
+	var div_mat   := TrackBlocks.std_mat_emit(_theme["accent"], 0.50, 0.30, 0.85)
+	var body := StaticBody3D.new()
+	body.name = "F6_CrystalGate"
+	body.physics_material_override = _mat_gate
+	add_child(body)
+	TrackBlocks.build_lane_gate(body, "Gate",
+		F6_Y, FIELD_W, FIELD_DEPTH, F6_LANES,
+		1.5, 0.15, FLOOR_THICK, floor_mat, div_mat)
 
-	_tray_mat = PhysicsMaterial.new()
-	_tray_mat.friction = 0.55
-	_tray_mat.bounce = 0.15
+func _build_catchment() -> void:
+	var mat := TrackBlocks.std_mat(Color(0.04, 0.04, 0.06), 0.10, 0.85)
+	var body := StaticBody3D.new()
+	body.name = "Catchment"
+	body.physics_material_override = _mat_gate
+	add_child(body)
+	TrackBlocks.build_catchment(body, "Catch",
+		FLOOR_BASE_Y, FIELD_W, FIELD_DEPTH, FLOOR_THICK, mat)
 
-	_chip_wheel_mat = PhysicsMaterial.new()
-	_chip_wheel_mat.friction = CHIP_WHEEL_FRICTION
-	_chip_wheel_mat.bounce = CHIP_WHEEL_BOUNCE
+func _build_mood_lights() -> void:
+	# Cavern lighting: dim purple key + cyan bioluminescent fill + crystal
+	# magenta gate spot. Heavy contrast.
+	var key := DirectionalLight3D.new()
+	key.name = "CavernKey"
+	key.light_color    = Color(0.65, 0.55, 1.00)
+	key.light_energy   = 0.8
+	key.rotation_degrees = Vector3(-50.0, -30.0, 0.0)
+	key.shadow_enabled = true
+	add_child(key)
+	var bio := OmniLight3D.new()
+	bio.name = "BioFill"
+	bio.light_color  = Color(0.40, 0.85, 0.85)
+	bio.light_energy = 1.2
+	bio.omni_range   = 30.0
+	bio.position     = Vector3(0.0, F4_Y - 2.0, -6.0)
+	add_child(bio)
+	var gate_spot := OmniLight3D.new()
+	gate_spot.name = "CrystalSpot"
+	gate_spot.light_color  = Color(0.95, 0.40, 1.00)
+	gate_spot.light_energy = 2.4
+	gate_spot.omni_range   = 14.0
+	gate_spot.position     = Vector3(0.0, F6_Y + 4.0, 3.0)
+	add_child(gate_spot)
 
-# ─── Cabinet (side walls + back) ─────────────────────────────────────────
-
-func _build_cabinet() -> void:
-	var chrome_mat := StandardMaterial3D.new()
-	chrome_mat.albedo_color = COLOR_CHROME
-	chrome_mat.metallic = 1.0
-	chrome_mat.metallic_specular = 1.0
-	chrome_mat.roughness = 0.10
-
-	var cabinet := StaticBody3D.new()
-	cabinet.name = "Cabinet"
-	cabinet.physics_material_override = _cabinet_mat
-	add_child(cabinet)
-
-	var height: float = COURSE_TOP_Y - COURSE_BOTTOM_Y + 2.0
-	var center_y: float = (COURSE_TOP_Y + COURSE_BOTTOM_Y) * 0.5
-
-	# +X wall and -X wall (along the cabinet's length)
-	for sgn in [-1, 1]:
-		var x: float = float(sgn) * (COURSE_WIDTH_X * 0.5 + CABINET_WALL_THICKNESS * 0.5)
-		_add_box(cabinet, "WallX_%s" % ("pos" if sgn > 0 else "neg"),
-			Transform3D(Basis.IDENTITY, Vector3(x, center_y, 0)),
-			Vector3(CABINET_WALL_THICKNESS, height, COURSE_DEPTH_Z),
-			chrome_mat)
-
-	# Back wall (-Z)
-	_add_box(cabinet, "WallBack",
-		Transform3D(Basis.IDENTITY, Vector3(0, center_y, -COURSE_DEPTH_Z * 0.5 - CABINET_WALL_THICKNESS * 0.5)),
-		Vector3(COURSE_WIDTH_X + CABINET_WALL_THICKNESS * 2.0, height, CABINET_WALL_THICKNESS),
-		chrome_mat)
-
-	# Front glass (+Z) — just visual + collision so marbles don't escape forward.
-	_add_box(cabinet, "WallFront",
-		Transform3D(Basis.IDENTITY, Vector3(0, center_y, COURSE_DEPTH_Z * 0.5 + CABINET_WALL_THICKNESS * 0.5)),
-		Vector3(COURSE_WIDTH_X + CABINET_WALL_THICKNESS * 2.0, height, CABINET_WALL_THICKNESS),
-		chrome_mat)
-
-# ─── Reels ───────────────────────────────────────────────────────────────
-
-func _init_reel_phases() -> void:
-	# Per-reel initial phase in [0, TAU). Shifted so the gates are spread
-	# out across the cabinet rather than starting aligned — looks more
-	# kinetic and gives marbles different chances at each level.
-	for i in range(REEL_COUNT):
-		var raw := _hash_with_tag("reel_%d" % i)
-		_reel_phases.append(float(raw[0]) / 255.0 * TAU)
-
-func _build_reels() -> void:
-	# A reel is an AnimatableBody3D whose spin axis is world X. We model the
-	# blocker geometry as REEL_BLOCKER_COUNT - 1 box "teeth" arrayed around
-	# the cylinder (the missing one is the gap that marbles can pass through).
-	# Each tooth's local position is at (cos θ * R, sin θ * R) in YZ, with the
-	# teeth extending radially outward.
-	var face_mats := [
-		_solid_mat(COLOR_REEL_FACE_RED),
-		_solid_mat(COLOR_REEL_FACE_GOLD),
-		_solid_mat(COLOR_REEL_FACE_BLUE),
-	]
-
-	for i in range(REEL_COUNT):
-		var reel := AnimatableBody3D.new()
-		reel.name = "Reel_%d" % i
-		reel.physics_material_override = _reel_mat
-		reel.sync_to_physics = true
-		var y: float = REEL_YS[i]
-		# The reel's local frame: +X along world X (axis of rotation). We place
-		# it at world (0, y, 0) with the rotation applied around X.
-		reel.global_transform = Transform3D(Basis.IDENTITY, Vector3(0, y, 0))
-		add_child(reel)
-
-		# Build tooth boxes. Each tooth is a flat slab whose long axis lies
-		# along the cylinder axis (world X) and whose Y dimension is the
-		# radial-out direction at angle θ. With θ measured around world X
-		# from world +Y, radial-out = (0, cos θ, sin θ); the basis that
-		# rotates the canonical Y axis into that direction is
-		# Basis(Vector3.RIGHT, θ).
-		var face_mat: StandardMaterial3D = face_mats[i % face_mats.size()]
-		var arc_step: float = TAU / float(REEL_BLOCKER_COUNT)
-		for k in range(REEL_BLOCKER_COUNT):
-			if k == REEL_GATE_INDEX:
-				continue   # gap that lets marbles pass through
-			var angle: float = arc_step * float(k)
-			var radial := Vector3(0, cos(angle), sin(angle))
-			var tooth_center := radial * (REEL_RADIUS + REEL_BLOCKER_HEIGHT * 0.5)
-			var rot_basis := Basis(Vector3.RIGHT, angle)
-			_add_box(reel, "Tooth_%d_%d" % [i, k],
-				Transform3D(rot_basis, tooth_center),
-				Vector3(REEL_LENGTH, REEL_BLOCKER_HEIGHT, REEL_BLOCKER_THICKNESS),
-				face_mat)
-
-		_reels.append(reel)
-		_apply_reel_pose(i, 0.0)
-
-func _apply_reel_pose(i: int, t: float) -> void:
-	var w: float = float(REEL_W[i])
-	var phase: float = float(_reel_phases[i])
-	var angle: float = phase + w * t
-	# Spin around world X.
-	var basis := Basis(Vector3.RIGHT, angle)
-	var pos := Vector3(0, REEL_YS[i], 0)
-	_reels[i].global_transform = Transform3D(basis, pos)
-
-# ─── Funnel (chrome cone after the reels) ────────────────────────────────
-
-func _build_funnel() -> void:
-	var chrome_mat := _solid_mat(COLOR_CHROME)
-	chrome_mat.metallic = 0.85
-	chrome_mat.roughness = 0.2
-
-	var funnel := StaticBody3D.new()
-	funnel.name = "Funnel"
-	funnel.physics_material_override = _funnel_mat
-	add_child(funnel)
-
-	# Build the funnel as a ring of N tilted boxes between top and bottom radii.
-	var height: float = FUNNEL_TOP_Y - FUNNEL_BOTTOM_Y
-	var arc: float = TAU / float(FUNNEL_SEGMENTS)
-	for k in range(FUNNEL_SEGMENTS):
-		var angle: float = float(k) * arc
-		var dir_top := Vector3(cos(angle), 0, sin(angle))
-		var dir_bottom := dir_top   # same azimuth
-		var top_pt := Vector3(FUNNEL_TOP_RADIUS * dir_top.x, FUNNEL_TOP_Y, FUNNEL_TOP_RADIUS * dir_top.z)
-		var bottom_pt := Vector3(FUNNEL_BOTTOM_RADIUS * dir_bottom.x, FUNNEL_BOTTOM_Y, FUNNEL_BOTTOM_RADIUS * dir_bottom.z)
-		var center := (top_pt + bottom_pt) * 0.5
-		var direction := (bottom_pt - top_pt)
-		var length := direction.length()
-		var forward := direction.normalized()
-		var right := Vector3.UP.cross(forward).normalized()
-		if right.length() < 0.001:
-			right = Vector3.RIGHT
-		var up := forward.cross(right).normalized()
-		var basis := Basis(right, up, -forward)
-		# Each panel: width arc * mid_radius, length, thin.
-		var mid_radius: float = (FUNNEL_TOP_RADIUS + FUNNEL_BOTTOM_RADIUS) * 0.5
-		var panel_w: float = arc * mid_radius * 1.05   # slight overlap
-		_add_box(funnel, "FunnelPanel_%d" % k,
-			Transform3D(basis, center),
-			Vector3(panel_w, 0.18, length),
-			chrome_mat)
-
-# ─── Tray (finish basin) ─────────────────────────────────────────────────
-
-func _build_tray() -> void:
-	var tray_mat := _solid_mat(COLOR_TRAY)
-	tray_mat.metallic = 0.7
-	tray_mat.roughness = 0.3
-
-	var tray := StaticBody3D.new()
-	tray.name = "Tray"
-	tray.physics_material_override = _tray_mat
-	add_child(tray)
-
-	# Floor disc.
-	var floor_coll := CollisionShape3D.new()
-	var floor_cyl := CylinderShape3D.new()
-	floor_cyl.radius = TRAY_RADIUS
-	floor_cyl.height = 0.3
-	floor_coll.shape = floor_cyl
-	floor_coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, TRAY_Y - 0.15, 0))
-	tray.add_child(floor_coll)
-
-	var floor_mesh := MeshInstance3D.new()
-	var floor_cm := CylinderMesh.new()
-	floor_cm.top_radius = TRAY_RADIUS
-	floor_cm.bottom_radius = TRAY_RADIUS
-	floor_cm.height = 0.3
-	floor_mesh.mesh = floor_cm
-	floor_mesh.transform = Transform3D(Basis.IDENTITY, Vector3(0, TRAY_Y - 0.15, 0))
-	floor_mesh.material_override = tray_mat
-	tray.add_child(floor_mesh)
-
-	# Rim ring (8 box segments).
-	var ring_segs := 12
-	var arc: float = TAU / float(ring_segs)
-	for k in range(ring_segs):
-		var angle: float = float(k) * arc
-		var dir := Vector3(cos(angle), 0, sin(angle))
-		var pos := dir * TRAY_RADIUS + Vector3(0, TRAY_Y + TRAY_DEPTH * 0.5, 0)
-		var basis := Basis(Vector3.UP, -angle)
-		_add_box(tray, "TrayRim_%d" % k,
-			Transform3D(basis, pos),
-			Vector3(arc * TRAY_RADIUS * 1.05, TRAY_DEPTH, 0.25),
-			tray_mat)
-
-# ─── Chip wheels (kinematic spinning discs with peg-chips on the rim) ────
-
-func _init_chip_wheel_phases() -> void:
-	# Per-wheel phase from server_seed for round-varying but replay-stable start angle.
-	for i in range(CHIP_WHEEL_COUNT):
-		var raw := _hash_with_tag("wheel_%d" % i)
-		_chip_wheel_phases.append(float(raw[0]) / 255.0 * TAU)
-
-func _build_chip_wheels() -> void:
-	var disc_mat := StandardMaterial3D.new()
-	disc_mat.albedo_color = Color(0.85, 0.72, 0.25)   # gold, matches Craps
-	disc_mat.metallic = 0.85
-	disc_mat.metallic_specular = 0.85
-	disc_mat.roughness = 0.30
-	disc_mat.emission_enabled = true
-	disc_mat.emission = Color(0.85, 0.72, 0.25)
-	disc_mat.emission_energy_multiplier = 0.30
-
-	# Peg colour — Slots identity: reel-face gold / amber
-	var peg_mat := StandardMaterial3D.new()
-	peg_mat.albedo_color = COLOR_REEL_FACE_GOLD
-	peg_mat.metallic = 0.50
-	peg_mat.roughness = 0.35
-	peg_mat.emission_enabled = true
-	peg_mat.emission = COLOR_REEL_FACE_GOLD
-	peg_mat.emission_energy_multiplier = 0.35
-
-	for i in range(CHIP_WHEEL_COUNT):
-		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
-		var wheel := AnimatableBody3D.new()
-		wheel.name = "ChipWheel_%d" % i
-		wheel.physics_material_override = _chip_wheel_mat
-		wheel.sync_to_physics = true
-		# Slots has no root rotation so local transform == world transform.
-		wheel.transform = Transform3D(Basis.IDENTITY, pos)
-		add_child(wheel)
-
-		# Disc body — axis along local +Z (world Z = into cabinet front face).
-		# CylinderShape3D's axis is local +Y by default, so we rotate 90° around X
-		# to align with Z.
-		var disc_coll := CollisionShape3D.new()
-		disc_coll.name = "Disc_%d_shape" % i
-		var disc_shape := CylinderShape3D.new()
-		disc_shape.radius = CHIP_WHEEL_RADIUS
-		disc_shape.height = CHIP_WHEEL_THICKNESS
-		disc_coll.shape = disc_shape
-		# Rotate so cylinder axis points along Z (90° around X).
-		disc_coll.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), Vector3.ZERO)
-		wheel.add_child(disc_coll)
-
-		var disc_mesh := MeshInstance3D.new()
-		disc_mesh.name = "Disc_%d_mesh" % i
-		var disc_cyl := CylinderMesh.new()
-		disc_cyl.top_radius = CHIP_WHEEL_RADIUS
-		disc_cyl.bottom_radius = CHIP_WHEEL_RADIUS
-		disc_cyl.height = CHIP_WHEEL_THICKNESS
-		disc_mesh.mesh = disc_cyl
-		disc_mesh.material_override = disc_mat
-		disc_mesh.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), Vector3.ZERO)
-		wheel.add_child(disc_mesh)
-
-		# Pegs around the rim — each peg is a cylinder sticking out from the
-		# wheel's front face along local +Z, at angular position theta in XY plane.
-		var peg_z_centre: float = CHIP_WHEEL_THICKNESS * 0.5 + CHIP_WHEEL_PEG_LENGTH * 0.5
-		for k in range(CHIP_WHEEL_PEG_COUNT):
-			var theta: float = TAU * float(k) / float(CHIP_WHEEL_PEG_COUNT)
-			var peg_pos := Vector3(
-				cos(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
-				sin(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
-				peg_z_centre,
-			)
-
-			var peg_coll := CollisionShape3D.new()
-			peg_coll.name = "Peg_%d_%d_shape" % [i, k]
-			var peg_shape := CylinderShape3D.new()
-			peg_shape.radius = CHIP_WHEEL_PEG_RADIUS
-			peg_shape.height = CHIP_WHEEL_PEG_LENGTH
-			peg_coll.shape = peg_shape
-			# Rotate peg cylinder from Y-axis to Z-axis.
-			peg_coll.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), peg_pos)
-			wheel.add_child(peg_coll)
-
-			var peg_mesh := MeshInstance3D.new()
-			peg_mesh.name = "Peg_%d_%d_mesh" % [i, k]
-			var peg_cyl := CylinderMesh.new()
-			peg_cyl.top_radius = CHIP_WHEEL_PEG_RADIUS
-			peg_cyl.bottom_radius = CHIP_WHEEL_PEG_RADIUS
-			peg_cyl.height = CHIP_WHEEL_PEG_LENGTH
-			peg_mesh.mesh = peg_cyl
-			peg_mesh.material_override = peg_mat
-			peg_mesh.transform = Transform3D(Basis(Vector3.RIGHT, PI / 2.0), peg_pos)
-			wheel.add_child(peg_mesh)
-
-		_chip_wheels.append(wheel)
-		_apply_chip_wheel_pose(i, 0.0)
-
-func _apply_chip_wheel_pose(i: int, t: float) -> void:
-	var wheel: AnimatableBody3D = _chip_wheels[i]
-	var w: float = float(CHIP_WHEEL_W[i])
-	var phase: float = float(_chip_wheel_phases[i])
-	var angle: float = phase + w * t
-	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
-	# Spin around world Z (perpendicular to cabinet face). Local transform is
-	# fine since Slots has no root rotation — local == world.
-	wheel.transform = Transform3D(Basis(Vector3.FORWARD, angle), pos)
-
-# ─── Slow-motion gravity zone ────────────────────────────────────────────
-
-func _build_slow_gravity_zone() -> void:
-	var zone := Area3D.new()
-	zone.name = "SlowGravityZone"
-	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
-	zone.gravity_direction = Vector3(0, -1, 0)
-	zone.gravity = SLOW_GRAVITY_ACCEL
-	add_child(zone)
-
-	var coll := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	# Cover the full cabinet volume with generous margin.
-	box.size = Vector3(COURSE_WIDTH_X + 4.0, (COURSE_TOP_Y - COURSE_BOTTOM_Y) + 4.0, COURSE_DEPTH_Z + 4.0)
-	coll.shape = box
-	coll.transform = Transform3D(Basis.IDENTITY,
-		Vector3(0, (COURSE_TOP_Y + COURSE_BOTTOM_Y) * 0.5, 0))
-	zone.add_child(coll)
-
-# ─── Helpers ─────────────────────────────────────────────────────────────
-
-func _solid_mat(c: Color) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	# Default to a slight emission tint of the same color so reel teeth pop
-	# in the bloom pass — chrome cabinet vibe needs the vivid reels to read.
-	m.emission_enabled = true
-	m.emission = c
-	m.emission_energy_multiplier = 0.30
-	m.metallic_specular = 0.6
-	m.roughness = 0.4
-	return m
-
-func _add_box(parent: Node, node_name: String, tx: Transform3D, size: Vector3, mat: StandardMaterial3D) -> void:
-	var coll := CollisionShape3D.new()
-	coll.name = node_name + "_shape"
-	coll.transform = tx
-	var shape := BoxShape3D.new()
-	shape.size = size
-	coll.shape = shape
-	parent.add_child(coll)
-
-	var mesh := MeshInstance3D.new()
-	mesh.name = node_name + "_mesh"
-	mesh.transform = tx
-	var box := BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
-	mesh.material_override = mat
-	parent.add_child(mesh)
-
-# ─── Track API overrides ─────────────────────────────────────────────────
+# ─── Track API overrides ────────────────────────────────────────────────────
 
 func spawn_points() -> Array:
-	var points: Array = []
+	var pts: Array = []
 	for r in range(SPAWN_ROWS):
 		for c in range(SPAWN_COLS):
-			var fx: float = float(c) - float(SPAWN_COLS - 1) * 0.5
-			var fz: float = float(r) - float(SPAWN_ROWS - 1) * 0.5
-			points.append(Vector3(fx * SPAWN_DX, SPAWN_Y, fz * SPAWN_DZ))
-	return points
+			var fx := (float(c) - float(SPAWN_COLS - 1) * 0.5) * SPAWN_DX
+			var fz := (float(r) - float(SPAWN_ROWS - 1) * 0.5) * SPAWN_DZ
+			pts.append(Vector3(fx, SPAWN_Y, fz))
+	return pts
 
 func finish_area_transform() -> Transform3D:
-	# Centered at the tray, axis-aligned.
-	return Transform3D(Basis.IDENTITY, Vector3(0, TRAY_Y + FINISH_BOX_SIZE.y * 0.5, 0))
+	return Transform3D(Basis.IDENTITY, Vector3(0.0, F6_Y + FINISH_Y_OFF, 0.0))
 
 func finish_area_size() -> Vector3:
-	return FINISH_BOX_SIZE
+	return FINISH_BOX
 
 func camera_bounds() -> AABB:
-	# Y max includes the SpawnRail drop-order stagger above SPAWN_Y so the
-	# 24-marble column isn't clipped at race start.
-	var min_v := Vector3(-COURSE_WIDTH_X * 0.5 - 4.0, TRAY_Y - 2.0, -COURSE_DEPTH_Z * 0.5 - 2.0)
-	var max_v := Vector3(COURSE_WIDTH_X * 0.5 + 4.0, COURSE_TOP_Y + 5.0, COURSE_DEPTH_Z * 0.5 + 2.0)
+	var min_v := Vector3(-FIELD_W * 0.5 - 1.0, FLOOR_BASE_Y - 2.0, -FIELD_DEPTH * 0.5 - 1.0)
+	var max_v := Vector3( FIELD_W * 0.5 + 1.0, SPAWN_Y + 4.0,        FIELD_DEPTH * 0.5 + 1.0)
 	return AABB(min_v, max_v - min_v)
 
 func camera_pose() -> Dictionary:
-	# Frontal view of the vertical cabinet. Position camera in front of the
-	# front glass (+Z), centred on the cabinet's vertical midpoint.
-	var mid_y: float = (COURSE_TOP_Y + COURSE_BOTTOM_Y) * 0.5
+	var mid_y: float = (SPAWN_Y + FLOOR_BASE_Y) * 0.5
 	return {
-		"position": Vector3(0, mid_y, 50),
-		"target": Vector3(0, mid_y, 0),
-		"fov": 70.0,
+		"position": Vector3(8.0, mid_y + 6.0, 55.0),
+		"target":   Vector3(0.0, mid_y - 4.0, 0.0),
+		"fov":      65.0,
 	}
 
 func environment_overrides() -> Dictionary:
-	# Cool chrome mood from the fog + sun; sky stays the daylight default.
-	return {
-		"ambient_energy": 0.80,
-		"fog_color": Color(0.70, 0.82, 0.95),
-		"fog_density": 0.003,
-		"sun_color": Color(0.85, 0.94, 1.0),
-		"sun_energy": 1.4,
-	}
+	return _theme["env"]

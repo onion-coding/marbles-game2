@@ -97,8 +97,9 @@ func _build_marbles() -> void:
 		var sphere := SphereMesh.new()
 		sphere.radius = MARBLE_RADIUS
 		sphere.height = MARBLE_RADIUS * 2.0
+		sphere.radial_segments = 48
+		sphere.rings = 24
 		node.mesh = sphere
-		var mat := StandardMaterial3D.new()
 		var rgba: int = m["rgba"]
 		var color: Color
 		if rgba == 0:
@@ -106,15 +107,8 @@ func _build_marbles() -> void:
 			color = Color.from_hsv(float(_marbles.size()) / max(_header.size(), 1), 0.8, 0.95)
 		else:
 			color = Color(((rgba >> 24) & 0xFF) / 255.0, ((rgba >> 16) & 0xFF) / 255.0, ((rgba >> 8) & 0xFF) / 255.0, (rgba & 0xFF) / 255.0)
-		# PBR + emission to match the sim-side marble look (M7.0).
-		mat.albedo_color = color
-		mat.metallic = 0.30
-		mat.metallic_specular = 0.6
-		mat.roughness = 0.18
-		mat.emission_enabled = true
-		mat.emission = color
-		mat.emission_energy_multiplier = 0.45
-		node.material_override = mat
+		# Glass marble shader to match the sim-side look exactly.
+		node.material_override = MarbleSpawner.make_glass_material(color, _marbles.size())
 		node.add_to_group("marbles")
 		add_child(node)
 		MarbleSpawner.attach_trail(node, color)
@@ -217,14 +211,19 @@ func _update_lead_glow() -> void:
 	_current_leader_idx = best_idx
 
 func _set_marble_emission(idx: int, energy: float) -> void:
+	# Boosts/restores the marble's emission to highlight the current leader.
+	# Works against either material kind: ShaderMaterial (glass shader,
+	# emission_strength uniform) or the StandardMaterial3D fallback.
 	if idx < 0 or idx >= _marbles.size():
 		return
 	var node: Node3D = _marbles[idx]
-	var mat: StandardMaterial3D = null
-	if node is MeshInstance3D:
-		mat = (node as MeshInstance3D).material_override as StandardMaterial3D
-	if mat != null:
-		mat.emission_energy_multiplier = energy
+	if not (node is MeshInstance3D):
+		return
+	var mat: Material = (node as MeshInstance3D).material_override
+	if mat is ShaderMaterial:
+		(mat as ShaderMaterial).set_shader_parameter("emission_strength", energy)
+	elif mat is StandardMaterial3D:
+		(mat as StandardMaterial3D).emission_energy_multiplier = energy
 
 func _apply_frame_state(frame: Dictionary) -> void:
 	var states: Array = frame["states"]

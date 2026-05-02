@@ -1,825 +1,205 @@
 class_name CrapsTrack
 extends Track
 
-# M6.2 — Craps. Marbles enter at the "come" end of a long downhill felt table,
-# weave between rolling dice and chip-stack obstacles, ricochet off pyramid
-# rubber rails along the back, and finish at the stickman's chip rack.
+# CrapsTrack — REBUILT as "Volcano Run" (post-M6 visual overhaul).
 #
-# Determinism story: the dice are kinematic AnimatableBody3Ds whose tumbling
-# motion is a pure function of (server_seed, round_id, tick). They never
-# accumulate physics state — each tick we recompute the pose from a closed-form
-# expression seeded once in _ready. This way:
-#   - The sim sees physically-meaningful kinematic bodies that push marbles.
-#   - The playback scene rebuilds an identical track and animates the dice on
-#     the same closed-form curve, so what the viewer sees lines up with the
-#     recorded marble paths even though no replay state is stored for the dice.
+# Class name kept as CrapsTrack so existing replays with track_id=2 still
+# decode through TrackRegistry. The old felt table + dice obstacles are
+# gone; this is now a volcano-themed drop-cascade course with denser pegs
+# (chaos) and bouncier physics (lava cools fast, marbles ricochet hard).
 #
-# Hazard: the dice cross the marble path at irregular intervals derived from
-# the seed, so each round looks different but is replay-stable.
+# Drop-cascade design (real gravity, no slow-motion):
+#   y=42 spawn → F1 V-funnel (lava) → F2 ramp (basalt) → F3 ramp (orange)
+#   → F4 ramp (rock) → F5 dense peg field (obsidian) → F6 lava gate.
 #
-# See docs/bugfixes.md "nested-PhysicsBody3D hang": every body uses sibling
-# CollisionShape3D + MeshInstance3D children, never another body.
+# Palette + sky from TrackPalette.theme_for(CRAPS).
 
-# ─── Table ────────────────────────────────────────────────────────────────
-# v2: long Vegas-strip table — 60 m of felt with a gentle 5° tilt and high
-# friction so a marble released at the come end takes ~40 s to traverse.
-# 9 chip-stack rows force a slalom; 4 dice tumble across mid-table.
-const TABLE_LEN := 90.0          # X-extent — long mini-golf-style course
-const TABLE_WIDTH := 16.0        # Z-extent
-const TABLE_TILT_DEG := 0.0      # vertical orientation: gravity aligns with the race
-                                  # direction post-root-rotation, so the felt-tilt that
-                                  # drove the original horizontal mode is no longer needed.
-const TABLE_THICKNESS := 0.4
-const TABLE_RAIL_HEIGHT := 1.6
-const TABLE_RAIL_THICKNESS := 0.3
+const FIELD_W      := 40.0
+const FIELD_DEPTH  := 5.0
+const WALL_THICK   := 0.5
+const FLOOR_THICK  := 0.5
 
-# Felt physics: very grippy, low bounce — keeps marbles rolling slowly.
-const FELT_FRICTION := 0.75
-const FELT_BOUNCE := 0.10
+const SPAWN_Y      := 40.0
+const F1_Y         := 38.0
+const F2_Y         := 32.0
+const F3_Y         := 26.0
+const F4_Y         := 20.0
+const F5_TOP_Y     := 14.0
+const F5_BOT_Y     := 4.0
+const F6_Y         := 0.0
+const FLOOR_BASE_Y := -6.0
 
-# Wood rail physics: medium grip, low bounce.
-const WOOD_FRICTION := 0.55
-const WOOD_BOUNCE := 0.20
+# Tuning matches StadiumTrack defaults (same drop physics that finishes
+# reliably in ~30s). Theme variation stays visual.
+const F1_GAP_W     := 4.0
+const RAMP_GAP_W   := 4.0
+const F1_TILT_DEG  := 6.0
+const RAMP_TILT_DEG := 8.0
+const F5_PEG_RADIUS := 0.55
+const F5_ROWS      := 8                # denser peg field for chaos
+const F5_COLS      := 9
+const F5_COL_SPACING := 4.5
+const F6_LANES     := 20
 
-# ─── Spawn ────────────────────────────────────────────────────────────────
-# 24 spawn points at the "uphill" end (-X in local coords). After the
-# vertical-orientation root rotation (see ROOT_OFFSET / _ready), local +X
-# maps to world -Y (gravity), local +Y maps to world +Z (depth toward
-# camera), so SPAWN_Y is the depth offset of marbles in front of the back
-# wall — kept small so spawn sits just in front of the play surface.
-const SPAWN_X := -42.0
-const SPAWN_Y := 1.0                # depth in front of back wall
-const SPAWN_GRID_COLS := 6
-const SPAWN_GRID_ROWS := 4
-const SPAWN_SPREAD_X := 1.5         # spreads spawn along old +X = world -Y (vertical stagger)
-const SPAWN_SPREAD_Z := 9.0         # spreads spawn along old +Z = world -X (sideways)
+const SPAWN_COLS := 8
+const SPAWN_ROWS := 3
+const SPAWN_DX   := 1.6
+const SPAWN_DZ   := 1.0
 
-# ─── Vertical orientation (root rotation) ────────────────────────────────
-# Apply a rigid rotation to the whole track so the original "horizontal
-# table" becomes a "vertical wall" the player views frontally. Marbles
-# now drop along the original race direction under gravity instead of
-# rolling on a tilted felt. Mapping:
-#   local +X (downhill)         → world -Y (gravity)
-#   local +Y (above felt)       → world +Z (depth, toward camera)
-#   local +Z (across the table) → world -X (sideways)
-# Decomposes as Basis(Z, -90°) * Basis(X, +90°). ROOT_OFFSET shifts the
-# rotated play volume up so the finish (was old +X=42) lands near world
-# Y=6 instead of Y=-42.
-const ROOT_OFFSET_Y := 48.0
+const FINISH_Y_OFF := 2.5
+const FINISH_BOX   := Vector3(FIELD_W + 2.0, 5.0, FIELD_DEPTH + 1.0)
 
-# ─── Chip-stack obstacles ─────────────────────────────────────────────────
-# v2-split layout: chip rows split across three zones —
-#   1. Pre-split (x ≤ -16): full-width chip rows (entry slalom)
-#   2. +Z channel only (-12 ≤ x ≤ +8): chips on the upper half of the table.
-#      The lower half is the "pin" channel (kinematic pistons, see PIN_*).
-#   3. Post-funnel (x ≥ +18): full-width again, after the channels merge.
-const CHIP_RADIUS := 0.45
-const CHIP_HEIGHT := 1.6
-const CHIP_ROW_X := [
-	-36.0, -32.0, -28.0, -24.0, -20.0, -16.0,   # pre-split full-width (6 rows)
-	-10.0,  -4.0,   2.0,   8.0,                 # +Z channel only (4 rows)
-	 18.0,  22.0,  26.0,                         # post-funnel full-width (3 rows)
-]
-const CHIP_ROW_OFFSETS := [
-	# pre-split full-width
-	[-6.0, -3.0,  0.0,  3.0,  6.0],
-	[-4.5, -1.5,  1.5,  4.5,  7.0],
-	[-6.5, -3.5, -0.5,  2.5,  5.5],
-	[-5.0, -2.0,  1.0,  4.0,  7.0],
-	[-6.0, -3.0,  0.0,  3.0,  6.0],
-	[-7.0, -4.0, -1.0,  2.0,  5.0],
-	# +Z channel only (z > 0; pins occupy the mirror -Z channel)
-	[ 1.5,  3.5,  5.5,  7.0],
-	[ 2.5,  4.5,  6.5],
-	[ 1.5,  4.0,  6.5],
-	[ 2.0,  4.5,  7.0],
-	# post-funnel full-width
-	[-5.5, -2.5,  0.5,  3.5,  6.5],
-	[-4.5, -1.5,  1.5,  4.5,  7.0],
-	[-6.0, -3.0,  0.0,  3.0,  6.0],
-]
-
-# ─── Split corridor (Y-fork median + funnel merge) ────────────────────────
-# A wood median wall splits the table into two parallel channels in the
-# middle of the course; +Z carries chips, -Z carries kinematic pin
-# pistons. After the median ends, the channels merge naturally as marbles
-# continue rolling +X (no active funnel — the open table beyond x=FUNNEL_END_X
-# lets +Z and -Z marbles re-mingle by the time they reach the post-funnel
-# chip rows).
-const SPLIT_ENTRY_X := -14.0       # median wall starts here (uphill end)
-const FUNNEL_START_X := 10.0       # median wall ends here; channels merge
-const MEDIAN_WALL_HEIGHT := 1.8    # 3× marble diameter — can't roll over
-const MEDIAN_WALL_THICKNESS := 0.4
-
-# ─── Pin obstacles (kinematic pistons in the -Z channel) ─────────────────
-# Four boxy pistons rise and fall on a sin clock, period 90 ticks (1.5 s
-# at 60 Hz). Each pin's phase is seeded from server_seed so all four
-# don't move in sync — round to round, the timing of "blocker is up
-# right when a marble approaches" varies per round, adding variance.
-const PIN_COUNT := 4
-const PIN_X_POSITIONS := [-10.0, -4.0, 2.0, 8.0]   # mirror of +Z chip x-positions
-const PIN_Z := -4.0                                  # mid -Z channel
-const PIN_BASE_Y := -0.9                             # centre y at fully-retracted (pin top just below felt)
-const PIN_AMPLITUDE := 1.7                           # vertical sweep so pin top reaches +1.6 above felt at peak
-const PIN_PERIOD_TICKS := 90
-const PIN_SIZE := Vector3(0.7, 1.6, 0.7)
-const PIN_FRICTION := 0.45
-const PIN_BOUNCE := 0.30
-
-# ─── Spinning chip wheels (kinematic rotating obstacles) ─────────────────
-# Three large rotating wheels mounted at different Y heights along the
-# now-vertical course. Each has 6 chip-shaped pegs around its rim that
-# sweep through the play volume as the wheel turns, giving marbles
-# passing through that section a kinematic deflection. Per-wheel phase
-# derived from server_seed via _hash_with_tag("wheel_<i>") so timing
-# varies round-to-round but is replay-stable.
-const CHIP_WHEEL_COUNT := 3
-const CHIP_WHEEL_RADIUS := 2.4
-const CHIP_WHEEL_THICKNESS := 0.35
-const CHIP_WHEEL_PEG_COUNT := 6
-const CHIP_WHEEL_PEG_RADIUS := 0.30
-const CHIP_WHEEL_PEG_LENGTH := 1.20
-const CHIP_WHEEL_PEG_RIM_OFFSET := 2.0    # peg distance from wheel centre
-const CHIP_WHEEL_FRICTION := 0.40
-const CHIP_WHEEL_BOUNCE := 0.35
-
-# Old-coords positions, between existing chip layers along the course.
-# After the root rotation, these spread vertically along world -Y
-# (downward) so the camera sees three big wheels stacked one above the
-# next, each with 6 pegs orbiting the rim.
-const CHIP_WHEEL_POSITIONS := [
-	Vector3(-34.0, 0.5,  0.0),    # pre-split, between first chip rows
-	Vector3(  0.0, 0.5,  4.0),    # mid-table, in the +Z channel half
-	Vector3( 16.0, 0.5,  0.0),    # at funnel exit, before post-chips
-]
-# Per-wheel angular velocity (rad/tick at 60Hz). Different signs for
-# visual variety — neighbouring wheels spin in opposite directions.
-const CHIP_WHEEL_W := [0.040, -0.035, 0.045]
-
-# ─── Pyramid rubber back wall ─────────────────────────────────────────────
-# A jagged sawtooth row before the finish; deflects marbles unpredictably.
-# Tooth count chosen so the gap between adjacent teeth is wider than a
-# marble (radius 0.3 → 0.6 diameter). With TABLE_WIDTH=14 and 5 teeth, gaps
-# average 14/5 - tooth_diagonal = 2.8 - 1.7 = 1.1m: marbles thread through.
-const PYRAMID_X := 30.0
-const PYRAMID_TOOTH_COUNT := 6
-const PYRAMID_TOOTH_HALF_WIDTH := 0.55
-const PYRAMID_TOOTH_HEIGHT := 1.2
-const PYRAMID_FRICTION := 0.35
-const PYRAMID_BOUNCE := 0.55
-
-# ─── Dice (kinematic obstacles) ───────────────────────────────────────────
-# Each die is a kinematic cube whose centre travels along a closed-form path:
-#   x(t) = x0 + ax * sin(wx * t + px)
-#   z(t) = z0 + az * sin(wz * t + pz)
-# with parameters drawn from server_seed via _hash_with_tag("dice_<i>").
-# Tumbling rotation is also closed-form, three independent angles each tick.
-# Centre Y is held just above the table felt at that x, so the die slides on
-# the felt rather than floating.
-const DICE_COUNT := 3              # 3 dice in the pre-split zone only —
-                                    # mid-table is the split corridor (median + pins),
-                                    # post-funnel is chip rows; dice belong to the entry
-                                    # phase where they tumble across the full felt width.
-const DICE_HALF_EXTENT := 0.6     # half-edge of the cube (so edge length 1.2 m)
-const DICE_PATH_HALF_WIDTH := 6.5  # |z| amplitude
-const DICE_PATH_X_AMP := 5.0       # along-table wiggle (smaller now; dice stay in pre-split)
-# Centre frequency around which per-die frequencies cluster (rad / tick).
-# At 60 Hz physics, w = 0.06 → period ~ 105 ticks ~ 1.75s. Low-frequency
-# enough to be readable, high-frequency enough to vary.
-const DICE_W_BASE := 0.07
-const DICE_FRICTION := 0.55
-const DICE_BOUNCE := 0.35
-
-# ─── Finish ───────────────────────────────────────────────────────────────
-const FINISH_X := 42.0
-const FINISH_BOX_SIZE := Vector3(1.0, 6.0, TABLE_WIDTH)
-
-# ─── Materials ────────────────────────────────────────────────────────────
-const COLOR_FELT := Color(0.06, 0.32, 0.10)
-const COLOR_WOOD := Color(0.30, 0.13, 0.06)
-const COLOR_RUBBER := Color(0.55, 0.13, 0.13)
-const COLOR_CHIP := Color(0.93, 0.85, 0.20)
-const COLOR_DICE := Color(0.92, 0.92, 0.92)
-const COLOR_PIP := Color(0.05, 0.05, 0.05)
-
-# ─── Internal state ───────────────────────────────────────────────────────
-var _felt_mat: PhysicsMaterial = null
-var _wood_mat: PhysicsMaterial = null
-var _rubber_mat: PhysicsMaterial = null
-var _dice_mat: PhysicsMaterial = null
-var _pin_mat: PhysicsMaterial = null
-var _chip_wheel_mat: PhysicsMaterial = null
-
-# Per-die motion parameters cached from server_seed.
-var _dice_bodies: Array[AnimatableBody3D] = []
-var _dice_params: Array = []   # array of dictionaries: {x0,z0,ax,az,wx,wz,px,pz, rx,ry,rz}
-
-# Per-pin sin-clock phases cached from server_seed.
-var _pins: Array[AnimatableBody3D] = []
-var _pin_phases: Array = []
-
-# Per-wheel rotation phases cached from server_seed.
-var _chip_wheels: Array[AnimatableBody3D] = []
-var _chip_wheel_phases: Array = []
-
-# Slow-motion gravity zone — same 40-50 s target as Poker. Marbles inside
-# the play volume experience ~2.5 % of project gravity so the race reads
-# as slow-motion instead of freefall.
-const SLOW_GRAVITY_ACCEL := 0.21     # tuned to ~48.7 s race time (was 0.20 → 53.1 s).
-                                      # Craps has fewer
-                                      # obstacles per metre than Poker (13 chip rows +
-                                      # 4 pins vs 10 cards + 7 chip rows + denser layout),
-                                      # so it needs slightly different gravity to land
-                                      # in the same race-time window.
-
-# Table tilt basis applied to the whole course (everything sits on the tilted
-# felt). Cached so dice motion code can use the same frame.
-var _tilt_basis: Basis = Basis.IDENTITY
-
-# Root rotation applied to the whole track at the end of _ready(). All
-# child geometry rotates with it; spawn_points / finish_area_transform /
-# camera_pose / camera_bounds apply this transform manually since they
-# return values consumed in world space.
-var _root_transform: Transform3D = Transform3D.IDENTITY
+var _theme: Dictionary
+var _mat_floor: PhysicsMaterial = null
+var _mat_peg:   PhysicsMaterial = null
+var _mat_wall:  PhysicsMaterial = null
+var _mat_gate:  PhysicsMaterial = null
 
 func _ready() -> void:
-	_init_materials()
-	_tilt_basis = Basis(Vector3(0, 0, 1), -deg_to_rad(TABLE_TILT_DEG))
-	_build_table()
-	_build_split_corridor()
-	_build_chip_stacks()
-	_build_pyramid_wall()
-	_init_dice_params()
-	_build_dice()
-	_init_pin_phases()
-	_build_pins()
-	_init_chip_wheel_phases()
-	_build_chip_wheels()
-	_build_slow_gravity_zone()
-	_build_mood_light()
-
-	_ensure_root_transform()
-	transform = _root_transform
-
-# Lazy-initialise the root transform so spawn_points / finish_area_transform
-# / camera_pose return correctly-rotated values even when called from a
-# context that doesn't add the track to the scene tree (e.g. verify_main).
-func _ensure_root_transform() -> void:
-	if _root_transform != Transform3D.IDENTITY:
-		return
-	# Stand the whole track up on its end. local +X → world -Y (gravity),
-	# local +Y → world +Z (depth toward camera), local +Z → world -X.
-	var b1 := Basis(Vector3(1, 0, 0), PI / 2)        # +Y → +Z, +Z → -Y
-	var b2 := Basis(Vector3(0, 0, 1), -PI / 2)       # +X → -Y, +Y → +X
-	_root_transform = Transform3D(b2 * b1, Vector3(0, ROOT_OFFSET_Y, 0))
-
-func _build_mood_light() -> void:
-	# Neon-red fill light — reinforces the Vegas-night palette.
-	# A second cooler omni is added to avoid the scene going fully monochromatic.
-	var light := OmniLight3D.new()
-	light.name = "MoodLight"
-	light.light_color = Color(1.0, 0.30, 0.40)
-	light.light_energy = 2.2
-	light.omni_range = 65.0
-	light.position = Vector3(0, 12, 0)
-	add_child(light)
-
-	var fill := OmniLight3D.new()
-	fill.name = "MoodFill"
-	fill.light_color = Color(0.70, 0.60, 1.0)
-	fill.light_energy = 0.6
-	fill.omni_range = 50.0
-	fill.position = Vector3(0, 6, 8)
-	add_child(fill)
-
-func _physics_process(_delta: float) -> void:
-	# Drive each kinematic die to its closed-form pose for this tick. We work
-	# in the table's tilted-local frame (felt top at y=0), then apply the
-	# table tilt to get world coords. Tick counter is local to this track so
-	# replays starting at any engine time produce identical motion.
-	_local_tick += 1
-	for i in range(_dice_bodies.size()):
-		_apply_dice_pose(i, float(_local_tick))
-	for i in range(_pins.size()):
-		_apply_pin_pose(i, float(_local_tick))
-	for i in range(_chip_wheels.size()):
-		_apply_chip_wheel_pose(i, float(_local_tick))
-
-func _apply_dice_pose(i: int, t: float) -> void:
-	var body: AnimatableBody3D = _dice_bodies[i]
-	var p: Dictionary = _dice_params[i]
-	var x: float = float(p["x0"]) + float(p["ax"]) * sin(float(p["wx"]) * t + float(p["px"]))
-	var z: float = float(p["z0"]) + float(p["az"]) * sin(float(p["wz"]) * t + float(p["pz"]))
-	var local_pos := Vector3(x, DICE_HALF_EXTENT + 0.05, z)
-	var rx: float = float(p["rx"]) * t
-	var ry: float = float(p["ry"]) * t
-	var rz: float = float(p["rz"]) * t
-	var local_rot := Basis(Vector3.RIGHT, rx) * Basis(Vector3.UP, ry) * Basis(Vector3.FORWARD, rz)
-	# Use LOCAL transform — root rotation propagates via parent.
-	body.transform = Transform3D(_tilt_basis * local_rot, _tilt_basis * local_pos)
-
-var _local_tick: int = -1
-
-# ─── Materials ────────────────────────────────────────────────────────────
-
-func _init_materials() -> void:
-	_felt_mat = PhysicsMaterial.new()
-	_felt_mat.friction = FELT_FRICTION
-	_felt_mat.bounce = FELT_BOUNCE
-
-	_wood_mat = PhysicsMaterial.new()
-	_wood_mat.friction = WOOD_FRICTION
-	_wood_mat.bounce = WOOD_BOUNCE
-
-	_rubber_mat = PhysicsMaterial.new()
-	_rubber_mat.friction = PYRAMID_FRICTION
-	_rubber_mat.bounce = PYRAMID_BOUNCE
-
-	_dice_mat = PhysicsMaterial.new()
-	_dice_mat.friction = DICE_FRICTION
-	_dice_mat.bounce = DICE_BOUNCE
-
-	_pin_mat = PhysicsMaterial.new()
-	_pin_mat.friction = PIN_FRICTION
-	_pin_mat.bounce = PIN_BOUNCE
-
-	_chip_wheel_mat = PhysicsMaterial.new()
-	_chip_wheel_mat.friction = CHIP_WHEEL_FRICTION
-	_chip_wheel_mat.bounce = CHIP_WHEEL_BOUNCE
-
-# ─── Table (felt + rails) ────────────────────────────────────────────────
-
-func _build_table() -> void:
-	var felt_mat := StandardMaterial3D.new()
-	felt_mat.albedo_color = COLOR_FELT
-	felt_mat.roughness = 0.85
-
-	var wood_mat := StandardMaterial3D.new()
-	wood_mat.albedo_color = COLOR_WOOD
-	wood_mat.roughness = 0.7
-
-	var table := StaticBody3D.new()
-	table.name = "Table"
-	table.physics_material_override = _felt_mat
-	table.transform = Transform3D(_tilt_basis, Vector3.ZERO)
-	add_child(table)
-
-	# Felt slab. Top face passes through y=0 in local space.
-	_add_box(table, "Felt",
-		Transform3D(Basis.IDENTITY, Vector3(0, -TABLE_THICKNESS * 0.5, 0)),
-		Vector3(TABLE_LEN, TABLE_THICKNESS, TABLE_WIDTH),
-		felt_mat)
-
-	# Side rails (along X, on +/-Z edges).
-	for sgn in [-1, 1]:
-		var rail_z: float = float(sgn) * (TABLE_WIDTH * 0.5 + TABLE_RAIL_THICKNESS * 0.5)
-		_add_box(table, "RailZ_%s" % ("pos" if sgn > 0 else "neg"),
-			Transform3D(Basis.IDENTITY, Vector3(0, TABLE_RAIL_HEIGHT * 0.5, rail_z)),
-			Vector3(TABLE_LEN, TABLE_RAIL_HEIGHT, TABLE_RAIL_THICKNESS),
-			wood_mat)
-	# (Old uphill end-rail removed: in vertical orientation it would become a
-	# ceiling above the spawn column, trapping the SpawnRail-staggered marbles.
-	# Marbles drop into play under gravity so no backward-roll guard is needed.)
-
-	# Front cover — collision-only (no mesh) at old +Y = 3.0 above the felt.
-	# After the root rotation, this slab sits 3 m in front of the back wall
-	# along world +Z, catching marbles that would otherwise bounce off chips
-	# toward the camera and drift out of the play volume.
-	var front_coll := CollisionShape3D.new()
-	front_coll.name = "FrontCover_shape"
-	var front_box := BoxShape3D.new()
-	front_box.size = Vector3(TABLE_LEN, 0.2, TABLE_WIDTH)
-	front_coll.shape = front_box
-	front_coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, 3.0, 0))
-	table.add_child(front_coll)
-
-# ─── Chip stacks ─────────────────────────────────────────────────────────
-
-func _build_chip_stacks() -> void:
-	var chip_mat := StandardMaterial3D.new()
-	chip_mat.albedo_color = COLOR_CHIP
-	chip_mat.metallic = 0.7
-	chip_mat.metallic_specular = 0.8
-	chip_mat.roughness = 0.30
-	chip_mat.emission_enabled = true
-	chip_mat.emission = COLOR_CHIP
-	chip_mat.emission_energy_multiplier = 0.20
-
-	for r in range(CHIP_ROW_X.size()):
-		var row_x: float = CHIP_ROW_X[r]
-		var offsets: Array = CHIP_ROW_OFFSETS[r]
-		for c in range(offsets.size()):
-			var z: float = float(offsets[c])
-			var pos := _on_felt(row_x, z, CHIP_HEIGHT * 0.5)
-			var stack := StaticBody3D.new()
-			stack.name = "Chip_%d_%d" % [r, c]
-			stack.physics_material_override = _wood_mat
-			stack.transform = Transform3D(_tilt_basis, pos)
-			add_child(stack)
-
-			var coll := CollisionShape3D.new()
-			var shape := CylinderShape3D.new()
-			shape.radius = CHIP_RADIUS
-			shape.height = CHIP_HEIGHT
-			coll.shape = shape
-			stack.add_child(coll)
-
-			var mesh := MeshInstance3D.new()
-			var cyl := CylinderMesh.new()
-			cyl.top_radius = CHIP_RADIUS
-			cyl.bottom_radius = CHIP_RADIUS
-			cyl.height = CHIP_HEIGHT
-			mesh.mesh = cyl
-			mesh.material_override = chip_mat
-			stack.add_child(mesh)
-
-# ─── Pyramid wall ────────────────────────────────────────────────────────
-
-func _build_pyramid_wall() -> void:
-	var rubber_mat := StandardMaterial3D.new()
-	rubber_mat.albedo_color = COLOR_RUBBER
-	rubber_mat.roughness = 0.9
-
-	var wall := StaticBody3D.new()
-	wall.name = "PyramidWall"
-	wall.physics_material_override = _rubber_mat
-	wall.transform = Transform3D(_tilt_basis, Vector3.ZERO)
-	add_child(wall)
-
-	var step := TABLE_WIDTH / float(PYRAMID_TOOTH_COUNT)
-	for i in range(PYRAMID_TOOTH_COUNT):
-		var z: float = -TABLE_WIDTH * 0.5 + step * (float(i) + 0.5)
-		# Each tooth is a triangular prism approximated as a rotated thin box,
-		# pointing back upstream (toward -X).
-		var basis := Basis(Vector3.UP, deg_to_rad(45.0))
-		var tooth_pos := Vector3(PYRAMID_X, PYRAMID_TOOTH_HEIGHT * 0.5, z)
-		_add_box(wall, "Tooth_%02d" % i,
-			Transform3D(basis, tooth_pos),
-			Vector3(PYRAMID_TOOTH_HALF_WIDTH * 2.0, PYRAMID_TOOTH_HEIGHT, PYRAMID_TOOTH_HALF_WIDTH * 2.0),
-			rubber_mat)
-
-# ─── Dice (kinematic) ────────────────────────────────────────────────────
-
-func _init_dice_params() -> void:
-	# Pull deterministic-but-varying parameters from server_seed for each die.
-	# All values are chosen to keep dice on the visible playfield.
-	for i in range(DICE_COUNT):
-		var raw := _hash_with_tag("dice_%d" % i)
-		# Use bytes 0–7 for spatial offsets, 8–15 for frequencies, 16–23 for
-		# phases, 24–29 for rotation rates. All values normalised to a
-		# friendly range.
-		# v2-split: dice are constrained to the pre-split zone only
-		# (x = -34 .. -16, z = ±3). Mid-table is the split corridor (median
-		# wall + pins) — letting dice wander into it would jam them against
-		# the static median wall. Post-funnel is chip-stack territory.
-		var x0: float = -25.0 + (float(raw[0]) / 255.0 - 0.5) * 16.0   # x in ~[-33, -17]
-		var z0: float = (float(raw[1]) / 255.0 - 0.5) * 6.0           # ±3 m
-		var ax: float = DICE_PATH_X_AMP * (0.6 + float(raw[2]) / 511.0)
-		var az: float = DICE_PATH_HALF_WIDTH * (0.6 + float(raw[3]) / 511.0)
-		var wx: float = DICE_W_BASE * (0.7 + float(raw[8]) / 255.0)
-		var wz: float = DICE_W_BASE * (0.9 + float(raw[9]) / 255.0)
-		var px: float = float(raw[16]) / 255.0 * TAU
-		var pz: float = float(raw[17]) / 255.0 * TAU
-		var rx: float = (float(raw[24]) / 255.0 - 0.5) * 0.3   # rad/tick — slow tumble
-		var ry: float = (float(raw[25]) / 255.0 - 0.5) * 0.3
-		var rz: float = (float(raw[26]) / 255.0 - 0.5) * 0.3
-		_dice_params.append({
-			"x0": x0, "z0": z0,
-			"ax": ax, "az": az,
-			"wx": wx, "wz": wz,
-			"px": px, "pz": pz,
-			"rx": rx, "ry": ry, "rz": rz,
-		})
-
-func _build_dice() -> void:
-	var dice_mat := StandardMaterial3D.new()
-	dice_mat.albedo_color = COLOR_DICE
-	dice_mat.metallic = 0.10
-	dice_mat.roughness = 0.35
-
-	for i in range(DICE_COUNT):
-		var body := AnimatableBody3D.new()
-		body.name = "Die_%d" % i
-		body.physics_material_override = _dice_mat
-		# sync_to_physics=true lets Jolt infer velocity from the transform
-		# delta we set each tick and transfer it to colliding marbles, so a
-		# moving die actually pushes marbles instead of just blocking them.
-		body.sync_to_physics = true
-		add_child(body)
-
-		var coll := CollisionShape3D.new()
-		var shape := BoxShape3D.new()
-		shape.size = Vector3.ONE * (DICE_HALF_EXTENT * 2.0)
-		coll.shape = shape
-		body.add_child(coll)
-
-		var mesh := MeshInstance3D.new()
-		var box := BoxMesh.new()
-		box.size = Vector3.ONE * (DICE_HALF_EXTENT * 2.0)
-		mesh.mesh = box
-		mesh.material_override = dice_mat
-		body.add_child(mesh)
-
-		_dice_bodies.append(body)
-		# Snap to tick-0 pose so the first frame doesn't show dice at the origin.
-		_apply_dice_pose(i, 0.0)
-
-# ─── Split corridor (median wall) ────────────────────────────────────────
-
-func _build_split_corridor() -> void:
-	var wood_mat := StandardMaterial3D.new()
-	wood_mat.albedo_color = COLOR_WOOD
-	wood_mat.roughness = 0.7
-
-	var brass_accent := StandardMaterial3D.new()
-	brass_accent.albedo_color = Color(0.85, 0.72, 0.25)
-	brass_accent.metallic = 0.85
-	brass_accent.metallic_specular = 0.85
-	brass_accent.roughness = 0.30
-	brass_accent.emission_enabled = true
-	brass_accent.emission = Color(0.85, 0.72, 0.25)
-	brass_accent.emission_energy_multiplier = 0.30
-
-	var split := StaticBody3D.new()
-	split.name = "SplitCorridor"
-	split.physics_material_override = _wood_mat
-	split.transform = Transform3D(_tilt_basis, Vector3.ZERO)
-	add_child(split)
-
-	# Median wall along z=0 — divides the mid-table into +Z (chips) and
-	# -Z (pins) channels. Endpoints are SPLIT_ENTRY_X (uphill) and
-	# FUNNEL_START_X (where the channels merge again).
-	var median_len: float = FUNNEL_START_X - SPLIT_ENTRY_X
-	var median_centre_x: float = (SPLIT_ENTRY_X + FUNNEL_START_X) * 0.5
-	_add_box(split, "Median",
-		Transform3D(Basis.IDENTITY, Vector3(median_centre_x, MEDIAN_WALL_HEIGHT * 0.5, 0)),
-		Vector3(median_len, MEDIAN_WALL_HEIGHT, MEDIAN_WALL_THICKNESS),
-		wood_mat)
-
-	# Brass cap-strip on the median wall's leading edge — visual marker
-	# of the split entry, looks like a "diverter post" at the fork.
-	_add_box(split, "MedianLeadingEdge",
-		Transform3D(Basis.IDENTITY, Vector3(SPLIT_ENTRY_X, MEDIAN_WALL_HEIGHT * 0.5 + 0.2, 0)),
-		Vector3(0.6, 0.4, MEDIAN_WALL_THICKNESS + 0.2),
-		brass_accent)
-	_add_box(split, "MedianTrailingEdge",
-		Transform3D(Basis.IDENTITY, Vector3(FUNNEL_START_X, MEDIAN_WALL_HEIGHT * 0.5 + 0.2, 0)),
-		Vector3(0.6, 0.4, MEDIAN_WALL_THICKNESS + 0.2),
-		brass_accent)
-
-# ─── Pin obstacles (kinematic pistons in -Z channel) ─────────────────────
-
-func _init_pin_phases() -> void:
-	# Per-pin phase derived from server_seed so each round has a different
-	# "blocker timing" pattern — same input → same pattern, but bytes
-	# vary across rounds to keep the race interesting. Replay-stable.
-	for i in range(PIN_COUNT):
-		var raw := _hash_with_tag("pin_%d" % i)
-		_pin_phases.append(float(raw[0]) / 255.0 * TAU)
-
-func _build_pins() -> void:
-	var rubber_mat := StandardMaterial3D.new()
-	rubber_mat.albedo_color = COLOR_RUBBER
-	rubber_mat.roughness = 0.85
-	rubber_mat.emission_enabled = true
-	rubber_mat.emission = Color(0.85, 0.20, 0.20)
-	rubber_mat.emission_energy_multiplier = 0.25
-
-	for i in range(PIN_COUNT):
-		var pin := AnimatableBody3D.new()
-		pin.name = "Pin_%d" % i
-		pin.physics_material_override = _pin_mat
-		pin.sync_to_physics = true
-		add_child(pin)
-
-		var coll := CollisionShape3D.new()
-		var box := BoxShape3D.new()
-		box.size = PIN_SIZE
-		coll.shape = box
-		pin.add_child(coll)
-
-		var mesh := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		bm.size = PIN_SIZE
-		mesh.mesh = bm
-		mesh.material_override = rubber_mat
-		pin.add_child(mesh)
-
-		_pins.append(pin)
-		_apply_pin_pose(i, 0.0)
-
-func _apply_pin_pose(i: int, t: float) -> void:
-	var pin: AnimatableBody3D = _pins[i]
-	var x: float = float(PIN_X_POSITIONS[i])
-	var phase: float = float(_pin_phases[i])
-	var w: float = TAU / float(PIN_PERIOD_TICKS)
-	var y: float = PIN_BASE_Y + PIN_AMPLITUDE * 0.5 * (1.0 + sin(w * t + phase))
-	var local_pos := Vector3(x, y, PIN_Z)
-	# Local transform so root rotation propagates via parent.
-	pin.transform = Transform3D(_tilt_basis, _tilt_basis * local_pos)
-
-# ─── Chip wheels (kinematic spinning discs with peg-chips on the rim) ────
-
-func _init_chip_wheel_phases() -> void:
-	# Per-wheel phase from server_seed so each round opens with a different
-	# wheel orientation. Replay-stable.
-	for i in range(CHIP_WHEEL_COUNT):
-		var raw := _hash_with_tag("wheel_%d" % i)
-		_chip_wheel_phases.append(float(raw[0]) / 255.0 * TAU)
-
-func _build_chip_wheels() -> void:
-	var disc_mat := StandardMaterial3D.new()
-	disc_mat.albedo_color = Color(0.80, 0.45, 0.15)   # deep brass-orange, neon-lit
-	disc_mat.metallic = 0.90
-	disc_mat.metallic_specular = 0.90
-	disc_mat.roughness = 0.18
-	disc_mat.emission_enabled = true
-	disc_mat.emission = Color(0.80, 0.45, 0.15)
-	disc_mat.emission_energy_multiplier = 0.45
-
-	var peg_mat := StandardMaterial3D.new()
-	peg_mat.albedo_color = Color(0.98, 0.15, 0.30)    # vivid neon-red peg
-	peg_mat.metallic = 0.50
-	peg_mat.roughness = 0.30
-	peg_mat.emission_enabled = true
-	peg_mat.emission = Color(0.98, 0.15, 0.30)
-	peg_mat.emission_energy_multiplier = 0.50
-
-	for i in range(CHIP_WHEEL_COUNT):
-		var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
-		var wheel := AnimatableBody3D.new()
-		wheel.name = "ChipWheel_%d" % i
-		wheel.physics_material_override = _chip_wheel_mat
-		wheel.sync_to_physics = true
-		wheel.transform = Transform3D(Basis.IDENTITY, pos)
-		add_child(wheel)
-
-		# Disc body (centred on wheel origin, axis along local +Y)
-		var disc_coll := CollisionShape3D.new()
-		disc_coll.name = "Disc_%d_shape" % i
-		var disc_shape := CylinderShape3D.new()
-		disc_shape.radius = CHIP_WHEEL_RADIUS
-		disc_shape.height = CHIP_WHEEL_THICKNESS
-		disc_coll.shape = disc_shape
-		wheel.add_child(disc_coll)
-
-		var disc_mesh := MeshInstance3D.new()
-		disc_mesh.name = "Disc_%d_mesh" % i
-		var disc_cyl := CylinderMesh.new()
-		disc_cyl.top_radius = CHIP_WHEEL_RADIUS
-		disc_cyl.bottom_radius = CHIP_WHEEL_RADIUS
-		disc_cyl.height = CHIP_WHEEL_THICKNESS
-		disc_mesh.mesh = disc_cyl
-		disc_mesh.material_override = disc_mat
-		wheel.add_child(disc_mesh)
-
-		# Pegs around the rim — each is a small cylinder sticking out of
-		# the front face (local +Y) at angular position theta.
-		var peg_y_centre: float = CHIP_WHEEL_THICKNESS * 0.5 + CHIP_WHEEL_PEG_LENGTH * 0.5
-		for k in range(CHIP_WHEEL_PEG_COUNT):
-			var theta: float = TAU * float(k) / float(CHIP_WHEEL_PEG_COUNT)
-			var peg_pos := Vector3(
-				cos(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
-				peg_y_centre,
-				sin(theta) * CHIP_WHEEL_PEG_RIM_OFFSET,
-			)
-
-			var peg_coll := CollisionShape3D.new()
-			peg_coll.name = "Peg_%d_%d_shape" % [i, k]
-			var peg_shape := CylinderShape3D.new()
-			peg_shape.radius = CHIP_WHEEL_PEG_RADIUS
-			peg_shape.height = CHIP_WHEEL_PEG_LENGTH
-			peg_coll.shape = peg_shape
-			peg_coll.transform = Transform3D(Basis.IDENTITY, peg_pos)
-			wheel.add_child(peg_coll)
-
-			var peg_mesh := MeshInstance3D.new()
-			peg_mesh.name = "Peg_%d_%d_mesh" % [i, k]
-			var peg_cyl := CylinderMesh.new()
-			peg_cyl.top_radius = CHIP_WHEEL_PEG_RADIUS
-			peg_cyl.bottom_radius = CHIP_WHEEL_PEG_RADIUS
-			peg_cyl.height = CHIP_WHEEL_PEG_LENGTH
-			peg_mesh.mesh = peg_cyl
-			peg_mesh.material_override = peg_mat
-			peg_mesh.transform = Transform3D(Basis.IDENTITY, peg_pos)
-			wheel.add_child(peg_mesh)
-
-		_chip_wheels.append(wheel)
-		_apply_chip_wheel_pose(i, 0.0)
-
-func _apply_chip_wheel_pose(i: int, t: float) -> void:
-	var wheel: AnimatableBody3D = _chip_wheels[i]
-	var w: float = float(CHIP_WHEEL_W[i])
-	var phase: float = float(_chip_wheel_phases[i])
-	var angle: float = phase + w * t
-	var pos: Vector3 = CHIP_WHEEL_POSITIONS[i]
-	# Local transform so root rotation propagates via parent.
-	wheel.transform = Transform3D(Basis(Vector3.UP, angle), pos)
-
-# ─── Slow-motion gravity zone ────────────────────────────────────────────
-
-func _build_slow_gravity_zone() -> void:
-	var zone := Area3D.new()
-	zone.name = "SlowGravityZone"
-	zone.gravity_space_override = Area3D.SPACE_OVERRIDE_REPLACE
-	zone.gravity_direction = Vector3(0, -1, 0)   # always world-down regardless of zone rotation
-	zone.gravity = SLOW_GRAVITY_ACCEL
-	add_child(zone)
-
-	var coll := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(TABLE_LEN + 12, 6, TABLE_WIDTH + 6)
-	coll.shape = box
-	coll.transform = Transform3D(Basis.IDENTITY, Vector3(0, 1.5, 0))
-	zone.add_child(coll)
-
-# ─── Helpers ─────────────────────────────────────────────────────────────
-
-# Convert a (x, z) point on the felt into the local table-frame world position
-# with the right Y above the felt for the given vertical offset above the
-# tilted surface. (Local Y axis is the table's "up" — the world up only after
-# applying _tilt_basis at the body level.)
-func _on_felt(x: float, z: float, y_above: float) -> Vector3:
-	return Vector3(x, y_above, z)
-
-func _add_box(parent: Node, node_name: String, tx: Transform3D, size: Vector3, mat: StandardMaterial3D) -> void:
-	var coll := CollisionShape3D.new()
-	coll.name = node_name + "_shape"
-	coll.transform = tx
-	var shape := BoxShape3D.new()
-	shape.size = size
-	coll.shape = shape
-	parent.add_child(coll)
-
-	var mesh := MeshInstance3D.new()
-	mesh.name = node_name + "_mesh"
-	mesh.transform = tx
-	var box := BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
-	mesh.material_override = mat
-	parent.add_child(mesh)
-
-# ─── Track API overrides ─────────────────────────────────────────────────
+	_theme = TrackPalette.theme_for(TrackRegistry.CRAPS)
+	_init_physics_materials()
+	_build_outer_frame()
+	_build_floor1()
+	_build_directed_floor("F2", F2_Y, +1, _theme["floor_b"])
+	_build_directed_floor("F3", F3_Y, -1, _theme["floor_c"])
+	_build_directed_floor("F4", F4_Y, +1, _theme["floor_d"])
+	_build_peg_field()
+	_build_gate()
+	_build_catchment()
+	_build_mood_lights()
+
+func _init_physics_materials() -> void:
+	# Stadium-aligned physics for reliable finish.
+	_mat_floor = PhysicsMaterial.new()
+	_mat_floor.friction = 0.40
+	_mat_floor.bounce   = 0.25
+	_mat_peg = PhysicsMaterial.new()
+	_mat_peg.friction = 0.25
+	_mat_peg.bounce   = 0.55
+	_mat_wall = PhysicsMaterial.new()
+	_mat_wall.friction = 0.25
+	_mat_wall.bounce   = 0.30
+	_mat_gate = PhysicsMaterial.new()
+	_mat_gate.friction = 0.55
+	_mat_gate.bounce   = 0.10
+
+func _build_outer_frame() -> void:
+	var wall_mat := TrackBlocks.std_mat(_theme["wall"], 0.20, 0.80)
+	var frame := StaticBody3D.new()
+	frame.name = "OuterFrame"
+	frame.physics_material_override = _mat_wall
+	add_child(frame)
+	TrackBlocks.build_outer_frame(frame, "Frame",
+		SPAWN_Y + 3.0, FLOOR_BASE_Y - 1.0,
+		FIELD_W, FIELD_DEPTH, WALL_THICK, wall_mat)
+
+func _build_floor1() -> void:
+	# Lava floor: emit so it glows.
+	var floor_mat := TrackBlocks.std_mat_emit(_theme["floor_a"], 0.10, 0.40, 0.55)
+	var body := StaticBody3D.new()
+	body.name = "F1_LavaFunnel"
+	body.physics_material_override = _mat_floor
+	add_child(body)
+	TrackBlocks.build_v_funnel(body, "F1",
+		F1_Y, FIELD_W, F1_GAP_W, FIELD_DEPTH, FLOOR_THICK,
+		F1_TILT_DEG, floor_mat)
+
+func _build_directed_floor(prefix: String, y_pos: float, gap_dir: int,
+		col: Color) -> void:
+	var floor_mat := TrackBlocks.std_mat_emit(col, 0.20, 0.50, 0.30)
+	var curb_mat  := TrackBlocks.std_mat(_theme["wall"], 0.15, 0.80)
+	var body := StaticBody3D.new()
+	body.name = "%s_Ramp" % prefix
+	body.physics_material_override = _mat_floor
+	add_child(body)
+	TrackBlocks.build_directed_ramp(body, prefix,
+		y_pos, FIELD_W, RAMP_GAP_W, FIELD_DEPTH, FLOOR_THICK,
+		RAMP_TILT_DEG, gap_dir, floor_mat, curb_mat)
+
+func _build_peg_field() -> void:
+	# Obsidian pillars: dark, faintly emissive (heat residue).
+	var peg_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.40, 0.30, 0.20)
+	var pegs := StaticBody3D.new()
+	pegs.name = "F5_Obsidian"
+	pegs.physics_material_override = _mat_peg
+	add_child(pegs)
+	TrackBlocks.build_peg_forest(pegs, "F5",
+		F5_TOP_Y, F5_BOT_Y, FIELD_W, FIELD_DEPTH,
+		F5_ROWS, F5_COLS, F5_PEG_RADIUS, F5_COL_SPACING, peg_mat)
+
+func _build_gate() -> void:
+	var floor_mat := TrackBlocks.std_mat_emit(_theme["gate"], 0.30, 0.40, 0.70)
+	var div_mat   := TrackBlocks.std_mat_emit(_theme["accent"], 0.30, 0.40, 0.85)
+	var body := StaticBody3D.new()
+	body.name = "F6_LavaGate"
+	body.physics_material_override = _mat_gate
+	add_child(body)
+	TrackBlocks.build_lane_gate(body, "Gate",
+		F6_Y, FIELD_W, FIELD_DEPTH, F6_LANES,
+		1.5, 0.15, FLOOR_THICK, floor_mat, div_mat)
+
+func _build_catchment() -> void:
+	var mat := TrackBlocks.std_mat(Color(0.04, 0.02, 0.02), 0.10, 0.85)
+	var body := StaticBody3D.new()
+	body.name = "Catchment"
+	body.physics_material_override = _mat_gate
+	add_child(body)
+	TrackBlocks.build_catchment(body, "Catch",
+		FLOOR_BASE_Y, FIELD_W, FIELD_DEPTH, FLOOR_THICK, mat)
+
+func _build_mood_lights() -> void:
+	# Dramatic volcano lighting: dim warm key + bright bottom-up red glow.
+	var key := DirectionalLight3D.new()
+	key.name = "VolcanoKey"
+	key.light_color    = Color(1.0, 0.55, 0.30)
+	key.light_energy   = 1.0
+	key.rotation_degrees = Vector3(-50.0, -30.0, 0.0)
+	key.shadow_enabled = true
+	add_child(key)
+	var lava_glow := OmniLight3D.new()
+	lava_glow.name = "LavaGlow"
+	lava_glow.light_color  = Color(1.0, 0.40, 0.05)
+	lava_glow.light_energy = 2.5
+	lava_glow.omni_range   = 30.0
+	lava_glow.position     = Vector3(0.0, F6_Y + 1.0, 0.0)
+	add_child(lava_glow)
+	var top_ember := OmniLight3D.new()
+	top_ember.name = "TopEmber"
+	top_ember.light_color  = Color(1.0, 0.65, 0.20)
+	top_ember.light_energy = 1.6
+	top_ember.omni_range   = 20.0
+	top_ember.position     = Vector3(0.0, F1_Y + 1.0, 5.0)
+	add_child(top_ember)
+
+# ─── Track API overrides ────────────────────────────────────────────────────
 
 func spawn_points() -> Array:
-	# 24 points (6×4 grid) above the uphill end of the table in LOCAL coords;
-	# we apply _root_transform to convert to world so they match where the
-	# rotated geometry actually sits. SpawnRail then adds a world-Y stagger
-	# so marbles drop in sequence under gravity (which now aligns with the
-	# track's race direction post-rotation).
-	_ensure_root_transform()
-	var points: Array = []
-	for r in range(SPAWN_GRID_ROWS):
-		for c in range(SPAWN_GRID_COLS):
-			var fx: float = float(c) / float(SPAWN_GRID_COLS - 1) - 0.5
-			var fz: float = float(r) / float(SPAWN_GRID_ROWS - 1) - 0.5
-			var local := Vector3(SPAWN_X + fx * SPAWN_SPREAD_X, SPAWN_Y, fz * SPAWN_SPREAD_Z)
-			points.append(_root_transform * local)
-	return points
+	var pts: Array = []
+	for r in range(SPAWN_ROWS):
+		for c in range(SPAWN_COLS):
+			var fx := (float(c) - float(SPAWN_COLS - 1) * 0.5) * SPAWN_DX
+			var fz := (float(r) - float(SPAWN_ROWS - 1) * 0.5) * SPAWN_DZ
+			pts.append(Vector3(fx, SPAWN_Y, fz))
+	return pts
 
 func finish_area_transform() -> Transform3D:
-	# Local transform → world via _root_transform so the FinishLine Area3D
-	# aligns with the rotated finish slab.
-	_ensure_root_transform()
-	var local := Vector3(FINISH_X, FINISH_BOX_SIZE.y * 0.5, 0)
-	var local_tx := Transform3D(_tilt_basis, _tilt_basis * local)
-	return _root_transform * local_tx
+	return Transform3D(Basis.IDENTITY, Vector3(0.0, F6_Y + FINISH_Y_OFF, 0.0))
 
 func finish_area_size() -> Vector3:
-	return FINISH_BOX_SIZE
+	return FINISH_BOX
 
 func camera_bounds() -> AABB:
-	# Vertical play volume after the root rotation: width ~16 m along world X,
-	# height ~90 m along world Y centred at ROOT_OFFSET_Y, depth ~3 m along
-	# world Z.
-	var half_h: float = TABLE_LEN * 0.5 + 5.0
-	var min_v := Vector3(-TABLE_WIDTH * 0.5 - 2.0, ROOT_OFFSET_Y - half_h, -3.0)
-	var max_v := Vector3(TABLE_WIDTH * 0.5 + 2.0, ROOT_OFFSET_Y + half_h, 4.0)
+	var min_v := Vector3(-FIELD_W * 0.5 - 1.0, FLOOR_BASE_Y - 2.0, -FIELD_DEPTH * 0.5 - 1.0)
+	var max_v := Vector3( FIELD_W * 0.5 + 1.0, SPAWN_Y + 4.0,        FIELD_DEPTH * 0.5 + 1.0)
 	return AABB(min_v, max_v - min_v)
 
 func camera_pose() -> Dictionary:
-	# Frontal vertical view: camera in front of the back wall (+Z), centred
-	# horizontally and at the vertical midpoint of the play volume. Wide
-	# enough FOV that the full 90 m drop fits in frame at this distance.
+	var mid_y: float = (SPAWN_Y + FLOOR_BASE_Y) * 0.5
 	return {
-		"position": Vector3(0, ROOT_OFFSET_Y, 70),
-		"target": Vector3(0, ROOT_OFFSET_Y, 0),
-		"fov": 70.0,
+		"position": Vector3(8.0, mid_y + 6.0, 55.0),
+		"target":   Vector3(0.0, mid_y - 4.0, 0.0),
+		"fov":      65.0,
 	}
 
 func environment_overrides() -> Dictionary:
-	# Vegas-strip night: saturated magenta-red fog, hot sun, dark sky.
-	# The dark zenith + vivid fog push instant recognition vs Poker's
-	# daytime green. ambient_energy is low so the emission bloom on the
-	# chip wheels and brass rails pops against the shadow.
-	return {
-		"ambient_energy": 0.55,
-		"fog_color": Color(0.95, 0.28, 0.42),
-		"fog_density": 0.002,
-		"fog_energy": 1.2,
-		"sun_color": Color(1.0, 0.78, 0.58),
-		"sun_energy": 1.6,
-		"sky_top": Color(0.05, 0.03, 0.10),
-		"sky_horizon": Color(0.30, 0.08, 0.18),
-	}
+	return _theme["env"]

@@ -18,11 +18,12 @@ const CRAPS := 2
 const POKER := 3
 const SLOTS := 4
 const PLINKO := 5
+const STADIUM := 6
 
 # Track IDs currently available for selection by roundd. Grows as casino
 # tracks ship. The live/playback paths accept any registered ID — this is
 # just the "rotation pool" the server picks from.
-const SELECTABLE := [RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO]
+const SELECTABLE := [RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM]
 
 static func count() -> int:
 	return SELECTABLE.size()
@@ -31,7 +32,7 @@ static func is_valid_id(id: int) -> bool:
 	# Any ID ever shipped is valid for decode. Only SELECTABLE are picked
 	# by the server for new rounds.
 	match id:
-		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO:
+		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM:
 			return true
 		_:
 			return false
@@ -50,6 +51,8 @@ static func instance(id: int) -> Track:
 			return SlotsTrack.new()
 		PLINKO:
 			return PlinkoTrack.new()
+		STADIUM:
+			return StadiumTrack.new()
 		_:
 			push_error("TrackRegistry: unknown track_id=%d — falling back to RampTrack" % id)
 			return RampTrack.new()
@@ -68,5 +71,7 @@ static func name_of(id: int) -> String:
 			return "SlotsTrack"
 		PLINKO:
 			return "PlinkoTrack"
+		STADIUM:
+			return "StadiumTrack"
 		_:
 			return "unknown(%d)" % id

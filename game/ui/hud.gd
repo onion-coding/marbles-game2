@@ -538,7 +538,8 @@ func _build_bet_panel() -> Control:
 	vb.add_child(sel_label)
 
 	_marble_selector = OptionButton.new()
-	_marble_selector.placeholder_text = "— pick a marble —"
+	# No placeholder_text on OptionButton (that's a LineEdit property).
+	# Dropdown renders empty until populated by setup() with marble entries.
 	_marble_selector.item_selected.connect(_on_marble_selected)
 	vb.add_child(_marble_selector)
 

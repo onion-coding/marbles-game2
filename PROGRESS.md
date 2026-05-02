@@ -4,6 +4,8 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
+**M11 done (2026-05-02)** — Track design philosophy reset. All six tracks rebuilt as drop-cascade courses with real 9.8 m/s² gravity (no SLOW_GRAVITY hack), themed palettes (Stadium / Forest / Volcano / Ice / Cavern / Sky), shared TrackBlocks geometry library, centralised TrackPalette colour/sky themes, and a real glass marble shader. Race times 27–33s consistent across all tracks; fairness verifier + vectors 4/4 pass.
+
 **M9 done (2026-04-29)** — RGS betting end-to-end (client `--rgs=<url>` → bet window → settlement overlay) + HUD interactive mode (clickable standings, zoom 0.05–1000m, marble lookup keys, bet placement panel, countdown timers, balance refresh).
 
 Prior completed: **M6** (casino-game track library, slow-motion gravity, free-cam), **M7** (visual polish), **M8** (RTP/fairness tooling), **M10** (production scaffolding).
@@ -19,6 +21,57 @@ Next natural moves (not started): real-wallet client to replace `MockWallet`, di
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
 ## Done
+
+### M11 — Track design reset + visual identity (2026-05-02)
+Driven by user feedback "le mappe sono brutte, poca dinamica, palline non hanno dinamicità, tutto da restauro, non assomiglia a Marble on Stream". The five M6 casino tracks compensated for poor design with SLOW_GRAVITY zones (0.21–5.0 m/s²); marbles felt floaty rather than dynamic. M11 rebuilds all six tracks under a single design philosophy: real gravity, vertical drop-cascade with directed gaps, themed palettes, shared geometry library.
+
+**New design pattern (drop-cascade):**
+1. F1 — V-funnel (two slabs converging to a centred 4 m gap)
+2. F2 — directed ramp (gap on +X end)
+3. F3 — directed ramp (gap on -X end)
+4. F4 — directed ramp (gap on +X end)
+5. F5 — peg forest (hex grid spanning full field width)
+6. F6 — 20-lane finish gate spanning full field width
+
+Real gravity (9.8 m/s²) throughout. No SLOW_GRAVITY zone in any track. Race times ranged 27.3 s (Cavern) to 32.6 s (Ice) on smoke; varianza naturale dipende dalle bounce nei pegs.
+
+**Library-driven implementation:**
+- [game/tracks/track_blocks.gd](game/tracks/track_blocks.gd) — reusable geometry primitives (`add_box`, `add_cylinder`, `std_mat`, `build_v_funnel`, `build_directed_ramp`, `build_peg_forest`, `build_lane_gate`, `build_outer_frame`, `build_catchment`).
+- [game/tracks/track_palette.gd](game/tracks/track_palette.gd) — six theme dictionaries (floor / peg / gate / wall / accent colours + environment overrides) keyed by track_id.
+- [game/visuals/marble_glass.gdshader](game/visuals/marble_glass.gdshader) — Voronoi-noise internal swirl + fresnel rim + emission halo. Replaces the StandardMaterial3D plastic look used in M7.
+
+**Six themed tracks (class names + track_id stable, content rebuilt):**
+
+| track_id | class           | theme        | finish_time (smoke) |
+| -------- | --------------- | ------------ | ------------------- |
+| 1        | RouletteTrack   | Forest Run   | 32.0 s              |
+| 2        | CrapsTrack      | Volcano Run  | 31.1 s              |
+| 3        | PokerTrack      | Ice Run      | 32.6 s              |
+| 4        | SlotsTrack      | Cavern Run   | 27.3 s              |
+| 5        | PlinkoTrack     | Sky Run      | 31.6 s              |
+| 6        | StadiumTrack    | Stadium Run  | 31.1 s              |
+
+Class names retained so existing replays with track_id 1-5 still decode through `TrackRegistry.instance(id)`. The casino-game obstacles (roulette wheel, dice, flipping cards, slot reels, plinko hopper) are removed; theme variation lives in palette + lighting now, not in unique geometry.
+
+**Fairness chain unchanged:**
+- Verifier passes on Plinko/Sky replay (`commit OK`, `slots OK`, `colors OK`, `positions OK`).
+- `test_vectors_main` regression: 4/4 pass (zero-seed, empty client_seeds, forced-collision, realistic 20-marble).
+- Replay format v3 unchanged; track_id stays in header.
+
+**Headless smoke tooling fix:**
+- [game/main.gd](game/main.gd) auto-quit 3 s after race finish when `DisplayServer.get_name() == "headless"` so batch smoke scripts don't have to rely on `--quit-after` frame counts (frames, not seconds — `--quit-after 50000` is 833 s, not 50).
+- [game/ui/hud.gd](game/ui/hud.gd) `_marble_selector.placeholder_text` removed — `OptionButton` has no such property in Godot 4.6.2 (it's a `LineEdit` thing); the line silently broke headless interactive mode for any track until this fix.
+
+**What's still pending (next milestones):**
+- HUD redesign broadcast-style (ESPN-style scoreboard, race timer, animated standings, sport bet panel) — the HUD is still the M9 layout.
+- Per-track environment refinement (visual-polish-artist pass on environment_builder.gd for tighter HDR / bloom / SSAO defaults).
+- Decoration props procedurali (tribune, cartelloni, particelle) — themed but currently empty stadium feel.
+- Broadcast cameras with auto-cuts.
+
+**Key files added/changed:**
+- new: `game/tracks/track_blocks.gd`, `game/tracks/track_palette.gd`, `game/visuals/marble_glass.gdshader`
+- rewritten: `game/tracks/stadium_track.gd`, `game/tracks/roulette_track.gd`, `game/tracks/craps_track.gd`, `game/tracks/poker_track.gd`, `game/tracks/slots_track.gd`, `game/tracks/plinko_track.gd`
+- updated: `game/sim/marble_spawner.gd` (ShaderMaterial via `make_glass_material`), `game/playback/playback_player.gd` (same), `game/main.gd` (auto-quit + STADIUM track wired), `game/ui/hud.gd` (placeholder_text fix), `game/tracks/track_registry.gd` (STADIUM = 6 added to SELECTABLE).
 
 ### M9 — RGS betting end-to-end (2026-04-29)
 Closes the MVP loop: client places bet on marble → 10s window → server runs physics → marble wins → settlement payout → balance credited. See [docs/rgs-integration.md §Public HTTP API](docs/rgs-integration.md#public-http-api) for the endpoint contract.

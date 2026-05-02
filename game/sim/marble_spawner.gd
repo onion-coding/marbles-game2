@@ -31,19 +31,13 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 	var sphere := SphereMesh.new()
 	sphere.radius = RADIUS
 	sphere.height = RADIUS * 2.0
+	# Slightly higher subdivision so the fresnel rim and swirl pattern read
+	# cleanly at marble-close camera. Default (32×16) is fine but a bump up
+	# costs nothing here because a round only spawns 20 of these.
+	sphere.radial_segments = 48
+	sphere.rings = 24
 	mesh_inst.mesh = sphere
-	# PBR-tuned marble: slight metallic + low roughness for a glass-bead shine,
-	# plus a low-energy emission of the marble's color so bloom turns each
-	# marble into a faintly-glowing orb that reads from a distance.
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.metallic = 0.30
-	mat.metallic_specular = 0.6
-	mat.roughness = 0.18
-	mat.emission_enabled = true
-	mat.emission = color
-	mat.emission_energy_multiplier = 0.45
-	mesh_inst.material_override = mat
+	mesh_inst.material_override = make_glass_material(color, drop_order)
 	marble.add_child(mesh_inst)
 
 	var shape := CollisionShape3D.new()
@@ -57,6 +51,34 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 	marble.add_to_group("marbles")
 	attach_trail(marble, color)
 	return marble
+
+# Public helper: build the per-marble glass material. Tries to load the
+# marble_glass.gdshader; if that fails (asset missing in a stripped build)
+# we fall back to a tuned StandardMaterial3D so the marble is still visible
+# and bloomable. PlaybackPlayer uses this same helper so sim and playback
+# render with identical-looking marbles.
+static func make_glass_material(color: Color, swirl_seed: int) -> Material:
+	var shader: Shader = load("res://visuals/marble_glass.gdshader") as Shader
+	if shader == null:
+		# Fallback: the old StandardMaterial3D path. Kept so a missing shader
+		# never breaks the spawn — the marble just looks plastic instead of
+		# glassy.
+		var fallback := StandardMaterial3D.new()
+		fallback.albedo_color = color
+		fallback.metallic = 0.30
+		fallback.roughness = 0.18
+		fallback.emission_enabled = true
+		fallback.emission = color
+		fallback.emission_energy_multiplier = 0.45
+		return fallback
+
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.set_shader_parameter("marble_color", Vector4(color.r, color.g, color.b, color.a))
+	# Map swirl_seed (drop_order 0-19, or arbitrary int) into [0,1] so each
+	# marble has a deterministic but distinct internal pattern.
+	mat.set_shader_parameter("swirl_seed", float(swirl_seed % 64) / 64.0)
+	return mat
 
 # Floating name label that always faces the camera. Kept public for
 # opt-in callers (e.g. a future "leader badge" that shows only above
