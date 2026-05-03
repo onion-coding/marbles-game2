@@ -27,11 +27,13 @@ import (
 )
 
 // selectableTrackIDs mirrors TrackRegistry.SELECTABLE in
-// game/tracks/track_registry.gd. Grows as casino tracks ship (M6.1+).
+// game/tracks/track_registry.gd. Six M11 themed tracks
+// (forest=1, volcano=2, ice=3, cavern=4, sky=5, stadium=6).
+// Legacy ramp (id=0) is excluded from rotation since M11.
 // Must stay in sync with the Godot side — a mismatched pool here would
 // either skip a track the client can render, or (worse) pick an ID the
 // client maps to its fallback (RampTrack) with the wrong physics.
-var selectableTrackIDs = []uint8{0, 1, 2, 3, 4, 5}
+var selectableTrackIDs = []uint8{1, 2, 3, 4, 5, 6}
 
 // selectTrack picks the next track_id using a deterministic hash of the
 // round_id, skipping the previous round's id to avoid back-to-back repeats.

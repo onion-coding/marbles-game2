@@ -103,7 +103,7 @@ func newTestManager(t *testing.T, winnerIndex int) (*Manager, *MockWallet, strin
 		BuyIn:      100,
 		RTPBps:     9500,
 		MaxMarbles: 20,
-		TrackPool:  []uint8{0, 1, 2, 3, 4, 5},
+		TrackPool:  []uint8{1, 2, 3, 4, 5, 6},
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)

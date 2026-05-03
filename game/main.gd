@@ -472,32 +472,47 @@ func _get_rgs_url() -> String:
 	return ""
 
 # Pick a track for interactive mode. Honors --track=<name> if present,
-# otherwise picks one of the 5 casino tracks at random.
+# otherwise picks one of the 6 themed tracks at random (ramp legacy excluded).
+#
+# Accepted names:
+#   forest / roulette  → ROULETTE  (id 1, M11 Forest theme)
+#   volcano / craps    → CRAPS     (id 2, M11 Volcano theme)
+#   ice / poker        → POKER     (id 3, M11 Ice theme)
+#   cavern / slots     → SLOTS     (id 4, M11 Cavern theme)
+#   sky / plinko       → PLINKO    (id 5, M11 Sky theme)
+#   stadium            → STADIUM   (id 6, M11 Stadium theme)
+#   ramp               → RAMP      (id 0, legacy — not in random pool)
+#
+# The "casino" technical aliases (roulette/craps/poker/slots/plinko) point to
+# the same map as the M11 theme they replaced — class names + track_ids stayed
+# stable across M11 so existing replays still decode through TrackRegistry.
 func _pick_interactive_track() -> int:
 	var args := OS.get_cmdline_user_args()
 	for a in args:
 		if a.begins_with("--track="):
 			var name := a.substr("--track=".length()).to_lower()
 			match name:
-				"ramp":     return TrackRegistry.RAMP
-				"roulette": return TrackRegistry.ROULETTE
-				"craps":    return TrackRegistry.CRAPS
-				"poker":    return TrackRegistry.POKER
-				"slots":    return TrackRegistry.SLOTS
-				"plinko":   return TrackRegistry.PLINKO
-				"stadium":  return TrackRegistry.STADIUM
+				"ramp":                         return TrackRegistry.RAMP
+				"forest", "roulette":           return TrackRegistry.ROULETTE
+				"volcano", "craps":             return TrackRegistry.CRAPS
+				"ice", "poker":                 return TrackRegistry.POKER
+				"cavern", "slots":              return TrackRegistry.SLOTS
+				"sky", "plinko":                return TrackRegistry.PLINKO
+				"stadium":                      return TrackRegistry.STADIUM
 				_:
-					push_warning("--track=%s not recognized; falling back to random casino track" % name)
+					push_warning("--track=%s not recognized; falling back to random themed track" % name)
 					break
-	var casino: Array = [
+	# Random pick — all 6 themed tracks; ramp legacy excluded.
+	var themed: Array = [
 		TrackRegistry.ROULETTE,
 		TrackRegistry.CRAPS,
 		TrackRegistry.POKER,
 		TrackRegistry.SLOTS,
 		TrackRegistry.PLINKO,
+		TrackRegistry.STADIUM,
 	]
 	randomize()
-	return int(casino[randi() % casino.size()])
+	return int(themed[randi() % themed.size()])
 
 func _load_spec_from_cli() -> Dictionary:
 	var args := OS.get_cmdline_user_args()

@@ -1,21 +1,33 @@
 class_name RouletteTrack
 extends Track
 
-# RouletteTrack — REBUILT as "Forest Run" (post-M6 visual overhaul).
+# RouletteTrack — REBUILT as "Forest Run" (M11 + Forest unique geometry).
 #
 # Class name kept as RouletteTrack so existing replays with track_id=1 still
-# decode through TrackRegistry. The old casino-roulette wheel obstacle is
-# gone; this is now a forest-themed drop-cascade course tuned for Marbles-
-# On-Stream readability.
+# decode through TrackRegistry. The casino-roulette wheel obstacle is gone;
+# this is now a forest-themed course with the M11 drop-cascade backbone PLUS
+# a distinguishing "log roll" mechanic — three rotating wooden logs spanning
+# the depth axis, one per F2/F3/F4 ramp, that deflect marbles passing under.
+#
+# This is the FIRST of the six tracks to receive a unique geometric mechanic
+# (post the M11 "all six tracks share the same skeleton" debt). The other
+# five (Volcano, Ice, Cavern, Sky, Stadium) still share the plain cascade
+# until they get their own distinguishing features.
 #
 # Drop-cascade design (real gravity, no slow-motion):
 #   y=42  spawn (24 slots, 8×3 grid)
 #   ─── F1: V-funnel (moss green) — gap centred at x=0
-#   ─── F2: directed ramp (wood brown) → gap on +X
-#   ─── F3: directed ramp (leaf green) → gap on -X
-#   ─── F4: directed ramp (warm wood) → gap on +X
+#   ─── F2: directed ramp (bark brown) + ROTATING LOG → gap on +X
+#   ─── F3: directed ramp (leaf green) + ROTATING LOG → gap on -X
+#   ─── F4: directed ramp (warm wood) + ROTATING LOG → gap on +X
 #   ─── F5: peg forest (tree-trunk pegs, hex grid 7×9)
 #   ─── F6: lane gate (warm gold, 20 lanes)
+#
+# Determinism: log angular velocity is derived from the round's server_seed
+# via _hash_with_tag("forest_log_<i>") so each round shows a different log
+# behaviour while staying replay-stable. Logs are AnimatableBody3D
+# (kinematic) — they impart momentum to colliding marbles correctly under
+# Jolt without feeding back into the physics state machine.
 #
 # Palette + sky from TrackPalette.theme_for(ROULETTE).
 # Geometry primitives from TrackBlocks.
@@ -60,11 +72,34 @@ const FINISH_BOX   := Vector3(FIELD_W + 2.0, 5.0, FIELD_DEPTH + 1.0)
 
 var _theme: Dictionary
 
+# ─── Rolling log obstacles (Forest unique mechanic) ─────────────────────────
+# Three horizontal cylinders spanning the depth axis (Z), one per F2/F3/F4
+# ramp. They sit ~1.5m above each ramp's centerline, spinning around their
+# own axis at angular velocities derived from the round's server_seed.
+const LOG_RADIUS    := 0.6
+const LOG_LENGTH    := 4.0           # along Z (FIELD_DEPTH = 5, leave margin)
+const LOG_OMEGA_MAX := 1.6           # rad/s magnitude cap (≈4s/rev)
+const LOG_OMEGA_MIN_ABS := 0.5       # never spin slower than this in abs value
+# Vertical clearance between the slab's centre y and the log pivot y.
+# Slab is 0.5m thick (top surface ≈ slab_y + 0.25). Log radius 0.6.
+# Log bottom = pivot_y - LOG_RADIUS. We want clearance from slab top
+# of at least marble_diameter (0.6) + buffer (0.4) = 1.0m so marbles
+# pass under cleanly and only bouncing marbles brush the log.
+# pivot_y = slab_y + 0.25 + 1.0 + LOG_RADIUS = slab_y + 1.85.
+const LOG_CLEARANCE_Y := 1.9
+
 # Physics materials.
 var _mat_floor: PhysicsMaterial = null
 var _mat_peg:   PhysicsMaterial = null
 var _mat_wall:  PhysicsMaterial = null
 var _mat_gate:  PhysicsMaterial = null
+var _mat_log:   PhysicsMaterial = null
+
+# Log animation state.
+var _logs: Array[AnimatableBody3D] = []
+var _log_pivots: Array = []      # Vector3 array, parallel to _logs
+var _log_omegas: Array = []      # float array, rad/s, parallel to _logs
+var _log_time: float = 0.0       # accumulated _physics_process delta
 
 func _ready() -> void:
 	_theme = TrackPalette.theme_for(TrackRegistry.ROULETTE)
@@ -77,7 +112,22 @@ func _ready() -> void:
 	_build_peg_field()
 	_build_gate()
 	_build_catchment()
+	_build_rolling_logs()
 	_build_mood_lights()
+
+func _physics_process(delta: float) -> void:
+	# Drive the kinematic log rotation. Each log spins around its own long
+	# axis (which is world Z after the orient basis applied below); marbles
+	# riding the ramp under each log hit it and get nudged in the spin's
+	# tangential direction. Constant ω across the race.
+	_log_time += delta
+	var orient := Basis(Vector3.RIGHT, deg_to_rad(90.0))
+	for i in range(_logs.size()):
+		var w: float = float(_log_omegas[i])
+		var angle: float = w * _log_time
+		var spin := Basis(Vector3(0, 0, 1), angle)
+		var pivot: Vector3 = _log_pivots[i]
+		_logs[i].global_transform = Transform3D(spin * orient, pivot)
 
 func _init_physics_materials() -> void:
 	# Same tuning as StadiumTrack — proven to finish ~30 s with real gravity.
@@ -95,6 +145,11 @@ func _init_physics_materials() -> void:
 	_mat_gate = PhysicsMaterial.new()
 	_mat_gate.friction = 0.55
 	_mat_gate.bounce   = 0.10
+	# Logs: rough wood — moderate friction so the spin imparts visible motion
+	# to passing marbles, low bounce so marbles don't fly off vertically.
+	_mat_log = PhysicsMaterial.new()
+	_mat_log.friction = 0.55
+	_mat_log.bounce   = 0.20
 
 func _build_outer_frame() -> void:
 	var wall_mat := TrackBlocks.std_mat(_theme["wall"], 0.10, 0.85)
@@ -157,6 +212,63 @@ func _build_catchment() -> void:
 	add_child(body)
 	TrackBlocks.build_catchment(body, "Catch",
 		FLOOR_BASE_Y, FIELD_W, FIELD_DEPTH, FLOOR_THICK, mat)
+
+func _build_rolling_logs() -> void:
+	# Three rotating log obstacles, one per F2/F3/F4 ramp. Each log is an
+	# AnimatableBody3D positioned ~1.5m above the ramp's centerline, oriented
+	# along Z (depth), spinning around its own axis at a seed-derived ω so
+	# different rounds show different log behaviour while staying replay-stable.
+	#
+	# The ramp slabs are tilted around Z by ±RAMP_TILT_DEG; the log sits
+	# horizontally at the slab's midpoint X. Vertical clearance is set so
+	# a marble can pass under most of the time, only brushing the log when
+	# it bounces high — see LOG_CLEARANCE_Y derivation above.
+
+	var log_mat := TrackBlocks.std_mat_emit(
+		Color(0.55, 0.42, 0.18),     # warm wood brown
+		0.10, 0.85, 0.10)             # metallic, roughness, emission_energy
+	# Wood ring detail comes from the trail of marble interactions; for now
+	# the log is a uniform cylinder.
+
+	# Per-log: y position is the ramp's y + LOG_CLEARANCE.
+	# X is the ramp's slab center: -float(gap_dir) * (RAMP_GAP_W/2).
+	#   F2 (gap_dir=+1) → x = -2
+	#   F3 (gap_dir=-1) → x = +2
+	#   F4 (gap_dir=+1) → x = -2
+	var configs := [
+		{"prefix": "F2", "y": F2_Y + LOG_CLEARANCE_Y, "x": -float(+1) * RAMP_GAP_W * 0.5},
+		{"prefix": "F3", "y": F3_Y + LOG_CLEARANCE_Y, "x": -float(-1) * RAMP_GAP_W * 0.5},
+		{"prefix": "F4", "y": F4_Y + LOG_CLEARANCE_Y, "x": -float(+1) * RAMP_GAP_W * 0.5},
+	]
+
+	for i in range(configs.size()):
+		var cfg: Dictionary = configs[i]
+		var pivot := Vector3(float(cfg["x"]), float(cfg["y"]), 0.0)
+		# Initial transform: cylinder (default Y-axis) rotated 90° around X
+		# so it lies along Z (the depth axis). Spin around Z is added per-frame
+		# in _physics_process.
+		var orient := Basis(Vector3.RIGHT, deg_to_rad(90.0))
+		var tx := Transform3D(orient, pivot)
+		var body := TrackBlocks.add_animatable_cylinder(
+			self, "%s_RollingLog" % str(cfg["prefix"]),
+			tx, LOG_RADIUS, LOG_LENGTH, log_mat)
+		body.physics_material_override = _mat_log
+		_logs.append(body)
+		_log_pivots.append(pivot)
+
+		# Derive ω from the round seed. _hash_with_tag returns 32 bytes —
+		# we use the first byte mapped to [-1, +1], scaled by LOG_OMEGA_MAX.
+		# Floor on |ω| so a hash near 128 doesn't yield a near-stationary log.
+		var hash_bytes: PackedByteArray = _hash_with_tag("forest_log_%d" % i)
+		var raw_omega: float
+		if hash_bytes.size() >= 1:
+			raw_omega = float(int(hash_bytes[0]) - 128) / 128.0   # ≈ -1..+1
+		else:
+			raw_omega = (1.0 if (i % 2 == 0) else -1.0) * 0.7
+		if absf(raw_omega) < (LOG_OMEGA_MIN_ABS / LOG_OMEGA_MAX):
+			# Force a sensible minimum spin; sign comes from sgn(raw) or i parity.
+			raw_omega = (LOG_OMEGA_MIN_ABS / LOG_OMEGA_MAX) * (1.0 if raw_omega >= 0 else -1.0)
+		_log_omegas.append(raw_omega * LOG_OMEGA_MAX)
 
 func _build_mood_lights() -> void:
 	# Dappled sunlight through the canopy: warm angled directional + soft

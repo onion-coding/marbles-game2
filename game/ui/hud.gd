@@ -1,186 +1,289 @@
 class_name HUD
 extends CanvasLayer
 
-# Emitted when the user clicks a marble row in the standings sidebar.
-# `index` is the drop-order original index (same key used by FreeCamera's
-# follow system). Connect this to FreeCamera.follow_marble_index.
+# Broadcast-style HUD overlay. Premium F1/ESPN-inspired layout: top
+# broadcast bar (event + LIVE + balance), right-side timing tower with
+# tween-animated reorder, hero race timer, sportsbook-style bet card,
+# theatrical winner modal. All styling delegated to HudTheme so colors /
+# fonts / styleboxes change in one place.
+#
+# This file is the orchestrator + state machine. Each visual region is
+# built by a dedicated _build_<region>() method and exposed via private
+# refs (_top_bar, _timing_tower, _timer_hero, _bet_panel, _winner_modal,
+# _toast). The public API is unchanged from the previous implementation
+# so main.gd / live_main.gd / web_main.gd / playback_main.gd keep working
+# without changes.
+
+# Emitted when the user clicks a marble row in the timing tower.
+# `index` is the drop-order original index, same key used by
+# FreeCamera.follow_marble_index.
 signal marble_selected(index: int)
 
-# Emitted when the player clicks "PLACE BET" in the bet panel (WAITING phase,
-# RGS mode only). The caller (main.gd) should forward this to RgsClient.
+# Emitted when the player taps the PLACE BET button (RGS + WAITING only).
 signal bet_requested(marble_idx: int, amount: float)
 
-# Player-facing overlay for web / live scenes. Shows:
-#   - race title + phase label (top-left)
-#   - balance label (top-right, live from RGS server; mock in local mode)
-#   - marble list with color swatches and names (right sidebar)
-#   - race timer (bottom-center)
-#   - bet panel (bottom-center, visible in WAITING+RGS mode only)
-#   - winner modal centered at race end (shows payout result in RGS mode)
-#
-# State machine:
-#   WAITING  → bet panel visible (RGS mode only), marble list unpopulated
-#   RACING   → bet panel hidden / "Bets locked" banner shown, timer ticking
-#   FINISHED → winner modal + optional payout line
-#
-# Sim/headless paths don't add a HUD; this is the "what a player sees" layer.
-
-const TIMER_FORMAT := "%02d:%02d"
+# Phase strings — public so callers can compare against PHASE_RACING etc.
 const PHASE_WAITING  := "WAITING"
 const PHASE_RACING   := "RACING"
 const PHASE_FINISHED := "FINISHED"
 
-# Fallback balance used when NOT in RGS mode.
+# Mock balance used when not in RGS mode.
 const MOCK_BALANCE := 1250.00
 
-# ─── Nodes ───────────────────────────────────────────────────────────────────
+# Fixed row height for the timing tower. Used so we can lay out rows in
+# absolute coordinates (instead of VBoxContainer) and tween them on rank
+# changes.
+const TT_ROW_H := 30
+const TT_ROW_GAP := 2
+const TT_ROW_PITCH := TT_ROW_H + TT_ROW_GAP
 
-var _phase_label: Label
-var _timer_label: Label
-var _marble_list: VBoxContainer
-var _balance_label: Label
-var _winner_modal: Control
-var _winner_name_label: Label
-var _winner_prize_label: Label
-var _winner_payout_label: Label   # RGS payout line inside the modal
-var _winner_next_round_label: Label  # "Next round in X.Xs" countdown inside modal
+# How fast the bet countdown final-3-seconds pulse blinks.
+const COUNTDOWN_PULSE_HZ := 2.0
+
+# Mobile breakpoint — viewport width below this triggers portrait layout.
+const BREAKPOINT_MOBILE := 768
+
+# ─── Top broadcast bar nodes ────────────────────────────────────────────────
+
+var _top_bar: PanelContainer
+var _brand_mark: PanelContainer       # holds the "M" glyph or operator logo
+var _brand_glyph: Label
+var _brand_logo_tex: TextureRect      # only visible when operator passed a logo
+var _brand_label: Label
 var _track_name_label: Label
+var _phase_pill: PanelContainer
+var _phase_pill_label: Label
+var _round_label: Label
+var _live_dot: Label                # red ● — pulses when phase is RACING
+var _balance_amount_label: Label
+var _balance_currency_label: Label
+var _balance_caption: Label
 
-# Bet panel nodes (visible only in WAITING + RGS mode)
+# ─── Top-3 podium ribbon (right of phase pill) ──────────────────────────────
+var _podium_box: HBoxContainer
+var _podium_chips: Array[Control] = []  # 3 chips (rank 1, 2, 3)
+
+# ─── Timing tower nodes ─────────────────────────────────────────────────────
+
+var _timing_tower: PanelContainer
+var _timing_tower_header: Label
+var _timing_tower_count: Label
+var _timing_tower_scroll: ScrollContainer
+var _timing_tower_canvas: Control   # absolute-positioned row canvas
+
+# ─── Timer hero nodes ───────────────────────────────────────────────────────
+
+var _timer_card: Control
+var _timer_label: Label
+var _timer_caption: Label
+var _bets_locked_pill: PanelContainer
+var _race_progress_bar: ProgressBar    # lap/race progress under timer (0..100)
+
+# ─── Bet panel nodes ────────────────────────────────────────────────────────
+
 var _bet_panel: Control
-var _marble_selector: OptionButton
-var _amount_label: Label
-var _place_bet_btn: Button
+var _bet_panel_card: PanelContainer
+var _bet_countdown_label: Label
+var _bet_marble_strip: HBoxContainer
+var _bet_marble_caption: Label
+var _bet_stake_label: Label
+var _bet_potential_payout: Label
+var _bet_cta: Button
+var _bet_chip_buttons: Array[Button] = []
+var _bet_marble_chips: Array[Button] = []
 var _bets_list: VBoxContainer
-var _bets_locked_label: Label
-var _toast_label: Label           # temporary error / confirmation feedback
-var _bet_countdown_label: Label   # shows "Race starts in: X.Xs" inside bet panel
 
-# ─── State ───────────────────────────────────────────────────────────────────
+# ─── Winner modal nodes ─────────────────────────────────────────────────────
+
+var _winner_modal: Control
+var _winner_modal_card: PanelContainer
+var _winner_color_swatch: ColorRect
+var _winner_caption_label: Label
+var _winner_name_label: Label
+var _winner_payout_label: Label
+var _winner_next_round_label: Label
+
+# ─── Toast nodes ────────────────────────────────────────────────────────────
+
+var _toast_anchor: Control
+var _toast_card: PanelContainer
+var _toast_label: Label
+var _toast_timer: float = 0.0
+var _toast_tween: Tween
+
+# ─── Race state ─────────────────────────────────────────────────────────────
 
 var _tick_rate: float = 60.0
 var _race_started: bool = false
 var _start_tick: int = -1
+var _current_phase: String = PHASE_WAITING
+
+# Per-marble metadata captured during setup(). Index by drop-order
+# (original_index = position in this array).
+# Each entry: {name: String, color: Color, original_index: int}.
+var _marble_meta: Array = []
+
+# original_index → { row: Control, current_rank: int, target_y: float, tween: Tween }
+var _rows_by_index: Dictionary = {}
+
+var _following_index: int = -1
+
+# Race-progress tracking — captured on first update_standings() call so we
+# know what 0% looks like (max distance any marble has from the finish at
+# t=0). Then progress = 1 - (leader_dist / initial_max_dist).
+var _initial_max_dist: float = -1.0
+
+# Mobile responsive state — recomputed on viewport resize.
+var _is_mobile: bool = false
+
+# ─── Bet state ──────────────────────────────────────────────────────────────
+
+var _rgs_mode: bool = false
+var _round_id: int = 0
+var _balance: float = MOCK_BALANCE
+var _bet_amount: float = 10.0
+var _selected_marble: int = -1            # index into _marble_meta
+var _placed_bets: Array = []              # array of bet dicts
 
 # Bet-window countdown state.
 var _bet_countdown_remaining: float = 0.0
 var _bet_countdown_active: bool = false
 
-# Next-round countdown state (shown inside the winner modal after a race).
+# Next-round countdown state (winner modal).
 var _next_round_countdown_remaining: float = 0.0
 var _next_round_countdown_active: bool = false
 
-# Marble metadata stored at setup() time.
-# Each entry: {name: String, color: Color, original_index: int}.
-var _marble_meta: Array = []
+# RGS payout multiplier — informational only (server is authoritative).
+const PAYOUT_MULT := 19.0
 
-# Which original_index is currently being followed (-1 = none).
-var _following_index: int = -1
-
-# Map from original_index → row Control node; rebuilt by setup/update_standings.
-var _row_by_index: Dictionary = {}
-
-# RGS betting state
-var _rgs_mode: bool = false
-var _round_id: int = 0
-var _balance: float = MOCK_BALANCE
-var _bet_amount: float = 10.0
-var _selected_marble: int = -1     # index into _marble_meta (not original_index)
-var _placed_bets: Array = []       # array of {marble_idx, amount, expected_payout_if_win}
-var _toast_timer: float = 0.0
-
-# ─── Lifecycle ───────────────────────────────────────────────────────────────
+# ─── Lifecycle ──────────────────────────────────────────────────────────────
 
 func _ready() -> void:
-	layer = 10   # above any 3D viewport but below editor overlays
+	layer = 10                # above viewport, below editor
 	_build_layout()
+	_apply_phase(PHASE_WAITING)
 
 func _process(delta: float) -> void:
-	# Fade out the toast message after its display period.
+	# Toast auto-fade.
 	if _toast_timer > 0.0:
 		_toast_timer -= delta
 		if _toast_timer <= 0.0:
-			_toast_label.visible = false
-			_toast_timer = 0.0
+			_dismiss_toast()
 
-	# Drive the bet-window countdown at 0.1 s precision.
+	# Bet-window countdown ticking.
 	if _bet_countdown_active:
 		_bet_countdown_remaining -= delta
 		if _bet_countdown_remaining <= 0.0:
 			_bet_countdown_remaining = 0.0
 			_bet_countdown_active = false
-			_bet_countdown_label.text = "Bets locked"
-			_bet_countdown_label.add_theme_color_override("font_color", Color(0.90, 0.50, 0.20))
-			_place_bet_btn.disabled = true
+			_bet_countdown_label.text = HudI18n.t("hud.bet.countdown.locked")
+			_bet_countdown_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_AMBER)
+			_bet_cta.disabled = true
 		else:
-			_bet_countdown_label.text = "Race starts in: %.1fs" % _bet_countdown_remaining
+			_bet_countdown_label.text = HudI18n.t("hud.bet.countdown.starts_in") % _bet_countdown_remaining
+			# Final 3 seconds: pulse amber → red.
+			if _bet_countdown_remaining < 3.0:
+				var pulse: float = 0.5 + 0.5 * sin(float(Engine.get_frames_drawn()) * 0.18)
+				var c: Color = HudTheme.C_AMBER.lerp(HudTheme.C_RED, pulse)
+				_bet_countdown_label.label_settings = HudTheme.ls_label_caps(c)
+			else:
+				_bet_countdown_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN)
 
-	# Drive the next-round countdown displayed inside the winner modal.
+	# Next-round countdown (winner modal).
 	if _next_round_countdown_active:
 		_next_round_countdown_remaining -= delta
 		if _next_round_countdown_remaining <= 0.0:
 			_next_round_countdown_remaining = 0.0
 			_next_round_countdown_active = false
 			if _winner_next_round_label != null:
-				_winner_next_round_label.text = "Starting next round..."
+				_winner_next_round_label.text = HudI18n.t("hud.winner.starting")
 		else:
 			if _winner_next_round_label != null:
-				_winner_next_round_label.text = "Next round in %.1fs..." % _next_round_countdown_remaining
+				_winner_next_round_label.text = HudI18n.t("hud.winner.next_round_in") % _next_round_countdown_remaining
 
-# ─── Public API ──────────────────────────────────────────────────────────────
+	# LIVE dot pulse during RACING.
+	if _current_phase == PHASE_RACING and _live_dot != null:
+		var alpha: float = 0.55 + 0.45 * absf(sin(float(Time.get_ticks_msec()) * 0.004))
+		_live_dot.modulate = Color(1, 1, 1, alpha)
 
-# Enable RGS betting mode. Must be called before setup().
-# `round_id` is the server-authoritative round ID needed for the bet POST.
-# `initial_balance` is the balance to show until bet_placed updates it.
-# After this call the HUD is in WAITING phase with the bet panel visible.
+	# Mobile/desktop responsive switch — recompute only when crossing the
+	# breakpoint to avoid layout thrash every frame.
+	var vp := get_viewport()
+	if vp != null:
+		var w: float = vp.get_visible_rect().size.x
+		var should_be_mobile: bool = (w > 0.0 and w < float(BREAKPOINT_MOBILE))
+		if should_be_mobile != _is_mobile:
+			_is_mobile = should_be_mobile
+			_apply_responsive_layout()
+
+# ─── Public API ─────────────────────────────────────────────────────────────
+
 func enable_rgs_mode(round_id: int, initial_balance: float = MOCK_BALANCE) -> void:
 	_rgs_mode = true
 	_round_id = round_id
 	_balance = initial_balance
-	_update_balance_label()
-	_phase_label.text = PHASE_WAITING
-	_bet_panel.visible = true
-	_bets_locked_label.visible = false
+	_update_balance_display()
+	_round_label.text = "R#%d" % (round_id % 100000)
+	_apply_phase(PHASE_WAITING)
+	_show_bet_panel(true)
 
-# Start the visible bet-window countdown shown inside the bet panel.
-# Call this immediately after enable_rgs_mode().  Internally ticks every frame
-# (0.1 s display precision).  If called while a previous countdown is still
-# running it resets gracefully.
 func start_bet_countdown(seconds: float) -> void:
 	_bet_countdown_remaining = seconds
 	_bet_countdown_active = true
-	_bet_countdown_label.text = "Race starts in: %.1fs" % seconds
-	_bet_countdown_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.70))
+	_bet_countdown_label.text = "RACE STARTS IN %.1fs" % seconds
+	_bet_countdown_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN)
 	_bet_countdown_label.visible = true
 
-# Show a countdown in the winner modal: "Next round in X.Xs…".
-# Call this immediately after reveal_winner() during RGS auto-restart.
-# The label ticks down in _process() and resets with reset().
 func start_next_round_countdown(seconds: float) -> void:
 	_next_round_countdown_remaining = seconds
 	_next_round_countdown_active = true
 	if _winner_next_round_label != null:
-		_winner_next_round_label.text = "Next round in %.1fs..." % seconds
+		_winner_next_round_label.text = HudI18n.t("hud.winner.next_round_in") % seconds
 		_winner_next_round_label.visible = true
 
-# Update the displayed balance.  Pass -1.0 to silently ignore (sentinel for
-# a failed balance fetch — the last good value is preserved).
 func update_balance(balance: float) -> void:
 	if balance < 0.0:
 		return
 	_balance = balance
-	_update_balance_label()
+	_update_balance_display()
 
-# Called once when the replay header is known. `header` is the list of marble
-# dicts (name + rgba) from the replay/stream protocol.
+# Apply operator-side branding overrides at runtime. Pass any subset of:
+#   accent_color : Color    — replaces gold accent (CTA, leader rows, etc.)
+#   brand_text   : String   — replaces "MARBLES" label
+#   brand_logo   : Texture2D — replaces the "M" glyph in the brand mark
+#   lang         : String   — locale code ("en"/"it"/"es"/"de"/"pt")
+# Safe to call at any time. After applying, re-styles the brand mark, the
+# CTA button, and the FINISHED phase pill so the new accent shows up.
+func apply_operator_theme(config: Dictionary) -> void:
+	HudTheme.apply_operator_overrides(config)
+	if config.has("lang") and typeof(config["lang"]) == TYPE_STRING:
+		HudI18n.set_lang(String(config["lang"]))
+	_refresh_branded_widgets()
+	_refresh_localised_labels()
+
+# Language-only convenience setter (no other branding overrides).
+func set_lang(lang: String) -> void:
+	HudI18n.set_lang(lang)
+	_refresh_localised_labels()
+
+# Race progress 0..1, drives the bar under the timer. Optional —
+# update_standings() also computes this internally if main.gd doesn't
+# call this explicitly. Useful if main.gd has a more accurate progress
+# (e.g. arc-length distance instead of euclidean).
+func update_progress(percent: float) -> void:
+	if _race_progress_bar != null:
+		_race_progress_bar.value = clamp(percent, 0.0, 1.0) * 100.0
+
 func setup(header: Array) -> void:
-	_clear_marble_list()
+	# Build the timing tower rows. One Control per marble, kept alive for
+	# the whole race; ranks update via tween instead of rebuilding.
+	_clear_timing_tower()
 	_marble_meta.clear()
-	_marble_selector.clear()
+	_clear_bet_marble_chips()
 
 	for i in range(header.size()):
 		var m: Dictionary = header[i]
-		var marble_name := String(m.get("name", "marble_%02d" % i))
+		var marble_name := String(m.get("name", "Marble_%02d" % i))
 		var rgba: int = int(m.get("rgba", 0))
 		var color: Color
 		if rgba == 0:
@@ -192,30 +295,64 @@ func setup(header: Array) -> void:
 				((rgba >> 8)  & 0xFF) / 255.0,
 				1.0
 			)
-		_marble_meta.append({"name": marble_name, "color": color, "original_index": i})
-		var row := _make_marble_row("%d. %s" % [i + 1, marble_name], color, false, i)
-		_row_by_index[i] = row
-		_marble_list.add_child(row)
-		_marble_selector.add_item("%02d  %s" % [i, marble_name], i)
+		_marble_meta.append({
+			"name": marble_name,
+			"color": color,
+			"original_index": i,
+		})
+		var row := _make_tower_row(i, marble_name, color)
+		_timing_tower_canvas.add_child(row)
+		var row_y := float(i) * float(TT_ROW_PITCH)
+		_rows_by_index[i] = {
+			"row": row,
+			"current_rank": i,
+			"target_y": row_y,
+			"tween": null,
+		}
+		row.offset_top = row_y
+		row.offset_bottom = row_y + float(TT_ROW_H)
 
-	_phase_label.text = PHASE_RACING
-	_winner_modal.visible = false
+		# Bet marble strip (only used in RGS mode).
+		_bet_marble_chips.append(_make_bet_marble_chip(i, marble_name, color))
+
+	_update_timing_tower_count()
+
+	# Transition to RACING: hide bet panel, show "BETS LOCKED" pill if any
+	# bet was placed. Reset race-state.
+	_apply_phase(PHASE_RACING)
 	_race_started = false
 	_start_tick = -1
-
-	# Cancel any in-progress bet countdown (setup() means the race is starting).
+	_winner_modal.visible = false
+	_show_bet_panel(false)
+	_bets_locked_pill.visible = (_rgs_mode and not _placed_bets.is_empty())
 	_bet_countdown_active = false
+	# Reset the progress baseline so the bar starts at 0% for the new round.
+	_initial_max_dist = -1.0
+	if _race_progress_bar != null:
+		_race_progress_bar.value = 0.0
+	# Hide the podium until the first standings update arrives.
+	if _podium_box != null:
+		_podium_box.visible = false
 
-	# Transition to RACING: hide bet placement, show lock banner if bets placed.
-	_bet_panel.visible = false
-	_bets_locked_label.visible = _rgs_mode
-
-# Set the track name displayed in the top-left panel.
 func set_track_name(track_name: String) -> void:
+	# Strip the "Track" suffix and prettify: "RouletteTrack" → "Roulette" →
+	# "FOREST RUN" via i18n key. Falls back to the cleaned class name if
+	# the track has no localised display name.
+	var clean := track_name.trim_suffix("Track")
+	var i18n_key := ""
+	match clean:
+		"Roulette": i18n_key = "hud.track.forest_run"
+		"Craps":    i18n_key = "hud.track.volcano_run"
+		"Poker":    i18n_key = "hud.track.ice_run"
+		"Slots":    i18n_key = "hud.track.cavern_run"
+		"Plinko":   i18n_key = "hud.track.sky_run"
+		"Stadium":  i18n_key = "hud.track.stadium_run"
+		"Ramp":     i18n_key = "hud.track.ramp"
 	if _track_name_label != null:
-		_track_name_label.text = track_name
+		var display := HudI18n.t(i18n_key) if i18n_key != "" else clean.to_upper()
+		_track_name_label.text = display
+		_track_name_label.set_meta("i18n_key", i18n_key)
 
-# Drive the live leaderboard. Safe to call before the race starts.
 func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 	if marbles.is_empty() or _marble_meta.is_empty():
 		return
@@ -229,73 +366,90 @@ func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return a["dist"] < b["dist"]
 	)
-	_clear_marble_list()
+	# Apply rank changes — tween each row's y position smoothly.
 	for rank in range(ranked.size()):
-		var entry: Dictionary = ranked[rank]
-		var meta: Dictionary = _marble_meta[entry["idx"]]
-		var orig_idx: int = meta["original_index"]
-		var row_text := "%d. %s" % [rank + 1, meta["name"]]
-		var row := _make_marble_row(row_text, meta["color"], rank == 0, orig_idx)
-		_row_by_index[orig_idx] = row
-		_marble_list.add_child(row)
-	if _following_index >= 0:
+		var idx: int = ranked[rank]["idx"]
+		if not _rows_by_index.has(idx):
+			continue
+		var entry: Dictionary = _rows_by_index[idx]
+		var prev_rank: int = entry["current_rank"]
+		if prev_rank == rank:
+			continue
+		entry["current_rank"] = rank
+		var new_y := float(rank) * float(TT_ROW_PITCH)
+		entry["target_y"] = new_y
+		_apply_row_rank_styling(entry["row"] as Control, rank)
+		# Cancel previous tween (rapid swaps shouldn't queue).
+		var old_tween: Tween = entry.get("tween")
+		if old_tween != null and old_tween.is_valid():
+			old_tween.kill()
+		# Tween the row's offset_top + offset_bottom together so the height
+		# stays constant. EASE_OUT + CUBIC gives a "settling" sports-graphics feel.
+		var t := create_tween()
+		t.set_ease(Tween.EASE_OUT)
+		t.set_trans(Tween.TRANS_CUBIC)
+		t.set_parallel(true)
+		t.tween_property(entry["row"], "offset_top", new_y, HudTheme.ANIM_REORDER)
+		t.tween_property(entry["row"], "offset_bottom", new_y + float(TT_ROW_H), HudTheme.ANIM_REORDER)
+		entry["tween"] = t
+	# Refresh follow marker (rank-styling overwrote the row's stylebox).
+	if _following_index >= 0 and _rows_by_index.has(_following_index):
 		_apply_following_marker(_following_index, true)
 
-# Drive the race timer.
+	# Top-3 podium ribbon in the top bar — refreshed every standings update.
+	_update_podium_chips(ranked)
+
+	# Race progress bar — captures initial max distance on first call,
+	# then computes leader_progress = 1 - (leader_dist / initial_max_dist).
+	if not ranked.is_empty():
+		var leader_dist: float = float(ranked[0]["dist"])
+		# Capture the trailing marble's distance the first time we have data —
+		# that's a stable proxy for "race start" since at t=0 marbles are
+		# evenly spread near the spawn area.
+		if _initial_max_dist <= 0.0:
+			var max_dist: float = 0.0
+			for r in ranked:
+				var d: float = float(r["dist"])
+				if d != INF and d > max_dist:
+					max_dist = d
+			if max_dist > 1.0:
+				_initial_max_dist = max_dist
+		if _initial_max_dist > 0.0 and _race_progress_bar != null:
+			var pct: float = clamp(1.0 - (leader_dist / _initial_max_dist), 0.0, 1.0)
+			_race_progress_bar.value = pct * 100.0
+
 func update_tick(tick: int, tick_rate_hz: float) -> void:
 	_tick_rate = tick_rate_hz
 	if not _race_started:
 		_start_tick = tick
 		_race_started = true
 	var elapsed_ticks: int = max(0, tick - _start_tick)
-	var seconds: int = int(float(elapsed_ticks) / tick_rate_hz)
-	_timer_label.text = TIMER_FORMAT % [seconds / 60, seconds % 60]
+	var seconds: float = float(elapsed_ticks) / tick_rate_hz
+	_timer_label.text = HudTheme.format_race_time(seconds)
 
-# Show the winner modal. In RGS mode, payout/loss is computed from _placed_bets
-# and the winning marble index. `prize` is a pre-formatted string fallback.
 func reveal_winner(name: String, color: Color, prize: String = "") -> void:
-	_phase_label.text = PHASE_FINISHED
+	_apply_phase(PHASE_FINISHED)
 	_winner_name_label.text = name
-	_winner_name_label.add_theme_color_override("font_color", color)
-	_winner_prize_label.text = prize if prize != "" else "Race complete"
-
-	# Compute payout result from placed bets if in RGS mode.
-	if _rgs_mode and not _placed_bets.is_empty():
-		# The winner's marble_idx is embedded in the name ("Marble_07" → 7).
-		var winner_idx := -1
-		var trimmed := name.trim_prefix("Marble_")
-		if trimmed.is_valid_int():
-			winner_idx = int(trimmed)
-		var total_payout := 0.0
-		var total_wagered := 0.0
-		for b in _placed_bets:
-			total_wagered += float(b["amount"])
-			if int(b["marble_idx"]) == winner_idx:
-				total_payout += float(b["expected_payout_if_win"])
-		if total_payout > 0.0:
-			_winner_payout_label.text = "+%.2f (won %.2f on %.2f wagered)" % [
-				total_payout, total_payout, total_wagered]
-			_winner_payout_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.4))
-		else:
-			_winner_payout_label.text = "-%.2f (all bets lost)" % total_wagered
-			_winner_payout_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	_winner_name_label.label_settings = HudTheme.ls_hero(color)
+	_winner_color_swatch.color = color
+	if prize != "":
+		_winner_payout_label.text = prize
+		_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_GOLD, HudTheme.FS_NUMBER_LARGE)
 		_winner_payout_label.visible = true
+	# Compute payout from local _placed_bets (RGS server may also push
+	# apply_settlement which overwrites this with authoritative numbers).
+	if _rgs_mode and not _placed_bets.is_empty():
+		_apply_local_payout_summary(name)
 	else:
-		_winner_payout_label.visible = false
+		_winner_payout_label.visible = (prize != "")
+	_show_winner_modal()
 
-	_winner_modal.visible = true
-
-# Apply server-authoritative settlement outcomes to the winner modal.
-# `outcomes` is the filtered list for the current player only.
-# Each outcome dict: {bet_id, player_id, marble_idx, amount, won, payout, winner_index}.
-# Safe to call before or after reveal_winner — if the modal is not yet
-# visible the data is written and will be visible when reveal_winner fires.
 func apply_settlement(outcomes: Array, winner_marble_idx: int) -> void:
+	# Server-authoritative result. Overwrites any local payout display.
+	var _unused := winner_marble_idx
 	if outcomes.is_empty():
-		# No bets for this player this round — hide the payout line.
 		_winner_payout_label.visible = false
 		return
-
 	var total_payout := 0.0
 	var total_wagered := 0.0
 	for o in outcomes:
@@ -304,30 +458,31 @@ func apply_settlement(outcomes: Array, winner_marble_idx: int) -> void:
 		total_wagered += float(o.get("amount", 0.0))
 		if bool(o.get("won", false)):
 			total_payout += float(o.get("payout", 0.0))
-
 	if total_payout > 0.0:
-		_winner_payout_label.text = "+%.2f won (wagered %.2f)" % [total_payout, total_wagered]
-		_winner_payout_label.add_theme_color_override("font_color", Color(0.3, 1.0, 0.4))
+		_winner_payout_label.text = "+%s" % HudTheme.format_money(total_payout)
+		_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_GREEN, HudTheme.FS_HERO_NUM)
 	else:
-		_winner_payout_label.text = "-%.2f lost" % total_wagered
-		_winner_payout_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+		_winner_payout_label.text = HudTheme.format_money(-total_wagered)
+		_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_RED, HudTheme.FS_HERO_NUM)
 	_winner_payout_label.visible = true
 
-# Called after a successful bet_placed response from RgsClient.
-# Updates the balance label and appends a row to the "Your bets" list.
 func on_bet_confirmed(bet: Dictionary) -> void:
 	_balance = float(bet.get("balance_after", _balance))
-	_update_balance_label()
+	_update_balance_display()
 	_placed_bets.append(bet)
 	_refresh_bets_list()
 	_validate_bet_button()
-	_show_toast("Bet placed: Marble_%02d — %.2f" % [int(bet.get("marble_idx", 0)), float(bet.get("amount", 0.0))])
+	_show_toast(
+		HudI18n.t("hud.bet.placed") % [
+			int(bet.get("marble_idx", 0)),
+			HudTheme.format_money(float(bet.get("amount", 0.0))),
+		],
+		HudTheme.TOAST_SUCCESS,
+	)
 
-# Show a temporary error toast (e.g. after bet_failed signal).
 func show_error_toast(message: String) -> void:
-	_show_toast(message)
+	_show_toast(message, HudTheme.TOAST_ERROR)
 
-# Called by FreeCamera.following_changed signal.
 func set_following(index: int) -> void:
 	if _following_index >= 0:
 		_apply_following_marker(_following_index, false)
@@ -336,21 +491,23 @@ func set_following(index: int) -> void:
 		_apply_following_marker(index, true)
 
 func reset() -> void:
-	_clear_marble_list()
+	_clear_timing_tower()
+	_clear_bet_marble_chips()
 	_marble_meta.clear()
 	_following_index = -1
 	_placed_bets.clear()
 	_selected_marble = -1
 	_bet_amount = 10.0
 	_rgs_mode = false
-	_phase_label.text = PHASE_WAITING
-	_timer_label.text = TIMER_FORMAT % [0, 0]
-	_winner_modal.visible = false
-	_bet_panel.visible = false
-	_bets_locked_label.visible = false
-	_balance = MOCK_BALANCE
-	_balance_label.text = "%.2f USD" % _balance
 	_race_started = false
+	_start_tick = -1
+	_balance = MOCK_BALANCE
+	_apply_phase(PHASE_WAITING)
+	_update_balance_display()
+	_timer_label.text = HudTheme.format_race_time(0.0)
+	_winner_modal.visible = false
+	_show_bet_panel(false)
+	_bets_locked_pill.visible = false
 	_bet_countdown_active = false
 	_bet_countdown_remaining = 0.0
 	_next_round_countdown_active = false
@@ -360,11 +517,16 @@ func reset() -> void:
 		_winner_next_round_label.text = ""
 	if _track_name_label != null:
 		_track_name_label.text = ""
-	if _marble_selector != null:
-		_marble_selector.clear()
+	if _round_label != null:
+		_round_label.text = ""
+	if _podium_box != null:
+		_podium_box.visible = false
+	if _race_progress_bar != null:
+		_race_progress_bar.value = 0.0
+	_initial_max_dist = -1.0
 	_refresh_bets_list()
 
-# ─── Layout ──────────────────────────────────────────────────────────────────
+# ─── Layout — root ──────────────────────────────────────────────────────────
 
 func _build_layout() -> void:
 	var root := Control.new()
@@ -373,243 +535,627 @@ func _build_layout() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 
-	root.add_child(_build_top_left())
-	root.add_child(_build_top_right())
-	root.add_child(_build_right_sidebar())
-	root.add_child(_build_bottom_center())
+	root.add_child(_build_top_bar())
+	root.add_child(_build_timing_tower())
+	root.add_child(_build_timer_hero())
+	root.add_child(_build_bet_panel())
 	root.add_child(_build_winner_modal())
 	root.add_child(_build_toast())
 
-func _build_top_left() -> Control:
-	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	panel.position = Vector2(20, 20)
-	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0, 0, 0, 0.55)))
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 4)
-	panel.add_child(vb)
+# ─── Layout — top broadcast bar ─────────────────────────────────────────────
 
-	var title := Label.new()
-	title.text = "MARBLES RACE"
-	title.add_theme_font_size_override("font_size", 20)
-	title.add_theme_color_override("font_color", Color(1, 0.92, 0.7))
-	vb.add_child(title)
+func _build_top_bar() -> Control:
+	var bar := PanelContainer.new()
+	bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	bar.offset_left = 0
+	bar.offset_top = 0
+	bar.offset_right = 0
+	bar.offset_bottom = 0
+	bar.custom_minimum_size = Vector2(0, 64)
+	bar.add_theme_stylebox_override("panel", HudTheme.sb_top_bar())
+	_top_bar = bar
+
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 18)
+	hb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.add_child(hb)
+
+	# ── Left cluster: brand + event ────────────────────────────────────────
+	var brand_box := HBoxContainer.new()
+	brand_box.add_theme_constant_override("separation", 10)
+	hb.add_child(brand_box)
+
+	# Brand mark — accent-coloured square containing either the "M" glyph
+	# (default) or an operator-supplied logo TextureRect. Both children
+	# always exist; visibility flips based on whether HudTheme has a
+	# brand_logo override.
+	_brand_mark = PanelContainer.new()
+	_brand_mark.custom_minimum_size = Vector2(38, 38)
+	_brand_mark.add_theme_stylebox_override("panel",
+		HudTheme.sb_panel(HudTheme.accent(), HudTheme.accent(), 8, 0))
+	_brand_glyph = Label.new()
+	_brand_glyph.text = "M"
+	_brand_glyph.label_settings = HudTheme.ls_title(HudTheme.C_TEXT_INVERSE, HudTheme.FS_TITLE)
+	_brand_glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_brand_glyph.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_brand_mark.add_child(_brand_glyph)
+	_brand_logo_tex = TextureRect.new()
+	_brand_logo_tex.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+	_brand_logo_tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_brand_logo_tex.visible = false
+	_brand_mark.add_child(_brand_logo_tex)
+	brand_box.add_child(_brand_mark)
+
+	var brand_text_v := VBoxContainer.new()
+	brand_text_v.add_theme_constant_override("separation", 0)
+	brand_box.add_child(brand_text_v)
+
+	_brand_label = Label.new()
+	_brand_label.text = HudTheme.brand_text()
+	_brand_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_LABEL)
+	brand_text_v.add_child(_brand_label)
 
 	_track_name_label = Label.new()
 	_track_name_label.text = ""
-	_track_name_label.add_theme_font_size_override("font_size", 11)
-	_track_name_label.add_theme_color_override("font_color", Color(0.65, 0.85, 0.65))
-	vb.add_child(_track_name_label)
+	_track_name_label.label_settings = HudTheme.ls_title(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TITLE)
+	brand_text_v.add_child(_track_name_label)
 
-	_phase_label = Label.new()
-	_phase_label.text = PHASE_WAITING
-	_phase_label.add_theme_font_size_override("font_size", 13)
-	_phase_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.95))
-	vb.add_child(_phase_label)
-	return panel
+	# Vertical separator.
+	hb.add_child(_make_vertical_divider())
 
-func _build_top_right() -> Control:
-	var panel := PanelContainer.new()
-	panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	panel.position = Vector2(-220, 20)
-	panel.size = Vector2(200, 0)
-	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0, 0, 0, 0.55)))
+	# ── Center: phase pill + LIVE indicator + round ────────────────────────
+	var center_box := HBoxContainer.new()
+	center_box.add_theme_constant_override("separation", 10)
+	center_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center_box.alignment = BoxContainer.ALIGNMENT_BEGIN
+	hb.add_child(center_box)
+
+	_phase_pill = PanelContainer.new()
+	_phase_pill.add_theme_stylebox_override("panel", HudTheme.sb_phase_pill(PHASE_WAITING))
+	var phase_hb := HBoxContainer.new()
+	phase_hb.add_theme_constant_override("separation", 6)
+	_phase_pill.add_child(phase_hb)
+
+	_live_dot = Label.new()
+	_live_dot.text = "●"
+	_live_dot.label_settings = HudTheme.ls_caption(HudTheme.C_RED, HudTheme.FS_TEXT)
+	phase_hb.add_child(_live_dot)
+
+	_phase_pill_label = Label.new()
+	_phase_pill_label.text = HudI18n.t("hud.phase.waiting")
+	_phase_pill_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_LABEL)
+	phase_hb.add_child(_phase_pill_label)
+	center_box.add_child(_phase_pill)
+
+	_round_label = Label.new()
+	_round_label.text = ""
+	_round_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_LABEL)
+	center_box.add_child(_round_label)
+
+	# Top-3 podium ribbon — three small chips after the round indicator.
+	# Hidden until the first standings update arrives.
+	_podium_box = HBoxContainer.new()
+	_podium_box.add_theme_constant_override("separation", 6)
+	_podium_box.visible = false
+	center_box.add_child(_podium_box)
+	for rank in range(3):
+		var chip := _make_podium_chip(rank)
+		_podium_box.add_child(chip)
+		_podium_chips.append(chip)
+
+	# Spacer pushes balance to the right.
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(spacer)
+
+	# ── Right cluster: balance ─────────────────────────────────────────────
+	var bal_panel := PanelContainer.new()
+	bal_panel.add_theme_stylebox_override("panel",
+		HudTheme.sb_panel(Color(0.05, 0.10, 0.18, 0.85), HudTheme.C_BORDER_BRIGHT, 10, 1))
+	hb.add_child(bal_panel)
+
+	var bal_hb := HBoxContainer.new()
+	bal_hb.add_theme_constant_override("separation", 8)
+	bal_panel.add_child(bal_hb)
+
+	_balance_caption = Label.new()
+	_balance_caption.text = HudI18n.t("hud.balance.caption")
+	_balance_caption.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	var bal_caption_v := VBoxContainer.new()
+	bal_caption_v.add_theme_constant_override("separation", 0)
+	bal_caption_v.add_child(_balance_caption)
+	var bal_amount_hb := HBoxContainer.new()
+	bal_amount_hb.add_theme_constant_override("separation", 4)
+	bal_caption_v.add_child(bal_amount_hb)
+
+	_balance_amount_label = Label.new()
+	_balance_amount_label.text = HudTheme.format_money(MOCK_BALANCE)
+	_balance_amount_label.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_NUMBER_LARGE)
+	bal_amount_hb.add_child(_balance_amount_label)
+
+	_balance_currency_label = Label.new()
+	_balance_currency_label.text = HudI18n.t("hud.balance.currency")
+	_balance_currency_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	bal_amount_hb.add_child(_balance_currency_label)
+
+	bal_hb.add_child(bal_caption_v)
+
+	return bar
+
+# Build a single podium chip (rank 1, 2, or 3). Looks like a tiny pill:
+# ordinal "1°/2°/3°" + color chip + marble id. Initially empty; populated
+# by _update_podium_chips() once standings start ticking.
+func _make_podium_chip(rank: int) -> Control:
+	var chip := PanelContainer.new()
+	chip.custom_minimum_size = Vector2(72, 24)
+	# Rank-tinted background — gold for 1st, silver for 2nd, bronze for 3rd.
+	var tint: Color
+	match rank:
+		0: tint = HudTheme.C_GOLD
+		1: tint = Color(0.72, 0.74, 0.78)        # silver
+		_: tint = Color(0.78, 0.55, 0.30)        # bronze
+	chip.add_theme_stylebox_override("panel",
+		HudTheme.sb_pill(Color(tint.r, tint.g, tint.b, 0.18)))
+
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
-	panel.add_child(hb)
+	hb.add_theme_constant_override("separation", 4)
+	chip.add_child(hb)
 
-	var bal_label := Label.new()
-	bal_label.text = "BAL"
-	bal_label.add_theme_font_size_override("font_size", 11)
-	bal_label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
-	hb.add_child(bal_label)
+	var rank_label := Label.new()
+	rank_label.name = "RankLabel"
+	rank_label.text = "%d°" % (rank + 1)
+	rank_label.label_settings = HudTheme.ls_label_caps(tint, HudTheme.FS_LABEL)
+	hb.add_child(rank_label)
 
-	_balance_label = Label.new()
-	_balance_label.text = "%.2f USD" % MOCK_BALANCE
-	_balance_label.add_theme_font_size_override("font_size", 16)
-	_balance_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
-	hb.add_child(_balance_label)
+	var color_chip := PanelContainer.new()
+	color_chip.name = "ColorChip"
+	color_chip.custom_minimum_size = Vector2(10, 10)
+	color_chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.4, 0.4, 0.4)
+	sb.set_corner_radius_all(3)
+	color_chip.add_theme_stylebox_override("panel", sb)
+	hb.add_child(color_chip)
 
-	var deposit := Button.new()
-	deposit.text = "+"
-	deposit.tooltip_text = "Deposit (stub)"
-	deposit.custom_minimum_size = Vector2(24, 24)
-	hb.add_child(deposit)
-	return panel
+	var id_label := Label.new()
+	id_label.name = "IdLabel"
+	id_label.text = "—"
+	id_label.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_LABEL)
+	hb.add_child(id_label)
+	return chip
 
-func _build_right_sidebar() -> Control:
+# Update the 3 podium chips with the top-3 from the latest ranking.
+# `ranked` is the sorted array passed into update_standings().
+func _update_podium_chips(ranked: Array) -> void:
+	if _podium_box == null:
+		return
+	if _is_mobile:
+		# Hidden in mobile portrait — top bar is collapsed there.
+		_podium_box.visible = false
+		return
+	_podium_box.visible = (_current_phase != PHASE_WAITING) and (ranked.size() >= 3)
+	if not _podium_box.visible:
+		return
+	for rank in range(min(3, _podium_chips.size(), ranked.size())):
+		var idx: int = int(ranked[rank]["idx"])
+		if idx < 0 or idx >= _marble_meta.size():
+			continue
+		var meta: Dictionary = _marble_meta[idx]
+		var chip: Control = _podium_chips[rank]
+		var color_chip := chip.find_child("ColorChip", true, false) as PanelContainer
+		if color_chip != null:
+			var sb: StyleBoxFlat = color_chip.get_theme_stylebox("panel") as StyleBoxFlat
+			if sb != null:
+				sb.bg_color = meta["color"]
+		var id_label := chip.find_child("IdLabel", true, false) as Label
+		if id_label != null:
+			id_label.text = HudTheme.short_marble_name(meta["name"])
+
+func _make_vertical_divider() -> Control:
+	var div := ColorRect.new()
+	div.color = HudTheme.C_BORDER_DIM
+	div.custom_minimum_size = Vector2(1, 36)
+	div.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return div
+
+# ─── Layout — timing tower ──────────────────────────────────────────────────
+
+func _build_timing_tower() -> Control:
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	panel.offset_left = -260
-	panel.offset_top = 110
-	panel.offset_right = -20
-	panel.offset_bottom = -160
-	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0, 0, 0, 0.45)))
-
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 4)
-	panel.add_child(vb)
-
-	var header := Label.new()
-	header.text = "STANDINGS"
-	header.add_theme_font_size_override("font_size", 12)
-	header.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
-	vb.add_child(header)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	vb.add_child(scroll)
-
-	_marble_list = VBoxContainer.new()
-	_marble_list.add_theme_constant_override("separation", 2)
-	_marble_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(_marble_list)
-	return panel
-
-func _build_bottom_center() -> Control:
-	# Outer anchor container that holds both the timer area and the bet panel.
-	var outer := Control.new()
-	outer.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	outer.offset_left  = -220
-	outer.offset_right =  220
-	outer.offset_top   = -340
-	outer.offset_bottom = -20
-	outer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-	# --- Timer panel (always visible) ---
-	var timer_panel := PanelContainer.new()
-	timer_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	timer_panel.offset_top = -100
-	timer_panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0, 0, 0, 0.55)))
-	outer.add_child(timer_panel)
-
-	var timer_vb := VBoxContainer.new()
-	timer_vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	timer_vb.add_theme_constant_override("separation", 6)
-	timer_panel.add_child(timer_vb)
-
-	_timer_label = Label.new()
-	_timer_label.text = TIMER_FORMAT % [0, 0]
-	_timer_label.add_theme_font_size_override("font_size", 32)
-	_timer_label.add_theme_color_override("font_color", Color(1, 0.92, 0.7))
-	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	timer_vb.add_child(_timer_label)
-
-	# "Bets locked" banner — shown in RACING when bets were placed.
-	_bets_locked_label = Label.new()
-	_bets_locked_label.text = "Bets locked"
-	_bets_locked_label.add_theme_font_size_override("font_size", 12)
-	_bets_locked_label.add_theme_color_override("font_color", Color(0.75, 0.60, 0.25))
-	_bets_locked_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_bets_locked_label.visible = false
-	timer_vb.add_child(_bets_locked_label)
-
-	# --- Bet panel (above the timer; visible only in WAITING + RGS mode) ---
-	_bet_panel = _build_bet_panel()
-	_bet_panel.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	_bet_panel.offset_bottom = 230   # leave room below for the timer panel
-	_bet_panel.visible = false
-	outer.add_child(_bet_panel)
-
-	return outer
-
-func _build_bet_panel() -> Control:
-	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0.04, 0.04, 0.12, 0.88)))
+	panel.offset_left = -300
+	panel.offset_top = 80
+	panel.offset_right = -16
+	panel.offset_bottom = -180
+	panel.add_theme_stylebox_override("panel",
+		HudTheme.sb_panel(HudTheme.C_SURFACE_1, HudTheme.C_BORDER, 10, 1))
+	_timing_tower = panel
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 8)
 	panel.add_child(vb)
 
-	# Header label
-	var header := Label.new()
-	header.text = "BET PLACEMENT"
-	header.add_theme_font_size_override("font_size", 14)
-	header.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
-	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(header)
+	# Header row: "STANDINGS" + count.
+	var head_hb := HBoxContainer.new()
+	head_hb.add_theme_constant_override("separation", 8)
+	vb.add_child(head_hb)
 
-	# Marble selector
-	var sel_label := Label.new()
-	sel_label.text = "Select marble:"
-	sel_label.add_theme_font_size_override("font_size", 11)
-	sel_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.8))
-	vb.add_child(sel_label)
+	_timing_tower_header = Label.new()
+	_timing_tower_header.text = HudI18n.t("hud.standings.header")
+	_timing_tower_header.label_settings = HudTheme.ls_label_caps(HudTheme.accent(), HudTheme.FS_LABEL)
+	_timing_tower_header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head_hb.add_child(_timing_tower_header)
 
-	_marble_selector = OptionButton.new()
-	# No placeholder_text on OptionButton (that's a LineEdit property).
-	# Dropdown renders empty until populated by setup() with marble entries.
-	_marble_selector.item_selected.connect(_on_marble_selected)
-	vb.add_child(_marble_selector)
+	_timing_tower_count = Label.new()
+	_timing_tower_count.text = ""
+	_timing_tower_count.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	head_hb.add_child(_timing_tower_count)
 
-	# Amount row: preset chips + live amount label
-	var amt_header := Label.new()
-	amt_header.text = "Bet amount:"
-	amt_header.add_theme_font_size_override("font_size", 11)
-	amt_header.add_theme_color_override("font_color", Color(0.7, 0.7, 0.8))
-	vb.add_child(amt_header)
+	# Thin divider below the header.
+	var sep := ColorRect.new()
+	sep.color = HudTheme.C_BORDER_DIM
+	sep.custom_minimum_size = Vector2(0, 1)
+	vb.add_child(sep)
 
-	# Preset buttons
-	var presets_hb := HBoxContainer.new()
-	presets_hb.add_theme_constant_override("separation", 4)
-	vb.add_child(presets_hb)
+	# Scrollable absolute-positioned rows canvas.
+	_timing_tower_scroll = ScrollContainer.new()
+	_timing_tower_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_timing_tower_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_timing_tower_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(_timing_tower_scroll)
 
-	for preset_val in [1, 5, 10, 50, 100]:
-		var pb := Button.new()
-		pb.text = "%d" % preset_val
-		pb.custom_minimum_size = Vector2(36, 26)
-		pb.pressed.connect(_on_preset_amount.bind(float(preset_val)))
-		presets_hb.add_child(pb)
+	_timing_tower_canvas = Control.new()
+	_timing_tower_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_timing_tower_canvas.custom_minimum_size = Vector2(0, 20 * TT_ROW_PITCH)
+	_timing_tower_scroll.add_child(_timing_tower_canvas)
 
-	# Fine-adjust row
-	var adjust_hb := HBoxContainer.new()
-	adjust_hb.add_theme_constant_override("separation", 6)
-	vb.add_child(adjust_hb)
+	return panel
 
-	var minus_btn := Button.new()
-	minus_btn.text = "-10"
-	minus_btn.custom_minimum_size = Vector2(42, 26)
-	minus_btn.pressed.connect(_on_adjust_amount.bind(-10.0))
-	adjust_hb.add_child(minus_btn)
+func _make_tower_row(orig_idx: int, marble_name: String, color: Color) -> Control:
+	# Each row is a Button (for click-to-follow) + content. The row anchors
+	# horizontally (full width of the canvas) and its vertical position is
+	# controlled via offset_top / offset_bottom — this way `position.y`
+	# never conflicts with the anchor system (which would emit a runtime
+	# warning) and Tween can animate offset_top directly on rank changes.
+	var btn := Button.new()
+	btn.flat = false
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.anchor_left   = 0.0
+	btn.anchor_top    = 0.0
+	btn.anchor_right  = 1.0
+	btn.anchor_bottom = 0.0
+	btn.offset_left   = 0.0
+	btn.offset_top    = 0.0
+	btn.offset_right  = 0.0
+	btn.offset_bottom = float(TT_ROW_H)
+	btn.custom_minimum_size = Vector2(0, TT_ROW_H)
 
-	_amount_label = Label.new()
-	_amount_label.text = "%.2f" % _bet_amount
-	_amount_label.add_theme_font_size_override("font_size", 18)
-	_amount_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
-	_amount_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_amount_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	adjust_hb.add_child(_amount_label)
+	# Default + leader styling applied via _apply_row_rank_styling().
+	var sb_normal := HudTheme.sb_row(Color(1.0, 1.0, 1.0, 0.04))
+	var sb_hover  := HudTheme.sb_row(Color(1.0, 1.0, 1.0, 0.10))
+	var sb_press  := HudTheme.sb_row(Color(1.0, 1.0, 1.0, 0.18))
+	btn.add_theme_stylebox_override("normal",   sb_normal)
+	btn.add_theme_stylebox_override("hover",    sb_hover)
+	btn.add_theme_stylebox_override("pressed",  sb_press)
+	btn.add_theme_stylebox_override("disabled", sb_normal)
+	btn.add_theme_stylebox_override("focus",    sb_normal)
 
-	var plus_btn := Button.new()
-	plus_btn.text = "+10"
-	plus_btn.custom_minimum_size = Vector2(42, 26)
-	plus_btn.pressed.connect(_on_adjust_amount.bind(10.0))
-	adjust_hb.add_child(plus_btn)
+	# Layout: rank | color chip | marble id | (spacer)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 10)
+	hb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	hb.set_offsets_preset(Control.PRESET_FULL_RECT, Control.PRESET_MODE_KEEP_SIZE, 6)
+	btn.add_child(hb)
 
-	# Countdown label — updated by start_bet_countdown() / _process().
+	# Rank — large monospace.
+	var rank_label := Label.new()
+	rank_label.name = "RankLabel"
+	rank_label.text = "%02d" % (orig_idx + 1)
+	rank_label.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TEXT)
+	rank_label.custom_minimum_size = Vector2(28, 0)
+	rank_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hb.add_child(rank_label)
+
+	# Color chip — small rounded square.
+	var chip := PanelContainer.new()
+	chip.custom_minimum_size = Vector2(14, 14)
+	chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var sb_chip := StyleBoxFlat.new()
+	sb_chip.bg_color = color
+	sb_chip.corner_radius_top_left    = 4
+	sb_chip.corner_radius_top_right   = 4
+	sb_chip.corner_radius_bottom_left = 4
+	sb_chip.corner_radius_bottom_right = 4
+	chip.add_theme_stylebox_override("panel", sb_chip)
+	hb.add_child(chip)
+
+	# Marble id text.
+	var id_label := Label.new()
+	id_label.name = "IdLabel"
+	id_label.text = HudTheme.short_marble_name(marble_name)
+	id_label.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TEXT)
+	id_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	id_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	hb.add_child(id_label)
+
+	btn.pressed.connect(func() -> void:
+		marble_selected.emit(orig_idx)
+	)
+
+	return btn
+
+func _apply_row_rank_styling(row: Control, rank: int) -> void:
+	# Leader (rank 0) row: gold tinted bg + gold left border.
+	# Top 3 (rank 1-2): subtle highlight. Rest: default.
+	var sb_normal: StyleBoxFlat
+	var rank_color: Color
+	var id_color: Color
+	if rank == 0:
+		var acc: Color = HudTheme.accent()
+		sb_normal = HudTheme.sb_row(
+			Color(acc.r, acc.g, acc.b, 0.16),
+			acc)
+		rank_color = acc
+		id_color = acc
+	elif rank <= 2:
+		sb_normal = HudTheme.sb_row(Color(1.0, 1.0, 1.0, 0.07))
+		rank_color = HudTheme.C_TEXT_PRIMARY
+		id_color = HudTheme.C_TEXT_PRIMARY
+	else:
+		sb_normal = HudTheme.sb_row(Color(1.0, 1.0, 1.0, 0.04))
+		rank_color = HudTheme.C_TEXT_SECONDARY
+		id_color = HudTheme.C_TEXT_PRIMARY
+	row.add_theme_stylebox_override("normal",   sb_normal)
+	row.add_theme_stylebox_override("disabled", sb_normal)
+	row.add_theme_stylebox_override("focus",    sb_normal)
+	# Refresh row content rank label.
+	var rank_label := row.find_child("RankLabel", true, false) as Label
+	if rank_label != null:
+		rank_label.text = "%02d" % (rank + 1)
+		rank_label.label_settings = HudTheme.ls_metric(rank_color, HudTheme.FS_TEXT)
+	var id_label := row.find_child("IdLabel", true, false) as Label
+	if id_label != null:
+		id_label.label_settings = HudTheme.ls_caption(id_color, HudTheme.FS_TEXT)
+
+func _apply_following_marker(orig_idx: int, active: bool) -> void:
+	if not _rows_by_index.has(orig_idx):
+		return
+	var entry: Dictionary = _rows_by_index[orig_idx]
+	var row: Control = entry["row"]
+	var sb: StyleBoxFlat = (row.get_theme_stylebox("normal") as StyleBoxFlat).duplicate()
+	if active:
+		sb.border_color = HudTheme.C_CYAN
+		sb.border_width_left = 4
+	else:
+		# Restore rank-based styling.
+		_apply_row_rank_styling(row, int(entry["current_rank"]))
+		return
+	row.add_theme_stylebox_override("normal",   sb)
+	row.add_theme_stylebox_override("disabled", sb)
+	row.add_theme_stylebox_override("focus",    sb)
+
+func _clear_timing_tower() -> void:
+	if _timing_tower_canvas != null:
+		for c in _timing_tower_canvas.get_children():
+			c.queue_free()
+	_rows_by_index.clear()
+
+func _update_timing_tower_count() -> void:
+	if _timing_tower_count != null:
+		_timing_tower_count.text = "%d %s" % [
+			_marble_meta.size(), HudI18n.t("hud.standings.count_suffix")]
+
+# ─── Layout — timer hero ────────────────────────────────────────────────────
+
+func _build_timer_hero() -> Control:
+	var anchor := Control.new()
+	anchor.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	anchor.offset_left = -130
+	anchor.offset_right = 130
+	anchor.offset_top = -130
+	anchor.offset_bottom = -32
+	anchor.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_timer_card = anchor
+
+	var card := PanelContainer.new()
+	card.add_theme_stylebox_override("panel", HudTheme.sb_card())
+	card.set_anchors_preset(Control.PRESET_FULL_RECT)
+	anchor.add_child(card)
+
+	var vb := VBoxContainer.new()
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 2)
+	card.add_child(vb)
+
+	_timer_caption = Label.new()
+	_timer_caption.text = HudI18n.t("hud.timer.caption")
+	_timer_caption.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	_timer_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(_timer_caption)
+
+	_timer_label = Label.new()
+	_timer_label.text = HudTheme.format_race_time(0.0)
+	_timer_label.label_settings = HudTheme.ls_timer(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TIMER)
+	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(_timer_label)
+
+	# Race progress bar — driven by leader_distance / initial_max_distance
+	# in update_standings(). Tinted accent (gold) so it reads as the
+	# canonical race-progress indicator.
+	_race_progress_bar = ProgressBar.new()
+	_race_progress_bar.show_percentage = false
+	_race_progress_bar.min_value = 0.0
+	_race_progress_bar.max_value = 100.0
+	_race_progress_bar.value = 0.0
+	_race_progress_bar.custom_minimum_size = Vector2(0, 4)
+	# Custom styling — slim track, accent-coloured fill.
+	var pb_track := StyleBoxFlat.new()
+	pb_track.bg_color = Color(1.0, 1.0, 1.0, 0.10)
+	pb_track.set_corner_radius_all(2)
+	var pb_fill := StyleBoxFlat.new()
+	pb_fill.bg_color = HudTheme.accent()
+	pb_fill.set_corner_radius_all(2)
+	_race_progress_bar.add_theme_stylebox_override("background", pb_track)
+	_race_progress_bar.add_theme_stylebox_override("fill", pb_fill)
+	vb.add_child(_race_progress_bar)
+
+	# "Bets locked" pill — only shown during RACING when at least one bet
+	# was placed. Floats below the timer card.
+	_bets_locked_pill = PanelContainer.new()
+	_bets_locked_pill.add_theme_stylebox_override("panel",
+		HudTheme.sb_pill(Color(HudTheme.C_AMBER.r, HudTheme.C_AMBER.g, HudTheme.C_AMBER.b, 0.20)))
+	_bets_locked_pill.visible = false
+	var lock_lbl := Label.new()
+	lock_lbl.text = HudI18n.t("hud.timer.bets_locked")
+	lock_lbl.label_settings = HudTheme.ls_label_caps(HudTheme.C_AMBER, HudTheme.FS_TINY)
+	lock_lbl.set_meta("i18n_key", "hud.timer.bets_locked")
+	_bets_locked_pill.add_child(lock_lbl)
+	vb.add_child(_bets_locked_pill)
+
+	return anchor
+
+# ─── Layout — bet panel ─────────────────────────────────────────────────────
+
+func _build_bet_panel() -> Control:
+	# The whole bet panel sits center-bottom, above the timer card.
+	# Visible only in WAITING + RGS mode; show_bet_panel(false) hides it.
+	var anchor := Control.new()
+	anchor.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	anchor.offset_left = -290
+	anchor.offset_right = 290
+	anchor.offset_top = -380
+	anchor.offset_bottom = -150
+	anchor.mouse_filter = Control.MOUSE_FILTER_PASS
+	anchor.visible = false
+	_bet_panel = anchor
+
+	_bet_panel_card = PanelContainer.new()
+	_bet_panel_card.add_theme_stylebox_override("panel", HudTheme.sb_card(HudTheme.C_SURFACE_2))
+	_bet_panel_card.set_anchors_preset(Control.PRESET_FULL_RECT)
+	anchor.add_child(_bet_panel_card)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", HudTheme.GAP_SECTION)
+	_bet_panel_card.add_child(vb)
+
+	# ── Header: "PLACE YOUR BET" + countdown ──────────────────────────────
+	var header_hb := HBoxContainer.new()
+	header_hb.add_theme_constant_override("separation", 12)
+	vb.add_child(header_hb)
+
+	var header_lbl := Label.new()
+	header_lbl.text = HudI18n.t("hud.bet.header")
+	header_lbl.label_settings = HudTheme.ls_label_caps(HudTheme.accent(), HudTheme.FS_LABEL)
+	header_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_lbl.set_meta("i18n_key", "hud.bet.header")
+	header_hb.add_child(header_lbl)
+
 	_bet_countdown_label = Label.new()
 	_bet_countdown_label.text = ""
-	_bet_countdown_label.add_theme_font_size_override("font_size", 12)
-	_bet_countdown_label.add_theme_color_override("font_color", Color(0.70, 0.85, 0.70))
-	_bet_countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_bet_countdown_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN, HudTheme.FS_LABEL)
 	_bet_countdown_label.visible = false
-	vb.add_child(_bet_countdown_label)
+	header_hb.add_child(_bet_countdown_label)
 
-	# Place Bet button
-	_place_bet_btn = Button.new()
-	_place_bet_btn.text = "PLACE BET"
-	_place_bet_btn.disabled = true
-	_place_bet_btn.add_theme_font_size_override("font_size", 15)
-	_place_bet_btn.pressed.connect(_on_place_bet_pressed)
-	vb.add_child(_place_bet_btn)
+	# Divider.
+	var div1 := ColorRect.new()
+	div1.color = HudTheme.C_BORDER_DIM
+	div1.custom_minimum_size = Vector2(0, 1)
+	vb.add_child(div1)
 
-	# "Your bets" section
-	var bets_header := Label.new()
-	bets_header.text = "Your bets:"
-	bets_header.add_theme_font_size_override("font_size", 11)
-	bets_header.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
-	vb.add_child(bets_header)
+	# ── Marble selector strip ────────────────────────────────────────────
+	_bet_marble_caption = Label.new()
+	_bet_marble_caption.text = HudI18n.t("hud.bet.pick_marble")
+	_bet_marble_caption.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	_bet_marble_caption.set_meta("i18n_key", "hud.bet.pick_marble")
+	vb.add_child(_bet_marble_caption)
+
+	var strip_scroll := ScrollContainer.new()
+	strip_scroll.custom_minimum_size = Vector2(0, 50)
+	strip_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(strip_scroll)
+
+	_bet_marble_strip = HBoxContainer.new()
+	_bet_marble_strip.add_theme_constant_override("separation", 6)
+	strip_scroll.add_child(_bet_marble_strip)
+
+	# ── Stake row: chips + custom amount ─────────────────────────────────
+	var stake_caption := Label.new()
+	stake_caption.text = HudI18n.t("hud.bet.stake_caption")
+	stake_caption.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	stake_caption.set_meta("i18n_key", "hud.bet.stake_caption")
+	vb.add_child(stake_caption)
+
+	var stake_hb := HBoxContainer.new()
+	stake_hb.add_theme_constant_override("separation", 8)
+	vb.add_child(stake_hb)
+
+	for preset_val in [5, 10, 25, 50, 100]:
+		var pb := Button.new()
+		pb.text = "%d" % preset_val
+		pb.flat = false
+		pb.focus_mode = Control.FOCUS_NONE
+		_apply_chip_style(pb, false)
+		pb.custom_minimum_size = Vector2(48, 32)
+		pb.pressed.connect(_on_preset_amount.bind(float(preset_val), pb))
+		_bet_chip_buttons.append(pb)
+		stake_hb.add_child(pb)
+
+	# Adjust + amount.
+	var adj_hb := HBoxContainer.new()
+	adj_hb.add_theme_constant_override("separation", 6)
+	vb.add_child(adj_hb)
+
+	for delta in [-10, -1, 1, 10]:
+		var b := Button.new()
+		b.text = "%+d" % delta
+		b.flat = false
+		b.focus_mode = Control.FOCUS_NONE
+		_apply_chip_style(b, false)
+		b.custom_minimum_size = Vector2(40, 28)
+		b.pressed.connect(_on_adjust_amount.bind(float(delta)))
+		adj_hb.add_child(b)
+
+	_bet_stake_label = Label.new()
+	_bet_stake_label.text = HudTheme.format_money(_bet_amount)
+	_bet_stake_label.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_NUMBER_LARGE)
+	_bet_stake_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_bet_stake_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	adj_hb.add_child(_bet_stake_label)
+
+	# ── Potential payout ─────────────────────────────────────────────────
+	_bet_potential_payout = Label.new()
+	_bet_potential_payout.text = "%s —" % HudI18n.t("hud.bet.potential_win")
+	_bet_potential_payout.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN, HudTheme.FS_TEXT)
+	_bet_potential_payout.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(_bet_potential_payout)
+
+	# ── CTA ──────────────────────────────────────────────────────────────
+	_bet_cta = Button.new()
+	_bet_cta.text = HudI18n.t("hud.bet.cta")
+	_bet_cta.flat = false
+	_bet_cta.focus_mode = Control.FOCUS_NONE
+	_bet_cta.set_meta("i18n_key", "hud.bet.cta")
+	_bet_cta.add_theme_stylebox_override("normal",   HudTheme.sb_button_primary(HudTheme.accent()))
+	_bet_cta.add_theme_stylebox_override("hover",    HudTheme.sb_button_primary(HudTheme.accent().lightened(0.10)))
+	_bet_cta.add_theme_stylebox_override("pressed",  HudTheme.sb_button_primary(HudTheme.accent().darkened(0.10)))
+	_bet_cta.add_theme_stylebox_override("disabled", HudTheme.sb_button_primary_disabled())
+	_bet_cta.add_theme_stylebox_override("focus",    HudTheme.sb_button_primary(HudTheme.accent()))
+	_bet_cta.add_theme_font_override("font", HudTheme.font_display())
+	_bet_cta.add_theme_font_size_override("font_size", HudTheme.FS_TEXT)
+	_bet_cta.add_theme_color_override("font_color", HudTheme.C_TEXT_INVERSE)
+	_bet_cta.add_theme_color_override("font_disabled_color", HudTheme.C_TEXT_DIM)
+	_bet_cta.add_theme_color_override("font_hover_color", HudTheme.C_TEXT_INVERSE)
+	_bet_cta.add_theme_color_override("font_pressed_color", HudTheme.C_TEXT_INVERSE)
+	_bet_cta.disabled = true
+	_bet_cta.pressed.connect(_on_place_bet_pressed)
+	vb.add_child(_bet_cta)
+
+	# ── Active bets list ─────────────────────────────────────────────────
+	var bets_caption := Label.new()
+	bets_caption.text = HudI18n.t("hud.bet.your_bets")
+	bets_caption.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	bets_caption.set_meta("i18n_key", "hud.bet.your_bets")
+	vb.add_child(bets_caption)
 
 	var bets_scroll := ScrollContainer.new()
 	bets_scroll.custom_minimum_size = Vector2(0, 60)
@@ -617,245 +1163,532 @@ func _build_bet_panel() -> Control:
 	vb.add_child(bets_scroll)
 
 	_bets_list = VBoxContainer.new()
-	_bets_list.add_theme_constant_override("separation", 2)
+	_bets_list.add_theme_constant_override("separation", 4)
 	_bets_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bets_scroll.add_child(_bets_list)
 
-	return panel
+	return anchor
 
-func _build_winner_modal() -> Control:
-	var control := Control.new()
-	control.set_anchors_preset(Control.PRESET_FULL_RECT)
-	control.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_winner_modal = control
-
-	var bg := ColorRect.new()
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg.color = Color(0, 0, 0, 0.55)
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	control.add_child(bg)
-
-	var center := CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	control.add_child(center)
-
-	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", _panel_stylebox(Color(0.05, 0.05, 0.10, 0.95)))
-	center.add_child(panel)
+func _make_bet_marble_chip(orig_idx: int, marble_name: String, color: Color) -> Button:
+	var chip := Button.new()
+	chip.flat = false
+	chip.focus_mode = Control.FOCUS_NONE
+	chip.toggle_mode = false
+	chip.custom_minimum_size = Vector2(48, 44)
+	chip.tooltip_text = marble_name
+	_apply_marble_chip_style(chip, color, false)
 
 	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 0)
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_theme_constant_override("separation", 12)
-	panel.add_child(vb)
+	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	chip.add_child(vb)
 
-	var label := Label.new()
-	label.text = "WINNER"
-	label.add_theme_font_size_override("font_size", 18)
-	label.add_theme_color_override("font_color", Color(0.55, 0.55, 0.65))
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(label)
+	var color_block := PanelContainer.new()
+	color_block.custom_minimum_size = Vector2(0, 14)
+	var sb_block := StyleBoxFlat.new()
+	sb_block.bg_color = color
+	sb_block.corner_radius_top_left    = 4
+	sb_block.corner_radius_top_right   = 4
+	sb_block.corner_radius_bottom_left = 4
+	sb_block.corner_radius_bottom_right = 4
+	color_block.add_theme_stylebox_override("panel", sb_block)
+	vb.add_child(color_block)
 
-	_winner_name_label = Label.new()
-	_winner_name_label.text = "—"
-	_winner_name_label.add_theme_font_size_override("font_size", 48)
-	_winner_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(_winner_name_label)
+	var lbl := Label.new()
+	lbl.text = HudTheme.short_marble_name(marble_name)
+	lbl.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TINY)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(lbl)
 
-	_winner_prize_label = Label.new()
-	_winner_prize_label.text = "—"
-	_winner_prize_label.add_theme_font_size_override("font_size", 16)
-	_winner_prize_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.20))
-	_winner_prize_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(_winner_prize_label)
+	chip.pressed.connect(func() -> void:
+		_on_marble_chip_pressed(orig_idx, color)
+	)
+	if _bet_marble_strip != null:
+		_bet_marble_strip.add_child(chip)
+	return chip
 
-	# RGS payout line (hidden when not in RGS mode or no bets placed).
-	_winner_payout_label = Label.new()
-	_winner_payout_label.text = ""
-	_winner_payout_label.add_theme_font_size_override("font_size", 14)
-	_winner_payout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_winner_payout_label.visible = false
-	vb.add_child(_winner_payout_label)
+func _apply_marble_chip_style(chip: Button, color: Color, selected: bool) -> void:
+	var sb_normal: StyleBoxFlat
+	var sb_hover: StyleBoxFlat
+	if selected:
+		sb_normal = HudTheme.sb_chip(true, color)
+		sb_hover  = HudTheme.sb_chip(true, color)
+	else:
+		sb_normal = HudTheme.sb_chip(false, color)
+		sb_hover  = HudTheme.sb_chip(false, color.lightened(0.10))
+	chip.add_theme_stylebox_override("normal",   sb_normal)
+	chip.add_theme_stylebox_override("hover",    sb_hover)
+	chip.add_theme_stylebox_override("pressed",  sb_normal)
+	chip.add_theme_stylebox_override("disabled", sb_normal)
+	chip.add_theme_stylebox_override("focus",    sb_normal)
 
-	# Next-round countdown (shown during RGS auto-restart delay).
-	_winner_next_round_label = Label.new()
-	_winner_next_round_label.text = ""
-	_winner_next_round_label.add_theme_font_size_override("font_size", 13)
-	_winner_next_round_label.add_theme_color_override("font_color", Color(0.55, 0.75, 0.95))
-	_winner_next_round_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_winner_next_round_label.visible = false
-	vb.add_child(_winner_next_round_label)
+func _apply_chip_style(btn: Button, selected: bool) -> void:
+	var sb_normal := HudTheme.sb_chip(selected)
+	var sb_hover  := HudTheme.sb_chip(selected)
+	btn.add_theme_stylebox_override("normal",   sb_normal)
+	btn.add_theme_stylebox_override("hover",    sb_hover)
+	btn.add_theme_stylebox_override("pressed",  sb_normal)
+	btn.add_theme_stylebox_override("disabled", sb_normal)
+	btn.add_theme_stylebox_override("focus",    sb_normal)
+	btn.add_theme_font_override("font", HudTheme.font_body())
+	btn.add_theme_font_size_override("font_size", HudTheme.FS_TEXT)
+	btn.add_theme_color_override("font_color", HudTheme.C_TEXT_PRIMARY)
+	btn.add_theme_color_override("font_hover_color", HudTheme.C_TEXT_PRIMARY)
+	btn.add_theme_color_override("font_pressed_color", HudTheme.C_TEXT_PRIMARY)
 
-	control.visible = false
-	return control
+func _clear_bet_marble_chips() -> void:
+	for c in _bet_marble_chips:
+		if is_instance_valid(c):
+			c.queue_free()
+	_bet_marble_chips.clear()
 
-func _build_toast() -> Control:
-	# Anchored to bottom-left, floats above the marble list area.
-	var ctrl := Control.new()
-	ctrl.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	ctrl.offset_left = 20
-	ctrl.offset_bottom = -20
-	ctrl.offset_top = -60
-	ctrl.offset_right = 380
-	ctrl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-	_toast_label = Label.new()
-	_toast_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_toast_label.add_theme_font_size_override("font_size", 13)
-	_toast_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.5))
-	_toast_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_toast_label.visible = false
-	ctrl.add_child(_toast_label)
-	return ctrl
-
-# ─── Bet panel callbacks ──────────────────────────────────────────────────────
-
-func _on_marble_selected(index: int) -> void:
-	_selected_marble = index
+func _on_marble_chip_pressed(orig_idx: int, _color: Color) -> void:
+	# Find the meta entry whose original_index matches.
+	for i in range(_marble_meta.size()):
+		if int(_marble_meta[i]["original_index"]) == orig_idx:
+			_selected_marble = i
+			break
+	# Refresh chip styling.
+	for i in range(_bet_marble_chips.size()):
+		if not is_instance_valid(_bet_marble_chips[i]):
+			continue
+		var meta_color: Color = _marble_meta[i]["color"]
+		_apply_marble_chip_style(_bet_marble_chips[i], meta_color, i == _selected_marble)
 	_validate_bet_button()
+	_update_potential_payout()
 
-func _on_preset_amount(val: float) -> void:
+func _on_preset_amount(val: float, source_btn: Button) -> void:
 	_bet_amount = val
-	_amount_label.text = "%.2f" % _bet_amount
+	_bet_stake_label.text = HudTheme.format_money(_bet_amount)
+	# Highlight selected chip; reset others.
+	for b in _bet_chip_buttons:
+		_apply_chip_style(b, b == source_btn)
 	_validate_bet_button()
+	_update_potential_payout()
 
 func _on_adjust_amount(delta: float) -> void:
 	_bet_amount = max(1.0, _bet_amount + delta)
-	_amount_label.text = "%.2f" % _bet_amount
+	_bet_stake_label.text = HudTheme.format_money(_bet_amount)
+	# Adjusting clears chip selection — the stake is no longer at a preset.
+	for b in _bet_chip_buttons:
+		_apply_chip_style(b, false)
 	_validate_bet_button()
+	_update_potential_payout()
 
 func _on_place_bet_pressed() -> void:
 	if _selected_marble < 0 or _bet_amount <= 0.0:
 		return
 	if _bet_amount > _balance:
-		_show_toast("Insufficient balance")
+		_show_toast(HudI18n.t("hud.bet.insufficient"), HudTheme.TOAST_ERROR)
 		return
 	var original_idx: int = _marble_meta[_selected_marble]["original_index"]
 	bet_requested.emit(original_idx, _bet_amount)
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-
 func _validate_bet_button() -> void:
 	if not _rgs_mode:
-		_place_bet_btn.disabled = true
-		_place_bet_btn.tooltip_text = "Betting requires RGS mode (--rgs=<url>)"
+		_bet_cta.disabled = true
+		_bet_cta.tooltip_text = "Betting requires RGS mode (--rgs=<url>)"
 		return
 	var valid := _selected_marble >= 0 and _bet_amount > 0.0 and _bet_amount <= _balance
-	_place_bet_btn.disabled = not valid
+	_bet_cta.disabled = not valid
+	if valid:
+		_bet_cta.tooltip_text = ""
 
-func _update_balance_label() -> void:
-	_balance_label.text = "%.2f USD" % _balance
+func _update_potential_payout() -> void:
+	if _selected_marble < 0:
+		_bet_potential_payout.text = "%s —" % HudI18n.t("hud.bet.potential_win")
+		return
+	var payout := _bet_amount * PAYOUT_MULT
+	_bet_potential_payout.text = HudI18n.t("hud.bet.potential_win_value") % HudTheme.format_money(payout)
 
 func _refresh_bets_list() -> void:
 	for c in _bets_list.get_children():
 		c.queue_free()
 	for b in _placed_bets:
-		var row := Label.new()
-		row.text = "Marble_%02d — %.2f" % [int(b.get("marble_idx", 0)), float(b.get("amount", 0.0))]
-		row.add_theme_font_size_override("font_size", 12)
-		row.add_theme_color_override("font_color", Color(0.85, 0.85, 0.95))
+		var marble_idx: int = int(b.get("marble_idx", 0))
+		var amount: float = float(b.get("amount", 0.0))
+		var row := PanelContainer.new()
+		row.add_theme_stylebox_override("panel",
+			HudTheme.sb_panel(Color(1, 1, 1, 0.04), HudTheme.C_BORDER_DIM, 8, 1))
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 8)
+		row.add_child(hb)
+		# Color chip of the marble bet on (lookup color from meta).
+		var color := Color(0.6, 0.6, 0.6)
+		for m in _marble_meta:
+			if int(m["original_index"]) == marble_idx:
+				color = m["color"]
+				break
+		var chip := PanelContainer.new()
+		chip.custom_minimum_size = Vector2(10, 10)
+		chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		var sbc := StyleBoxFlat.new()
+		sbc.bg_color = color
+		sbc.set_corner_radius_all(3)
+		chip.add_theme_stylebox_override("panel", sbc)
+		hb.add_child(chip)
+		var nm := Label.new()
+		nm.text = "Marble %02d" % marble_idx
+		nm.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_SMALL)
+		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hb.add_child(nm)
+		var amt := Label.new()
+		amt.text = HudTheme.format_money(amount)
+		amt.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_SMALL)
+		hb.add_child(amt)
 		_bets_list.add_child(row)
 
-func _show_toast(message: String) -> void:
-	_toast_label.text = message
-	_toast_label.visible = true
-	_toast_timer = 3.5
+func _show_bet_panel(yes: bool) -> void:
+	if _bet_panel != null:
+		_bet_panel.visible = yes
 
-func _make_marble_row(marble_name: String, color: Color, is_leader: bool = false,
-		original_index: int = -1) -> Control:
-	var btn := Button.new()
-	btn.flat = true
-	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+# ─── Layout — winner modal ──────────────────────────────────────────────────
 
-	var sb_normal := _row_stylebox(Color(0, 0, 0, 0.0),    Color(0, 0, 0, 0.0))
-	var sb_hover  := _row_stylebox(Color(1, 1, 1, 0.08),   Color(0, 0, 0, 0.0))
-	var sb_press  := _row_stylebox(Color(1, 1, 1, 0.18),   Color(0, 0, 0, 0.0))
+func _build_winner_modal() -> Control:
+	var control := Control.new()
+	control.set_anchors_preset(Control.PRESET_FULL_RECT)
+	control.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	control.visible = false
+	_winner_modal = control
 
-	if is_leader:
-		sb_normal = _row_stylebox(Color(0.22, 0.18, 0.04, 0.85), Color(1.0, 0.82, 0.12, 0.90))
-		sb_hover  = _row_stylebox(Color(0.28, 0.24, 0.08, 0.90), Color(1.0, 0.82, 0.12, 0.90))
-		sb_press  = _row_stylebox(Color(0.34, 0.30, 0.12, 0.95), Color(1.0, 0.82, 0.12, 0.90))
+	# Dark scrim.
+	var scrim := ColorRect.new()
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.color = Color(0, 0, 0, 0.78)
+	scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	control.add_child(scrim)
 
-	btn.add_theme_stylebox_override("normal",   sb_normal)
-	btn.add_theme_stylebox_override("hover",    sb_hover)
-	btn.add_theme_stylebox_override("pressed",  sb_press)
-	btn.add_theme_stylebox_override("disabled", sb_normal)
-	btn.add_theme_stylebox_override("focus",    sb_normal)
+	# Centered hero card.
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	control.add_child(center)
 
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
-	btn.add_child(hb)
+	_winner_modal_card = PanelContainer.new()
+	_winner_modal_card.add_theme_stylebox_override("panel",
+		HudTheme.sb_card(HudTheme.C_SURFACE_HERO, HudTheme.C_GOLD))
+	_winner_modal_card.custom_minimum_size = Vector2(520, 0)
+	center.add_child(_winner_modal_card)
 
-	var swatch := ColorRect.new()
-	swatch.color = color
-	swatch.custom_minimum_size = Vector2(14, 14)
-	hb.add_child(swatch)
+	var vb := VBoxContainer.new()
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 14)
+	_winner_modal_card.add_child(vb)
 
-	var label := Label.new()
-	label.text = marble_name
-	label.add_theme_font_size_override("font_size", 12)
-	label.add_theme_color_override("font_color",
-		Color(1.0, 0.92, 0.30) if is_leader else Color(0.92, 0.92, 0.96))
-	hb.add_child(label)
+	# "🏁 WINNER" caption row with color chip.
+	var caption_hb := HBoxContainer.new()
+	caption_hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	caption_hb.add_theme_constant_override("separation", 12)
+	vb.add_child(caption_hb)
 
-	if original_index >= 0:
-		btn.pressed.connect(func() -> void:
-			marble_selected.emit(original_index)
-		)
+	_winner_color_swatch = ColorRect.new()
+	_winner_color_swatch.color = HudTheme.C_GOLD
+	_winner_color_swatch.custom_minimum_size = Vector2(28, 28)
+	_winner_color_swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	caption_hb.add_child(_winner_color_swatch)
 
-	return btn
+	_winner_caption_label = Label.new()
+	_winner_caption_label.text = HudI18n.t("hud.winner.caption")
+	_winner_caption_label.label_settings = HudTheme.ls_label_caps(HudTheme.accent(), HudTheme.FS_TITLE)
+	_winner_caption_label.set_meta("i18n_key", "hud.winner.caption")
+	caption_hb.add_child(_winner_caption_label)
 
-func _apply_following_marker(orig_idx: int, active: bool) -> void:
-	if not _row_by_index.has(orig_idx):
-		return
-	var row: Control = _row_by_index[orig_idx]
-	if not row is Button:
-		return
-	var btn := row as Button
-	var sb: StyleBoxFlat = btn.get_theme_stylebox("normal").duplicate()
-	if active:
-		sb.border_color = Color(0.0, 0.85, 1.0, 1.0)
-		sb.border_width_left = 3
-		sb.border_width_top = 0
-		sb.border_width_right = 0
-		sb.border_width_bottom = 0
+	# Marble name — hero size.
+	_winner_name_label = Label.new()
+	_winner_name_label.text = "—"
+	_winner_name_label.label_settings = HudTheme.ls_hero(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_HERO_NUM)
+	_winner_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(_winner_name_label)
+
+	# Payout result — hidden when no bets / non-RGS mode.
+	_winner_payout_label = Label.new()
+	_winner_payout_label.text = ""
+	_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_GREEN, HudTheme.FS_HERO_NUM)
+	_winner_payout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_winner_payout_label.visible = false
+	vb.add_child(_winner_payout_label)
+
+	# Subtle divider before next-round countdown.
+	var div := ColorRect.new()
+	div.color = HudTheme.C_BORDER_DIM
+	div.custom_minimum_size = Vector2(0, 1)
+	vb.add_child(div)
+
+	# Next-round countdown.
+	_winner_next_round_label = Label.new()
+	_winner_next_round_label.text = ""
+	_winner_next_round_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_CYAN, HudTheme.FS_LABEL)
+	_winner_next_round_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_winner_next_round_label.visible = false
+	vb.add_child(_winner_next_round_label)
+
+	return control
+
+func _show_winner_modal() -> void:
+	_winner_modal.visible = true
+	# Entrance: scale 0.92 → 1.0 + alpha 0 → 1, parallel.
+	_winner_modal_card.modulate = Color(1, 1, 1, 0)
+	_winner_modal_card.scale = Vector2(0.92, 0.92)
+	_winner_modal_card.pivot_offset = _winner_modal_card.size * 0.5
+	var t := create_tween()
+	t.set_parallel(true)
+	t.set_ease(Tween.EASE_OUT)
+	t.set_trans(Tween.TRANS_CUBIC)
+	t.tween_property(_winner_modal_card, "modulate:a", 1.0, HudTheme.ANIM_NORMAL)
+	t.tween_property(_winner_modal_card, "scale", Vector2(1.0, 1.0), HudTheme.ANIM_NORMAL)
+
+func _apply_local_payout_summary(winner_name: String) -> void:
+	# Compute payout from local _placed_bets given the winning marble.
+	var winner_idx := -1
+	var trimmed := winner_name.trim_prefix("Marble_")
+	if trimmed.is_valid_int():
+		winner_idx = int(trimmed)
+	var total_payout := 0.0
+	var total_wagered := 0.0
+	for b in _placed_bets:
+		total_wagered += float(b["amount"])
+		if int(b["marble_idx"]) == winner_idx:
+			total_payout += float(b.get("expected_payout_if_win", b["amount"] * PAYOUT_MULT))
+	if total_payout > 0.0:
+		_winner_payout_label.text = "+%s" % HudTheme.format_money(total_payout)
+		_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_GREEN, HudTheme.FS_HERO_NUM)
 	else:
-		sb.border_color = Color(0, 0, 0, 0)
-		sb.border_width_left = 0
-	btn.add_theme_stylebox_override("normal",   sb)
-	btn.add_theme_stylebox_override("disabled", sb)
-	btn.add_theme_stylebox_override("focus",    sb)
+		_winner_payout_label.text = HudTheme.format_money(-total_wagered)
+		_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_RED, HudTheme.FS_HERO_NUM)
+	_winner_payout_label.visible = true
 
-func _row_stylebox(bg: Color, border: Color) -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = bg
-	sb.border_color = border
-	sb.set_border_width_all(0 if border.a == 0.0 else 2)
-	sb.corner_radius_top_left    = 4
-	sb.corner_radius_top_right   = 4
-	sb.corner_radius_bottom_left = 4
-	sb.corner_radius_bottom_right = 4
-	sb.content_margin_left   = 4
-	sb.content_margin_right  = 4
-	sb.content_margin_top    = 2
-	sb.content_margin_bottom = 2
-	return sb
+# ─── Layout — toast ─────────────────────────────────────────────────────────
 
-func _clear_marble_list() -> void:
-	for c in _marble_list.get_children():
-		c.queue_free()
-	_row_by_index.clear()
+func _build_toast() -> Control:
+	var anchor := Control.new()
+	anchor.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	anchor.offset_left = -200
+	anchor.offset_right = 200
+	anchor.offset_top = -176
+	anchor.offset_bottom = -140
+	anchor.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_toast_anchor = anchor
 
-func _panel_stylebox(bg: Color) -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = bg
-	sb.corner_radius_top_left    = 6
-	sb.corner_radius_top_right   = 6
-	sb.corner_radius_bottom_left = 6
-	sb.corner_radius_bottom_right = 6
-	sb.content_margin_left   = 12
-	sb.content_margin_right  = 12
-	sb.content_margin_top    = 8
-	sb.content_margin_bottom = 8
-	return sb
+	_toast_card = PanelContainer.new()
+	_toast_card.add_theme_stylebox_override("panel", HudTheme.sb_toast(HudTheme.TOAST_INFO))
+	_toast_card.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_toast_card.modulate = Color(1, 1, 1, 0)
+	_toast_card.visible = false
+	anchor.add_child(_toast_card)
+
+	_toast_label = Label.new()
+	_toast_label.text = ""
+	_toast_label.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TEXT)
+	_toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_toast_card.add_child(_toast_label)
+
+	return anchor
+
+func _show_toast(message: String, toast_type: int = HudTheme.TOAST_INFO) -> void:
+	_toast_label.text = message
+	_toast_card.add_theme_stylebox_override("panel", HudTheme.sb_toast(toast_type))
+	_toast_card.visible = true
+	_toast_timer = 3.5
+	# Pop-in tween.
+	if _toast_tween != null and _toast_tween.is_valid():
+		_toast_tween.kill()
+	_toast_card.modulate = Color(1, 1, 1, 0)
+	_toast_card.scale = Vector2(0.95, 0.95)
+	_toast_card.pivot_offset = _toast_card.size * 0.5
+	var t := create_tween()
+	t.set_parallel(true)
+	t.set_ease(Tween.EASE_OUT)
+	t.set_trans(Tween.TRANS_CUBIC)
+	t.tween_property(_toast_card, "modulate:a", 1.0, HudTheme.ANIM_FAST)
+	t.tween_property(_toast_card, "scale", Vector2(1.0, 1.0), HudTheme.ANIM_FAST)
+	_toast_tween = t
+
+func _dismiss_toast() -> void:
+	if _toast_tween != null and _toast_tween.is_valid():
+		_toast_tween.kill()
+	var t := create_tween()
+	t.set_ease(Tween.EASE_IN)
+	t.tween_property(_toast_card, "modulate:a", 0.0, HudTheme.ANIM_FAST)
+	t.tween_callback(func() -> void:
+		_toast_card.visible = false
+	)
+	_toast_tween = t
+
+# ─── Phase ──────────────────────────────────────────────────────────────────
+
+func _apply_phase(phase: String) -> void:
+	_current_phase = phase
+	# Translate the phase via i18n so the pill matches the current locale.
+	var phase_key := "hud.phase.waiting"
+	match phase:
+		PHASE_RACING:   phase_key = "hud.phase.racing"
+		PHASE_FINISHED: phase_key = "hud.phase.finished"
+	_phase_pill_label.text = HudI18n.t(phase_key)
+	_phase_pill_label.set_meta("phase_key", phase_key)
+	_phase_pill.add_theme_stylebox_override("panel", HudTheme.sb_phase_pill(phase))
+	# LIVE dot only meaningful in RACING.
+	_live_dot.visible = (phase == PHASE_RACING)
+	# Phase pill text color matches state — except FINISHED which uses
+	# operator accent (gold by default, could be operator-overridden).
+	var phase_col: Color = HudTheme.phase_color(phase)
+	if phase == PHASE_FINISHED:
+		phase_col = HudTheme.accent()
+	_phase_pill_label.label_settings = HudTheme.ls_label_caps(phase_col, HudTheme.FS_LABEL)
+	# Hide podium during WAITING (no race yet); show in RACING/FINISHED.
+	if _podium_box != null and phase == PHASE_WAITING:
+		_podium_box.visible = false
+
+# ─── Balance ────────────────────────────────────────────────────────────────
+
+func _update_balance_display() -> void:
+	if _balance_amount_label != null:
+		_balance_amount_label.text = HudTheme.format_money(_balance)
+
+# ─── Operator branding refresh ──────────────────────────────────────────────
+# Called from apply_operator_theme(). Re-styles only the widgets that
+# embed the accent colour or the brand identity. Other widgets (timing
+# tower rows, etc.) re-style themselves on the next update_standings tick.
+
+func _refresh_branded_widgets() -> void:
+	# Brand mark fill — accent.
+	if _brand_mark != null:
+		_brand_mark.add_theme_stylebox_override("panel",
+			HudTheme.sb_panel(HudTheme.accent(), HudTheme.accent(), 8, 0))
+	# Brand mark glyph vs operator logo — visibility flip.
+	var logo := HudTheme.brand_logo()
+	if _brand_logo_tex != null:
+		_brand_logo_tex.texture = logo
+		_brand_logo_tex.visible = (logo != null)
+	if _brand_glyph != null:
+		_brand_glyph.visible = (logo == null)
+	# Brand label text.
+	if _brand_label != null:
+		_brand_label.text = HudTheme.brand_text()
+	# Standings header colour.
+	if _timing_tower_header != null:
+		_timing_tower_header.label_settings = HudTheme.ls_label_caps(
+			HudTheme.accent(), HudTheme.FS_LABEL)
+	# Bet CTA stylebox set.
+	if _bet_cta != null:
+		_bet_cta.add_theme_stylebox_override("normal",
+			HudTheme.sb_button_primary(HudTheme.accent()))
+		_bet_cta.add_theme_stylebox_override("hover",
+			HudTheme.sb_button_primary(HudTheme.accent().lightened(0.10)))
+		_bet_cta.add_theme_stylebox_override("pressed",
+			HudTheme.sb_button_primary(HudTheme.accent().darkened(0.10)))
+		_bet_cta.add_theme_stylebox_override("focus",
+			HudTheme.sb_button_primary(HudTheme.accent()))
+	# Race progress bar fill.
+	if _race_progress_bar != null:
+		var pb_fill := StyleBoxFlat.new()
+		pb_fill.bg_color = HudTheme.accent()
+		pb_fill.set_corner_radius_all(2)
+		_race_progress_bar.add_theme_stylebox_override("fill", pb_fill)
+	# Winner caption colour.
+	if _winner_caption_label != null:
+		_winner_caption_label.label_settings = HudTheme.ls_label_caps(
+			HudTheme.accent(), HudTheme.FS_TITLE)
+
+# ─── Localised label refresh ────────────────────────────────────────────────
+# Called from set_lang() and apply_operator_theme(). Walks the labels
+# tagged with `i18n_key` metadata and re-applies the localised text.
+# Works for labels created in the build phase only; dynamic strings
+# (countdown, podium ranks, etc.) re-localise themselves on next tick.
+
+func _refresh_localised_labels() -> void:
+	# Top bar — phase pill (re-render through _apply_phase to refresh both
+	# styling and meta) and balance caption + currency.
+	if _phase_pill_label != null:
+		_apply_phase(_current_phase)
+	if _balance_caption != null:
+		_balance_caption.text = HudI18n.t("hud.balance.caption")
+	if _balance_currency_label != null:
+		_balance_currency_label.text = HudI18n.t("hud.balance.currency")
+	# Track name — needs the i18n_key stored at set_track_name() time.
+	if _track_name_label != null and _track_name_label.has_meta("i18n_key"):
+		var k := String(_track_name_label.get_meta("i18n_key"))
+		if k != "":
+			_track_name_label.text = HudI18n.t(k)
+	# Standings header.
+	if _timing_tower_header != null:
+		_timing_tower_header.text = HudI18n.t("hud.standings.header")
+	if _timing_tower_count != null:
+		_update_timing_tower_count()
+	# Timer caption + bets-locked pill.
+	if _timer_caption != null:
+		_timer_caption.text = HudI18n.t("hud.timer.caption")
+	# Walk ALL children of the bet panel and root + winner modal looking
+	# for `i18n_key` metadata. Cheap — a few dozen labels.
+	_relocalise_recursive(self)
+
+func _relocalise_recursive(node: Node) -> void:
+	if node is Label and node.has_meta("i18n_key"):
+		var k := String(node.get_meta("i18n_key"))
+		if k != "":
+			(node as Label).text = HudI18n.t(k)
+	elif node is Button and node.has_meta("i18n_key"):
+		var k := String(node.get_meta("i18n_key"))
+		if k != "":
+			(node as Button).text = HudI18n.t(k)
+	for child in node.get_children():
+		_relocalise_recursive(child)
+
+# ─── Responsive layout ──────────────────────────────────────────────────────
+# Called from _process() once when the viewport crosses BREAKPOINT_MOBILE.
+# Switches between landscape (default) and portrait/mobile layouts by
+# repositioning anchors and toggling visibility of the heavier widgets.
+
+func _apply_responsive_layout() -> void:
+	if _is_mobile:
+		_apply_mobile_layout()
+	else:
+		_apply_desktop_layout()
+
+func _apply_mobile_layout() -> void:
+	# Top bar — collapse: hide podium ribbon and brand subtitle (track name
+	# stays visible via track_name_label which is the most important label).
+	if _podium_box != null:
+		_podium_box.visible = false
+	if _brand_label != null:
+		_brand_label.visible = false
+	# Timing tower — reduce width and dock to right edge.
+	if _timing_tower != null:
+		_timing_tower.offset_left = -200
+		_timing_tower.offset_right = -8
+		_timing_tower.offset_top = 76
+		_timing_tower.offset_bottom = -200
+	# Bet panel — full-width bottom sheet so finger taps on chips work.
+	if _bet_panel != null:
+		_bet_panel.offset_left = 8
+		_bet_panel.offset_right = -8
+		_bet_panel.offset_top = -440
+		_bet_panel.offset_bottom = -100
+	# Timer card — narrower (mobile screens ~360-414 px wide).
+	if _timer_card != null:
+		_timer_card.offset_left = -100
+		_timer_card.offset_right = 100
+		_timer_card.offset_top = -100
+		_timer_card.offset_bottom = -16
+
+func _apply_desktop_layout() -> void:
+	# Restore the default landscape positions set in _build_*().
+	if _podium_box != null and _current_phase != PHASE_WAITING:
+		_podium_box.visible = true
+	if _brand_label != null:
+		_brand_label.visible = true
+	if _timing_tower != null:
+		_timing_tower.offset_left = -300
+		_timing_tower.offset_right = -16
+		_timing_tower.offset_top = 80
+		_timing_tower.offset_bottom = -180
+	if _bet_panel != null:
+		_bet_panel.offset_left = -290
+		_bet_panel.offset_right = 290
+		_bet_panel.offset_top = -380
+		_bet_panel.offset_bottom = -150
+	if _timer_card != null:
+		_timer_card.offset_left = -130
+		_timer_card.offset_right = 130
+		_timer_card.offset_top = -130
+		_timer_card.offset_bottom = -32

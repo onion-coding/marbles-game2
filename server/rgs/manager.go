@@ -120,7 +120,11 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		cfg.SimTimeout = 60 * time.Second
 	}
 	if len(cfg.TrackPool) == 0 {
-		cfg.TrackPool = []uint8{0, 1, 2, 3, 4, 5}
+		// Six M11 themed tracks (forest=1, volcano=2, ice=3, cavern=4,
+		// sky=5, stadium=6). Legacy ramp (id 0) is excluded from rotation
+		// since the M11 redesign — see TrackRegistry.SELECTABLE in
+		// game/tracks/track_registry.gd.
+		cfg.TrackPool = []uint8{1, 2, 3, 4, 5, 6}
 	}
 	return &Manager{
 		cfg:       cfg,

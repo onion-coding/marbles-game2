@@ -20,10 +20,12 @@ const SLOTS := 4
 const PLINKO := 5
 const STADIUM := 6
 
-# Track IDs currently available for selection by roundd. Grows as casino
-# tracks ship. The live/playback paths accept any registered ID — this is
-# just the "rotation pool" the server picks from.
-const SELECTABLE := [RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM]
+# Track IDs currently available for selection by roundd / random pick.
+# Six M11 themed tracks (forest/volcano/ice/cavern/sky/stadium). The legacy
+# RAMP (id 0) stays a valid ID for replay decode (is_valid_id below) but is
+# NOT in the random rotation pool — it was the dev/default S-curve from M5
+# and doesn't fit the M11 visual language.
+const SELECTABLE := [ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM]
 
 static func count() -> int:
 	return SELECTABLE.size()

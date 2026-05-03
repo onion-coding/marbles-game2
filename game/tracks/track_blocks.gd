@@ -67,6 +67,48 @@ static func add_cylinder(parent: Node, node_name: String, tx: Transform3D,
 	mesh.material_override = mat
 	parent.add_child(mesh)
 
+# ─── Primitive: kinematic (animatable) cylinder ─────────────────────────────
+# Builds an AnimatableBody3D + CollisionShape3D + MeshInstance3D positioned
+# at `tx`. The cylinder is oriented along its local Y axis by default; pass
+# a `tx` with a basis rotation if you want it horizontal (e.g.
+# Basis(Vector3.RIGHT, deg_to_rad(90)) to lay it along Z).
+#
+# Used for rotating obstacles (Forest log rolls, future kinematic cylinders).
+# Caller is responsible for driving the body's `global_transform` each frame
+# in _physics_process — TrackBlocks doesn't manage motion. `sync_to_physics`
+# is enabled so the physics step interpolates motion correctly.
+#
+# Returns the AnimatableBody3D so the caller can store it for animation.
+
+static func add_animatable_cylinder(parent: Node, node_name: String,
+		tx: Transform3D, radius: float, length: float,
+		mat: StandardMaterial3D) -> AnimatableBody3D:
+	var body := AnimatableBody3D.new()
+	body.name = node_name
+	body.sync_to_physics = true
+	body.global_transform = tx
+	parent.add_child(body)
+
+	# Children carry IDENTITY local transform — body's transform IS the orient.
+	var coll := CollisionShape3D.new()
+	coll.name = node_name + "_shape"
+	var shape := CylinderShape3D.new()
+	shape.radius = radius
+	shape.height = length
+	coll.shape = shape
+	body.add_child(coll)
+
+	var mesh := MeshInstance3D.new()
+	mesh.name = node_name + "_mesh"
+	var cm := CylinderMesh.new()
+	cm.top_radius    = radius
+	cm.bottom_radius = radius
+	cm.height        = length
+	mesh.mesh = cm
+	mesh.material_override = mat
+	body.add_child(mesh)
+	return body
+
 # ─── Primitive: collision-only box (mesh-less) ──────────────────────────────
 # For invisible bounding walls (front camera-side wall, finish-line guides).
 
