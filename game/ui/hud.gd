@@ -1302,7 +1302,10 @@ func _build_bet_panel() -> Control:
 
 		var r_mult := Label.new()
 		r_mult.name = "MultLabel"
-		r_mult.text = ("%.4g" % float(row_data["mult"])) + "×"
+		# Format float compactly: 9.0 → "9", 4.5 → "4.5", 100.0 → "100".
+		var mult_f: float = float(row_data["mult"])
+		var mult_str: String = ("%.0f" % mult_f) if mult_f == floor(mult_f) else ("%.1f" % mult_f)
+		r_mult.text = mult_str + "×"
 		r_mult.label_settings = HudTheme.ls_metric(Color(row_data["color"]), HudTheme.FS_SMALL)
 		r_hb.add_child(r_mult)
 
@@ -1689,7 +1692,7 @@ func _format_winner_breakdown(bd: Dictionary) -> String:
 	if jackpot:
 		parts.append("%s + T2 %s" % [rank_str, HudI18n.t("hud.winner.jackpot_trigger")])
 	else:
-		parts.append("%s (%.4g" % [rank_str, podium_mult] + "×)")
+		parts.append("%s (%s×)" % [rank_str, _format_compact_float(podium_mult)])
 		if pickup_tier == 1:
 			parts.append(HudI18n.t("hud.winner.pickup_bonus") % "2")
 		elif pickup_tier == 2:
@@ -1698,11 +1701,18 @@ func _format_winner_breakdown(bd: Dictionary) -> String:
 	var left := " ".join(PackedStringArray(parts))
 	var right := ""
 	if stake > 0.0 and total_payout > 0.0:
-		right = (" = %.4g" % total_mult) + "× × €" + HudTheme.format_money(stake) \
+		right = " = " + _format_compact_float(total_mult) + "× × €" + HudTheme.format_money(stake) \
 			+ " = €" + HudTheme.format_money(total_payout)
 	elif total_mult > 0.0:
-		right = " = " + ("%.4g" % total_mult) + "×"
+		right = " = " + _format_compact_float(total_mult) + "×"
 	return left + right
+
+# Compact float format: 9.0 → "9", 4.5 → "4.5", 18.0 → "18". Replaces the
+# unsupported "%g" / "%.4g" format specifier that GDScript doesn't accept.
+func _format_compact_float(v: float) -> String:
+	if v == floor(v):
+		return "%.0f" % v
+	return "%.1f" % v
 
 func _apply_local_payout_summary(winner_name: String) -> void:
 	# Compute payout from local _placed_bets given the winning marble.

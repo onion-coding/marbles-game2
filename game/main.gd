@@ -353,6 +353,7 @@ func _start_race(spec: Dictionary) -> void:
 			add_child(_hud)
 		_hud.setup(hud_header)
 		_hud.set_track_name(TrackRegistry.name_of(track_id))
+		_hud.set_track_node(track)
 		_live_racing = true
 		_live_tick = 0
 		_live_marbles = marbles

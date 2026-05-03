@@ -133,6 +133,7 @@ func _on_header(header: Dictionary) -> void:
 	print("LIVE_CLIENT: HEADER round=%d marbles=%d tick_rate=%d track=%s" % [int(header["round_id"]), marbles, int(header["tick_rate_hz"]), TrackRegistry.name_of(track_id)])
 	_hud.setup(header["header"])
 	_hud.set_track_name(TrackRegistry.name_of(track_id))
+	_hud.set_track_node(_track)
 	_player.set_track(_track)
 	_player.begin_stream(header)
 
