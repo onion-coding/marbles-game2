@@ -1,9 +1,11 @@
 # Marbles Game — CI gate
 #
-# Runs on every push and PR. Three jobs in parallel:
+# Runs on every push and PR. Five jobs in parallel:
 #   - go-test     : go vet + go test ./... + race detector
 #   - go-lint     : staticcheck + gosec + govulncheck
 #   - godot-smoke : headless --import + verify_main + test_vectors_main
+#   - python-vectors : fairness reference vectors regression
+#   - rtp-regression : v2 payout RTP target check (M22)
 #
 # Anything red blocks merge to main.
 
@@ -140,3 +142,25 @@ jobs:
             echo "::error::Fairness vectors drifted; commit the regen output."
             exit 1
           fi
+
+  rtp-regression:
+    # M22 — gate the v2 payout model against drift.  Runs the pure-Go
+    # Monte-Carlo RTP simulation (50 000 rounds, ~50ms) plus the static
+    # math regression tests via scripts/rtp_smoke_v2.sh.  Tier-2 (real
+    # Godot smoke) is intentionally NOT run here — it duplicates the
+    # godot-smoke job and adds runtime; the Go simulation alone catches
+    # math-model drift, which is what we want to gate on.
+    name: rtp regression (v2 payout model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+          cache-dependency-path: server/go.sum
+
+      - name: RTP smoke v2 (tier 1 only — pure Go)
+        run: bash scripts/rtp_smoke_v2.sh
