@@ -1,6 +1,6 @@
 extends Node3D
 
-const MARBLE_COUNT := 20
+const MARBLE_COUNT := 30
 # How many seconds the WAITING / bet-placement window is open in RGS mode.
 const RGS_BET_WINDOW_SEC := 10.0
 # How many seconds to display the winner modal before starting the next round.

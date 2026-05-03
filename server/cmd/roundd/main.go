@@ -65,7 +65,7 @@ func main() {
 		replayRoot  = flag.String("replay-root", "", "where to store per-round audit entries (required)")
 		workRoot    = flag.String("work-root", "", "scratch dir for sim specs/statuses; defaults to <replay-root>/.work")
 		rounds      = flag.Int("rounds", 1, "number of rounds to run")
-		marbles     = flag.Int("marbles", 20, "mock participants per round")
+		marbles     = flag.Int("marbles", 30, "mock participants per round")
 		rtpBps      = flag.Uint("rtp-bps", 9500, "return-to-player in basis points (9500 = 95%)")
 		buyIn       = flag.Uint64("buy-in", 100, "mock buy-in per marble (arbitrary units)")
 		timeout     = flag.Duration("sim-timeout", 60*time.Second, "hard cap per Godot subprocess")

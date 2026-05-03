@@ -47,7 +47,7 @@ func main() {
 		addr        = flag.String("addr", envOr("RGSD_ADDR", ":8090"), "HTTP listen address (env: RGSD_ADDR)")
 		rtpBps      = flag.Uint("rtp-bps", uint(envIntOr("RGSD_RTP_BPS", 9500)), "configured return-to-player in basis points")
 		buyIn       = flag.Uint64("buy-in", uint64(envIntOr("RGSD_BUY_IN", 100)), "stake per filled seat")
-		marbles     = flag.Int("marbles", envIntOr("RGSD_MARBLES", 20), "marbles per round")
+		marbles     = flag.Int("marbles", envIntOr("RGSD_MARBLES", 30), "marbles per round")
 		simTimeout  = flag.Duration("sim-timeout", 60*time.Second, "hard cap per Godot subprocess")
 		seedAlice   = flag.Uint64("seed-alice", 0, "if set, seed an in-memory wallet for player 'alice' for demo runs")
 		hmacSecret  = flag.String("hmac-secret-hex", envOr("RGSD_HMAC_SECRET", ""), "hex-encoded HMAC key for /v1/* request signing; empty = auth disabled (dev only)")

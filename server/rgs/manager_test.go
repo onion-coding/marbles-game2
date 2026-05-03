@@ -67,7 +67,7 @@ func buildFakeReplayBytes(roundID uint64, seed []byte, trackID uint8, clientSeed
 	hashStub := make([]byte, 32) // SHA256 placeholder; manager fills the real hash in manifest.
 	out = append(out, byte(len(hashStub)))
 	out = append(out, hashStub...)
-	out = appendU32LE(out, 24) // slot_count
+	out = appendU32LE(out, 32) // slot_count
 	out = append(out, trackID)
 	out = appendU32LE(out, uint32(len(clientSeeds)))
 	for i, cs := range clientSeeds {
@@ -111,7 +111,7 @@ func newTestManager(t *testing.T, winnerIndex int) (*Manager, *MockWallet, strin
 		WorkRoot:   filepath.Join(dir, "work"),
 		BuyIn:      100,
 		RTPBps:     9500,
-		MaxMarbles: 20,
+		MaxMarbles: 30,
 		TrackPool:  []uint8{1, 2, 3, 4, 5, 6},
 	})
 	if err != nil {
@@ -148,13 +148,13 @@ func TestManager_BetWinsCreditsWallet(t *testing.T) {
 	if !outcomes[0].Won {
 		t.Fatalf("outcomes[0].Won = false, want true (marble 0 won and we bet on it)")
 	}
-	// RTP check: stake = 20*100 = 2000; payout @ 9500bps = 1900; alice
-	// started at 1000, paid 100 (=900), got 1900 prize → 2800.
-	if bal, _ := wallet.Balance("alice"); bal != 2800 {
-		t.Fatalf("after credit: balance %d, want 2800", bal)
+	// RTP check: stake = 30*100 = 3000; payout @ 9500bps = 2850; alice
+	// started at 1000, paid 100 (=900), got 2850 prize → 3750.
+	if bal, _ := wallet.Balance("alice"); bal != 3750 {
+		t.Fatalf("after credit: balance %d, want 3750", bal)
 	}
-	if outcomes[0].PrizeAmount != 1900 {
-		t.Fatalf("prize amount %d, want 1900", outcomes[0].PrizeAmount)
+	if outcomes[0].PrizeAmount != 2850 {
+		t.Fatalf("prize amount %d, want 2850", outcomes[0].PrizeAmount)
 	}
 	if outcomes[0].BetID != bet.BetID {
 		t.Fatalf("outcome bet id %q != placed bet id %q", outcomes[0].BetID, bet.BetID)
@@ -252,8 +252,8 @@ func TestManager_TwoBettorsOneWinsOneLoses(t *testing.T) {
 	if bal, _ := wallet.Balance("p1"); bal != 100 {
 		t.Fatalf("p1 balance %d, want 100 (lost 100)", bal)
 	}
-	if bal, _ := wallet.Balance("p2"); bal != 2000 {
-		t.Fatalf("p2 balance %d, want 2000 (lost 100, won 1900)", bal)
+	if bal, _ := wallet.Balance("p2"); bal != 2950 {
+		t.Fatalf("p2 balance %d, want 2950 (lost 100, won 2850)", bal)
 	}
 }
 

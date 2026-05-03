@@ -44,7 +44,7 @@ const F5_PEG_RADIUS := 0.50           # smaller, more abundant cloud-pillars
 const F5_ROWS      := 8
 const F5_COLS      := 11              # densest peg field
 const F5_COL_SPACING := 3.6           # 11×3.6 = 39.6 m
-const F6_LANES     := 20
+const F6_LANES     := 30
 
 const SPAWN_COLS := 8
 const SPAWN_ROWS := 3
@@ -257,12 +257,19 @@ func _build_mood_lights() -> void:
 # ─── Track API overrides ────────────────────────────────────────────────────
 
 func spawn_points() -> Array:
+	# Slots 0-23: original 8×3 grid (rows 0/1/2, z=-1/0/+1). Preserved for
+	# backward compat with old 20-marble replays — verifier checks these by
+	# position. Do NOT re-centre; formula is fz=(r-1.0)*SPAWN_DZ exactly.
 	var pts: Array = []
 	for r in range(SPAWN_ROWS):
 		for c in range(SPAWN_COLS):
 			var fx := (float(c) - float(SPAWN_COLS - 1) * 0.5) * SPAWN_DX
-			var fz := (float(r) - float(SPAWN_ROWS - 1) * 0.5) * SPAWN_DZ
+			var fz := (float(r) - 1.0) * SPAWN_DZ
 			pts.append(Vector3(fx, SPAWN_Y, fz))
+	# Slots 24-31: 4th row appended at z=+2.0 (well within FIELD_DEPTH=5m).
+	for c in range(SPAWN_COLS):
+		var fx := (float(c) - float(SPAWN_COLS - 1) * 0.5) * SPAWN_DX
+		pts.append(Vector3(fx, SPAWN_Y, 2.0))
 	return pts
 
 func finish_area_transform() -> Transform3D:

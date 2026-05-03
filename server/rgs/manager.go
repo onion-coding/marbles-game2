@@ -29,7 +29,7 @@ type ManagerConfig struct {
 	WorkRoot    string         // scratch dir for per-round spec / status files
 	BuyIn       uint64         // mock per-marble stake when filling unbet seats
 	RTPBps      uint32         // configured RTP basis points (e.g. 9500)
-	MaxMarbles  int            // marbles per round (typ. 20)
+	MaxMarbles  int            // marbles per round (typ. 30)
 	SimTimeout  time.Duration  // hard cap per Godot subprocess
 	TrackPool   []uint8        // selectable track IDs; mirror Godot's TrackRegistry.SELECTABLE
 }
@@ -48,7 +48,7 @@ type SimRunner func(ctx context.Context, req sim.Request) (sim.Result, error)
 // pickup.
 //
 // History: prior to M18 this was the actual flat payoff multiplier (19×,
-// matching 95% RTP under uniform 20 marbles). The v2 model replaces that
+// matching 95% RTP under uniform 30 marbles). The v2 model replaces that
 // with a podium + pickup + jackpot stack — see docs/math-model.md.
 const PayoutMultiplier = PodiumPayout1st
 
@@ -121,7 +121,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		return nil, fmt.Errorf("rgs: ManagerConfig.Sim required")
 	}
 	if cfg.MaxMarbles <= 0 {
-		cfg.MaxMarbles = 20
+		cfg.MaxMarbles = 30
 	}
 	if cfg.SimTimeout == 0 {
 		cfg.SimTimeout = 60 * time.Second

@@ -109,8 +109,8 @@ func TestHTTP_OpenSessionThenBetThenRunRound(t *testing.T) {
 	if len(roundResp.Outcomes) != 1 || !roundResp.Outcomes[0].Won {
 		t.Fatalf("expected 1 winning outcome, got %+v", roundResp.Outcomes)
 	}
-	if roundResp.Outcomes[0].PrizeAmount != 1900 {
-		t.Fatalf("prize %d, want 1900", roundResp.Outcomes[0].PrizeAmount)
+	if roundResp.Outcomes[0].PrizeAmount != 2850 {
+		t.Fatalf("prize %d, want 2850", roundResp.Outcomes[0].PrizeAmount)
 	}
 
 	// 4. Verify session shows SETTLED + last result via GET.
@@ -126,8 +126,8 @@ func TestHTTP_OpenSessionThenBetThenRunRound(t *testing.T) {
 	if final.LastResult == nil || !final.LastResult.Won {
 		t.Fatalf("LastResult missing or Won=false: %+v", final.LastResult)
 	}
-	if final.Balance != 2800 {
-		t.Fatalf("post-round balance %d, want 2800", final.Balance)
+	if final.Balance != 3750 {
+		t.Fatalf("post-round balance %d, want 3750", final.Balance)
 	}
 }
 
@@ -214,8 +214,8 @@ func TestHTTP_StartRoundReturnsSpec(t *testing.T) {
 	if len(spec.ServerSeedHex) != 64 {
 		t.Fatalf("server_seed_hex length %d, want 64 (32-byte hex)", len(spec.ServerSeedHex))
 	}
-	if len(spec.ClientSeeds) != 20 { // MaxMarbles = 20 in test fixture
-		t.Fatalf("client_seeds count %d, want 20", len(spec.ClientSeeds))
+	if len(spec.ClientSeeds) != 30 { // MaxMarbles = 30 in test fixture
+		t.Fatalf("client_seeds count %d, want 30", len(spec.ClientSeeds))
 	}
 	// All client seeds are empty strings in MVP.
 	for i, cs := range spec.ClientSeeds {

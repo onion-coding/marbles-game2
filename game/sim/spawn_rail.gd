@@ -11,7 +11,7 @@ extends RefCounted
 # It's a class-level const (not per-track) because the fairness verifier
 # needs to read it without instantiating a track.
 
-const SLOT_COUNT := 24
+const SLOT_COUNT := 32
 const Y_CLEARANCE := 0.5       # world +Y gap above the surface for drop_order 0
 const Y_STAGGER := 0.12        # per-drop-order world +Y step; keeps the column short
 

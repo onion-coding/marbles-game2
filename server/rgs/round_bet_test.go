@@ -69,14 +69,14 @@ func TestBet_InsufficientFunds(t *testing.T) {
 	}
 }
 
-// TestBet_InvalidMarbleIdx verifies 0-19 is the valid range (MaxMarbles=20).
+// TestBet_InvalidMarbleIdx verifies 0-29 is the valid range (MaxMarbles=30).
 func TestBet_InvalidMarbleIdx(t *testing.T) {
 	mgr, wallet, _ := newTestManager(t, 0)
 	wallet.SetBalance("carol", 10000)
 
 	spec, _ := mgr.GenerateRoundSpec()
 
-	for _, idx := range []int{-1, 20, 99} {
+	for _, idx := range []int{-1, 30, 99} {
 		_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "carol", idx, 5.0)
 		if err == nil {
 			t.Fatalf("marble_idx %d: expected error, got nil", idx)
@@ -309,7 +309,7 @@ func TestHTTP_PlaceRoundBetInvalidMarble(t *testing.T) {
 	decodeBody(t, startResp, &spec)
 
 	resp := postJSON(t, fmt.Sprintf("%s/v1/rounds/%d/bets", url, spec.RoundID),
-		placeRoundBetRequest{PlayerID: "carol", MarbleIdx: 25, Amount: 5.0})
+		placeRoundBetRequest{PlayerID: "carol", MarbleIdx: 35, Amount: 5.0})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status %d, want 400", resp.StatusCode)
 	}

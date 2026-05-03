@@ -17,7 +17,7 @@ extends Track
 # winners), not from kinematic obstacles. Deterministic by construction.
 #
 # Cascade:
-#   y=40   spawn (24 slots in a 13×3 grid)
+#   y=40   spawn (32 slots: 8×3 original + 8 new at z=+2)
 #   ─────
 #   F1   wide flat catch (gap centered, 4 m × full depth)
 #   ─────  drop 5 m
@@ -86,8 +86,8 @@ const F5_COL_SPACING := 4.5          # 4.5 × 9 = 40.5 m, just covers FIELD_W
 # Gate spans the full field so any marble surviving the cascade lands on it,
 # regardless of which side gap it dropped through.
 const F6_GATE_W     := FIELD_W       # 40 m — full field
-const F6_LANES      := 20            # 1 lane per spawn slot, 2m per lane
-const F6_LANE_W     := F6_GATE_W / float(F6_LANES)   # 2 m per lane
+const F6_LANES      := 30            # matches marble count; 40m / 30 ≈ 1.33m per lane
+const F6_LANE_W     := F6_GATE_W / float(F6_LANES)   # ≈ 1.33 m per lane
 const F6_DIVIDER_H  := 1.5
 const F6_DIVIDER_T  := 0.15
 
@@ -98,7 +98,7 @@ const F6_DIVIDER_T  := 0.15
 const FINISH_Y_OFF  := 2.5           # finish box center 2.5 m above gate floor
 const FINISH_BOX    := Vector3(FIELD_W + 2.0, 5.0, FIELD_DEPTH + 1.0)
 
-# ─── Spawn (24 slots) ────────────────────────────────────────────────────────
+# ─── Spawn (32 slots — 8×4 grid, first 24 preserve backward compat) ─────────
 const SPAWN_COLS := 8
 const SPAWN_ROWS := 3
 const SPAWN_DX   := 1.6              # 8 cols × 1.6 = 12.8 m wide spread
@@ -548,13 +548,19 @@ func _std_mat_emit(color: Color, metallic: float, roughness: float,
 # ─── Track API overrides ─────────────────────────────────────────────────────
 
 func spawn_points() -> Array:
-	# 24 slots: 8 cols × 3 rows centered on the field, just above F1.
+	# Slots 0-23: original 8×3 grid (rows 0/1/2, z=-1/0/+1). Preserved for
+	# backward compat with old 20-marble replays — verifier checks these by
+	# position. Do NOT re-centre; formula is fz=(r-1.0)*SPAWN_DZ exactly.
 	var pts: Array = []
 	for r in range(SPAWN_ROWS):
 		for c in range(SPAWN_COLS):
 			var fx := (float(c) - float(SPAWN_COLS - 1) * 0.5) * SPAWN_DX
-			var fz := (float(r) - float(SPAWN_ROWS - 1) * 0.5) * SPAWN_DZ
+			var fz := (float(r) - 1.0) * SPAWN_DZ
 			pts.append(Vector3(fx, SPAWN_Y, fz))
+	# Slots 24-31: 4th row appended at z=+2.0 (well within FIELD_DEPTH=5m).
+	for c in range(SPAWN_COLS):
+		var fx := (float(c) - float(SPAWN_COLS - 1) * 0.5) * SPAWN_DX
+		pts.append(Vector3(fx, SPAWN_Y, 2.0))
 	return pts
 
 func finish_area_transform() -> Transform3D:

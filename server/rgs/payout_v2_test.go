@@ -74,7 +74,7 @@ func newRichTestManager(t *testing.T, podium [3]int, tier1 []int, tier2 int) (*M
 		WorkRoot:   filepath.Join(dir, "work"),
 		BuyIn:      100,
 		RTPBps:     9500,
-		MaxMarbles: 20,
+		MaxMarbles: 30,
 		TrackPool:  []uint8{1, 2, 3, 4, 5, 6},
 	})
 	if err != nil {
