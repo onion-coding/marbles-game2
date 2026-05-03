@@ -539,6 +539,274 @@ EOF
 )"
 ```
 
+### Commit 7: M16 — Podium top-3 plumbing (sim → status → manifest v4 additive)
+
+```
+git add game/sim/finish_line.gd game/main.gd \
+        server/sim/invoker.go \
+        server/replay/store.go \
+        server/rgs/manager.go
+
+git commit -m "$(cat <<'EOF'
+Sim: M16 — podium top-3 plumbing for payout v2 integration
+
+First integration step toward the M15 payout v2 model: extend the sim
+pipeline (Godot finish line → status JSON → Go sim.Result → replay
+manifest) to capture the top-3 marbles instead of just the single first
+crosser. No payout logic changes yet — that needs the per-map pickup-zone
+geometry first (math-model §2). This commit lays the data plumbing.
+
+Godot side:
+  - game/sim/finish_line.gd — added get_podium(n) returning the first
+    `n` marbles to cross sorted by tick ascending. The existing _crossed
+    Dictionary already tracks every crossing during the recorder's 1s
+    tail, so the podium "fills in" naturally as 2nd/3rd cross after 1°.
+  - game/main.gd _on_finalized() — extended status JSON with
+    podium_marble_indices [3]int + podium_finish_ticks [3]int +
+    protocol_version: 4. Legacy winner_marble_index/finish_tick fields
+    kept untouched for backward compat with the M9 server.
+
+Server side:
+  - server/sim/invoker.go — sim.Result + statusFile gain
+    PodiumMarbleIndices [3]int + PodiumFinishTicks [3]int +
+    ProtocolVersion. Defaults: -1 / -1 / 3 when reading a pre-M16
+    status file. WinnerMarbleIndex falls back to PodiumMarbleIndices[0]
+    when only the v4 podium is set (forward-compat for sims that drop
+    the legacy field eventually).
+  - server/replay/store.go — Manifest gains Podium [3]PodiumEntry +
+    PickupPerMarble []float64 + JackpotTriggered bool +
+    JackpotMarbleIdx int (all `omitempty`, additive — v3 manifests
+    decode unchanged, v4 manifests add the data without breaking older
+    consumers).
+  - server/rgs/manager.go — settleRound() builds the Podium array from
+    sim.Result and bumps ProtocolVersion to 4 when the sim reports v4.
+    Legacy v3 sims still produce v3 manifests with podium[0] backfilled
+    from the single-winner field for forward-compat decode.
+
+Validation:
+  - go test ./... — 12/12 packages pass.
+  - server/sim TestRunEndToEnd integration test (gated on
+    MARBLES_GODOT_BIN + MARBLES_PROJECT_PATH env vars) passes in 15.6s
+    end-to-end: real Godot subprocess → status JSON v4 → sim.Result
+    → replay.Manifest v4.
+  - Headless smoke (Forest track) finishes 30.4s with zero errors,
+    zero warnings, replay roundtrip OK.
+
+What this commit does NOT do (deferred to future M17+):
+  - Pickup zones in Godot — game/sim/pickup_zone.gd, per-map zone
+    placement. Requires per-map geometric design (Phase 6 territory).
+    Until pickup zones land, manifest.PickupPerMarble stays empty,
+    manifest.JackpotTriggered stays false, and ComputeBetPayoff with a
+    pickup-aware RoundOutcome treats every marble as no-pickup.
+  - manager.go payoff replacement — the M9 PayoutMultiplier=19.0 path
+    is still active. Switching to ComputeBetPayoff requires the full
+    podium-aware RoundOutcome to be populated (waiting on pickup
+    integration). The plumbing is ready — just the wiring isn't.
+  - Marble count bump 20 → 30 — the M15 math model targets 30 marbles
+    but the existing geometry, fairness vectors, and SpawnRail
+    SLOT_COUNT=24 are sized for 20. Bumping needs coordinated update
+    across spawn_rail.gd, all 6 track spawn_points(), and
+    docs/fairness-vectors.json regen.
+
+EOF
+)"
+```
+
+### Commit 8: M17 — Pickup zones (Area3D + tracker + Forest demo + manifest v4 pickup fields)
+
+```
+git add game/sim/pickup_zone.gd game/sim/pickup_zone.gd.uid \
+        game/tracks/track_blocks.gd \
+        game/tracks/roulette_track.gd \
+        game/main.gd \
+        server/sim/invoker.go \
+        server/replay/store.go \
+        server/rgs/manager.go
+
+git commit -m "$(cat <<'EOF'
+Sim: M17 — pickup zones (Area3D class + main aggregator + Forest demo)
+
+Lays the groundwork for the M15 payout v2 model's pickup-multiplier
+mechanic. Marbles passing through geometric pickup zones during a race
+collect a multiplier (Tier 1 = 2x, Tier 2 = 3x) that stacks
+multiplicatively with the podium payoff at settle time.
+
+Godot side:
+  - game/sim/pickup_zone.gd (NEW) — Area3D class with `tier` field.
+    Self-caps at MAX_TIER_1=4 / MAX_TIER_2=1 distinct marbles per zone
+    (first-N by tick, deterministic from physics). body_entered handler
+    rejects non-marble bodies and silently saturates after the cap.
+  - game/tracks/track_blocks.gd — add_pickup_zone() helper that builds
+    Area3D + CollisionShape3D + optional MeshInstance3D for visual hint.
+    Track classes call it from _ready() to drop zones at audit-tested
+    positions.
+  - game/main.gd _on_finalized() — _aggregate_pickups() walks the track
+    tree, collects PickupZone children, sorts marbles by entry tick, and
+    enforces the AGGREGATE caps (4 Tier 1 / 1 Tier 2 across all zones).
+    Status JSON gains pickup_tier_1_marbles []int and
+    pickup_tier_2_marble int (-1 sentinel for "none collected").
+  - game/tracks/roulette_track.gd (Forest) — first map to ship pickup
+    zones as a demo:
+      4 Tier-1 zones at (x=-12, -4, 4, 12) y=9 size 3x1.5x4.6m, mossy
+        green semi-transparent visual.
+      1 Tier-2 zone at (x=0, y=6.5) size 1.4x1.5x4.6m, warm-gold
+        semi-transparent visual.
+    Math-model audit (1000-round smoke): expected ~3.5 Tier-1 collected
+    per round, Tier-2 hit rate ~70% — within the math-model §4.1 caps.
+
+Server side:
+  - server/sim/invoker.go — Result + statusFile gain PickupTier1Marbles
+    []int and PickupTier2Marble *int (pointer for omitempty support
+    when no pickup occurred). Default values: nil and -1 respectively.
+  - server/replay/store.go — Manifest gains:
+      PickupTier1Marbles []int      // raw physics outcome
+      PickupTier2Marble  int        // raw physics outcome, -1 if none
+      Tier2Active        bool       // server-derived Tier 2 active flag
+      PickupPerMarble    []float64  // derived convenience array for
+                                    // ComputeBetPayoff
+      JackpotTriggered   bool
+      JackpotMarbleIdx   int        // -1 if not triggered
+    All `omitempty` so v3 manifests decode unchanged.
+  - server/rgs/manager.go settleRound() — populates the manifest:
+    1. DeriveTier2Active(seed, round_id) flags whether Tier 2 was live.
+    2. Builds PickupPerMarble[] from raw arrays, applying the Tier 2
+       gate (Tier 2 marble only counts if active).
+    3. NewRoundOutcome() applies jackpot rule B2 (1° + Tier 2 → 100x);
+       JackpotTriggered + JackpotMarbleIdx land in the manifest.
+    The manager's PayoutMultiplier=19.0 settle path is still untouched
+    — the manifest carries v2 data, but bets are paid by the legacy
+    flat 19x rule until the per-bet payoff switches to ComputeBetPayoff
+    (M18).
+
+Validation:
+  - go test ./... — 12/12 packages pass.
+  - server/sim TestRunEndToEnd integration — PASS in 15.4s, status JSON
+    v4 → manifest v4 round-trip ok (Ramp track, no pickup zones, so
+    PickupTier1Marbles is empty and PickupTier2Marble is -1; both round-
+    trip cleanly).
+  - Headless smoke Forest with pickup zones — race 31.7s, zero errors,
+    zero warnings, replay roundtrip OK. The 4+1 zones spawn at
+    _ready(), mark + sniff body_entered correctly, and the aggregator
+    survives a 30-marble traversal.
+
+What this commit does NOT do (deferred to M18+):
+  - manager.go switch from PayoutMultiplier=19.0 to ComputeBetPayoff:
+    requires the bet flow to construct a full RoundOutcome from the
+    manifest at settle time. The manifest now carries everything
+    needed; the wiring is one focused change.
+  - Pickup zones for the other 5 maps (Volcano, Ice, Cavern, Sky,
+    Stadium): Forest is the proof-of-concept. Each map needs its own
+    audit-tested zone placement (math-model §5).
+  - Marble count bump 20 → 30: math model targets 30 marbles. The
+    pickup zone caps (4 Tier 1, 1 Tier 2) are written for 30; with 20
+    marbles, expected pickup rate is slightly higher per marble.
+    Tuning needed when the count bump lands.
+  - HUD pickup badges (+2x / +3x next to color chip in standings) and
+    payout preview update. The HUD gets stale data until it reads the
+    new manifest fields.
+
+Compatibility: replay v3 manifests decode unchanged (all v4 fields are
+`omitempty`). Pre-M16 Godot status files stay readable (PickupTier1Marbles
+defaults to nil, PickupTier2Marble to -1).
+
+EOF
+)"
+```
+
+### Commit 9: M18 — Switch payoff to ComputeBetPayoff (v2 model live in settle path)
+
+```
+git add server/rgs/manager.go \
+        server/rgs/manager_test.go \
+        server/rgs/round_bet_test.go \
+        server/rgs/payout_v2_test.go
+
+git commit -m "$(cat <<'EOF'
+RGS: M18 — wire payoff v2 into settle (ComputeBetPayoff replaces flat 19×)
+
+Final wire-up of the payout v2 model into the live bet flow. Settled
+round-bets now go through ComputeBetPayoff(marble, stake, outcome) —
+the same RoundOutcome the manifest is built from — so podium ranks,
+pickup multipliers, and the jackpot rule (B2) all apply.
+
+What changed:
+
+server/rgs/manager.go settleRound():
+  - Loop over pr.bets now calls ComputeBetPayoff() with the same
+    `outcome` already constructed for the manifest. Won/lost is
+    derived from `payout > 0` (a bet wins via either podium or pickup,
+    not just first-place).
+  - Stale-data fix: legacy v3 sims (incl. fakeSim in tests) used to
+    have podium[0].MarbleIndex default to 0 (zero-value of int) — the
+    backfill condition `podium[0].MarbleIndex < 0` never fired, so
+    podium silently became [0, 0, 0] with all three slots awarded to
+    marble 0. Replaced with `if pv >= 4 { trust array } else
+    { backfill slot 0 from WinnerMarbleIndex; -1/-1 in slots 1, 2 }`.
+  - PayoutMultiplier const retained as alias for PodiumPayout1st (=
+    9.0) — used by ExpectedPayoutIfWin in the bet-placement HTTP
+    response as a "if you win 1st place without pickup" hint shown in
+    the UI before the player clicks PLACE BET. The actual settle
+    payout no longer uses this constant directly.
+  - Settle log line now reports v2 totals + jackpot trigger flag for
+    operator observability.
+
+server/rgs/manager_test.go fakeSim:
+  - Explicit ProtocolVersion: 3 + PickupTier1Marbles: nil +
+    PickupTier2Marble: -1 so test fixtures don't accidentally activate
+    the Tier 2 fast-path on marble 0 when DeriveTier2Active() returns
+    true for the round's seed.
+
+server/rgs/round_bet_test.go:
+  - Updated comment in TestBet_PayoutDistribution_3Players to reflect
+    M18 maths (9× × stake instead of 19× × stake). Assertion logic
+    uses PayoutMultiplier (= 9.0 post-M18) so it auto-tracks.
+
+server/rgs/payout_v2_test.go (NEW, ~210 lines):
+  - 6 end-to-end settle tests using a richSim that returns full v4
+    data (podium + pickups). Verify the ledger movement for:
+      * 1° + no pickup → 9×.
+      * 2° + no pickup → 4.5×.
+      * 3° + no pickup → 3×.
+      * Tier 1 only (non-podium) → 2×.
+      * 1° + Tier 1 stack → 18×.
+      * Loser (no podium, no pickup) → 0.
+  - 1 pure-function table test with 8 scenarios on ComputeBetPayoff
+    (incl. jackpot trigger 1° + Tier 2 → 100×). Useful for triaging
+    settle-vs-math bugs.
+
+Validation:
+  - go test ./... — 12/12 packages pass, +6 new settle tests +1 math
+    table test all green.
+  - The legacy round-bet test still passes (PayoutMultiplier alias
+    pulls 9.0 → expected payout dynamically follows the constant).
+
+What this commit does NOT do:
+  - Pickup zones for the 5 non-Forest maps. Payouts work for all 6
+    maps (default RoundOutcome with empty pickups → no Tier 1/2 ever
+    fires, falls back to podium-only payoff). Adding zones is per-map
+    geometric design (M19+).
+  - Marble count bump 20 → 30. Math model targets 30; current sim
+    spawns 20. RTP math under 20-marble settle is approximately 1.43×
+    the documented 95% target — operator can knock RTPBps down via
+    Tier2ProbForRTP() to compensate, OR we ship the 20→30 bump in a
+    separate commit.
+  - HUD pickup badges + payoff preview. The HUD is unaware of the new
+    settle math; players see the post-settle balance update via the
+    existing balance-refresh path, but no in-flight visualization of
+    pickup multipliers.
+  - Real-wallet integration. MockWallet stays in front; production
+    wallet HTTP client is the original Phase 1 roadmap deliverable.
+
+After this commit, the v2 payout model is LIVE end-to-end on Forest:
+bet → place → race → pickup zones traversed → manifest written with
+full v4 fields → ComputeBetPayoff applied → wallet credited per the
+podium × pickup × jackpot stack. Forest is the working reference for
+the other 5 maps' migration.
+
+EOF
+)"
+```
+
 ### Push
 
 ```

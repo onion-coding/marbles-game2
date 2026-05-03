@@ -189,7 +189,12 @@ func TestBet_PayoutOnlyWinner(t *testing.T) {
 		}
 	}
 
-	// p2 won: 9000 + (10.00 × 19.0 × 100) = 9000 + 19000 = 28000 units.
+	// p2 won 1° place. Under the M18 v2 payout model (no pickup, no
+	// jackpot — fakeSim doesn't populate them), the payoff for a podium
+	// 1° finish is 9× the stake. So p2 ends up with 9000 (post-debit
+	// balance) + 10.00 × 9× × 100 = 9000 + 9000 = 18000 units.
+	// PayoutMultiplier is now an alias for PodiumPayout1st (= 9.0), so
+	// the wantPayout formula stays valid post-M18.
 	p2bal, _ := wallet.Balance("p2")
 	want := uint64(9000 + int(10.0*PayoutMultiplier*100))
 	if p2bal != want {

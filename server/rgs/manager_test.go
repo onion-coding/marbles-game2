@@ -39,8 +39,17 @@ func (f *fakeSim) Run(ctx context.Context, req sim.Request) (sim.Result, error) 
 		RoundID:           req.RoundID,
 		WinnerMarbleIndex: f.winnerIndex,
 		FinishTick:        f.finishTick,
-		ReplayPath:        replayPath,
-		TickRateHz:        60,
+		// Sentinel "no pickup zones / pre-M17 sim". Without these, the
+		// default zero-value of PickupTier2Marble (= 0) would silently
+		// promote marble 0 to a 3× pickup whenever Tier 2 was active for
+		// a round, perturbing payout calc in unrelated tests.
+		PickupTier1Marbles: nil,
+		PickupTier2Marble:  -1,
+		// Explicit ProtocolVersion 3 so the manager's v3 fallback path
+		// (single-winner backfill into podium[0]) kicks in.
+		ProtocolVersion:    3,
+		ReplayPath:         replayPath,
+		TickRateHz:         60,
 	}, nil
 }
 

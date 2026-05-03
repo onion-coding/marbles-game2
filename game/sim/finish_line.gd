@@ -39,3 +39,27 @@ func get_winner() -> RigidBody3D:
 
 func get_crossings() -> Dictionary:
 	return _crossed
+
+# Returns the top-N marbles to cross the finish line, in finish order
+# (1st, 2nd, 3rd, ...). Up to `n` entries — fewer if not enough marbles
+# crossed by the time this is called. Used by the recorder at finalize
+# time to compute the podium for the v4 replay manifest.
+#
+# Sort by tick ascending (= earliest crossing first). Stable on equal
+# ticks via insertion order (Dictionary in GDScript 4 preserves key
+# insertion order).
+func get_podium(n: int = 3) -> Array[RigidBody3D]:
+	var entries: Array = []                         # [{ marble, tick }]
+	for marble in _crossed.keys():
+		if not is_instance_valid(marble):
+			continue
+		entries.append({"marble": marble, "tick": int(_crossed[marble])})
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["tick"] < b["tick"]
+	)
+	var out: Array[RigidBody3D] = []
+	for e in entries:
+		if out.size() >= n:
+			break
+		out.append(e["marble"] as RigidBody3D)
+	return out

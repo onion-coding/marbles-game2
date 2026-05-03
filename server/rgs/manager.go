@@ -39,11 +39,18 @@ type ManagerConfig struct {
 // is sim.Run.
 type SimRunner func(ctx context.Context, req sim.Request) (sim.Result, error)
 
-// PayoutMultiplier is the gross payout factor applied to a winning round bet.
-// 20 marbles × (1/20) probability × 19.0 = 0.95 RTP (95%), matching a
-// roulette-style book. The stake is already debited at placement, so a
-// winning Credit is amount × PayoutMultiplier (stake returned + profit).
-const PayoutMultiplier = 19.0
+// PayoutMultiplier is RETAINED as a display-only "expected payoff if win"
+// hint shown to the player before they place a bet. As of M18 the actual
+// settle payoff is computed by ComputeBetPayoff() under the v2 model, so
+// this constant is no longer the canonical multiplier — keep it equal to
+// the v2 podium 1° payoff so the displayed "if you win 1st place" estimate
+// roughly matches what the player will receive for a podium win without
+// pickup.
+//
+// History: prior to M18 this was the actual flat payoff multiplier (19×,
+// matching 95% RTP under uniform 20 marbles). The v2 model replaces that
+// with a podium + pickup + jackpot stack — see docs/math-model.md.
+const PayoutMultiplier = PodiumPayout1st
 
 // RoundBet is a bet placed directly against a pre-minted round (the
 // POST /v1/rounds/{round_id}/bets flow). It is distinct from the
@@ -387,15 +394,92 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		}
 	}
 	commit := r.CommitHash()
+	// Build the v4 manifest. ProtocolVersion follows the sim's version
+	// (3 = legacy single-winner; 4 = podium-aware). For v3 sims the
+	// podium array isn't populated, so we backfill slot 0 from the single
+	// WinnerMarbleIndex and mark slots 1/2 as missing (-1). For v4 sims
+	// we trust the podium array directly.
+	pv := simRes.ProtocolVersion
+	if pv == 0 {
+		pv = 3
+	}
+	var podium [3]replay.PodiumEntry
+	if pv >= 4 {
+		for i := 0; i < 3; i++ {
+			podium[i] = replay.PodiumEntry{
+				MarbleIndex: simRes.PodiumMarbleIndices[i],
+				FinishTick:  simRes.PodiumFinishTicks[i],
+			}
+		}
+	} else {
+		// v3 sim or test fakeSim: only the winner is known. Sentinel -1
+		// for the other two slots so payoff math doesn't accidentally
+		// award podium 2°/3° to marble 0 just because the default-zeroed
+		// sim.Result puts a 0 there.
+		podium[0] = replay.PodiumEntry{
+			MarbleIndex: simRes.WinnerMarbleIndex,
+			FinishTick:  simRes.FinishTick,
+		}
+		podium[1] = replay.PodiumEntry{MarbleIndex: -1, FinishTick: -1}
+		podium[2] = replay.PodiumEntry{MarbleIndex: -1, FinishTick: -1}
+	}
+
+	// Tier 2 activation — deterministic from server_seed + round_id.
+	// Computed here (and stored in the manifest) so an external auditor
+	// can re-derive: same seed → same flag → same payoffs every replay.
+	tier2Active := DeriveTier2Active(revealed[:], roundID)
+
+	// Build PickupPerMarble convenience array. Length = participants count.
+	// Default 1.0 (no pickup); Tier 1 marbles get 2.0; Tier 2 marble gets
+	// 3.0 ONLY if Tier 2 was active this round. The MAX rule from
+	// math-model §2.1 means Tier 2 overrides Tier 1 for the same marble.
+	pickupPerMarble := make([]float64, len(storeParts))
+	for i := range pickupPerMarble {
+		pickupPerMarble[i] = 1.0
+	}
+	for _, idx := range simRes.PickupTier1Marbles {
+		if idx >= 0 && idx < len(pickupPerMarble) {
+			pickupPerMarble[idx] = PickupTier1
+		}
+	}
+	tier2Idx := simRes.PickupTier2Marble
+	if tier2Active && tier2Idx >= 0 && tier2Idx < len(pickupPerMarble) {
+		pickupPerMarble[tier2Idx] = PickupTier2
+	}
+
+	// Apply jackpot rule B2: 1° marble has Tier 2 pickup → jackpot fires.
+	// Uses the same outcome model the payoff calc reads from.
+	pickupsMap := map[int]float64{}
+	for i, m := range pickupPerMarble {
+		if m > 1.0 {
+			pickupsMap[i] = m
+		}
+	}
+	outcome := NewRoundOutcome([3]int{
+		podium[0].MarbleIndex, podium[1].MarbleIndex, podium[2].MarbleIndex,
+	}, pickupsMap)
+
+	// Tier1Marbles slice is captured for the manifest separately so the
+	// raw "what physics produced" data is preserved even if the operator
+	// later changes the Tier 2 activation rule.
+	tier1Snapshot := append([]int{}, simRes.PickupTier1Marbles...)
+
 	manifest := &replay.Manifest{
-		RoundID:           roundID,
-		ProtocolVersion:   3,
-		TickRateHz:        simRes.TickRateHz,
-		TrackID:           trackID,
-		ServerSeedHashHex: hex.EncodeToString(commit[:]),
-		ServerSeedHex:     hex.EncodeToString(revealed[:]),
-		Participants:      storeParts,
-		Winner:            replay.Winner{MarbleIndex: simRes.WinnerMarbleIndex, FinishTick: simRes.FinishTick},
+		RoundID:            roundID,
+		ProtocolVersion:    pv,
+		TickRateHz:         simRes.TickRateHz,
+		TrackID:            trackID,
+		ServerSeedHashHex:  hex.EncodeToString(commit[:]),
+		ServerSeedHex:      hex.EncodeToString(revealed[:]),
+		Participants:       storeParts,
+		Winner:             replay.Winner{MarbleIndex: simRes.WinnerMarbleIndex, FinishTick: simRes.FinishTick},
+		Podium:             podium,
+		PickupTier1Marbles: tier1Snapshot,
+		PickupTier2Marble:  simRes.PickupTier2Marble,
+		Tier2Active:        tier2Active,
+		PickupPerMarble:    pickupPerMarble,
+		JackpotTriggered:   outcome.JackpotTriggered,
+		JackpotMarbleIdx:   outcome.JackpotMarbleIdx,
 	}
 	replayFile, err := os.Open(simRes.ReplayPath)
 	if err != nil {
@@ -412,15 +496,21 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	//    and seed that the sim just ran. Seed alignment is guaranteed:
 	//    the manifest's round_id and server_seed_hex match what bettors
 	//    received from POST /v1/rounds/start.
+	//
+	// M18 — payoff is now ComputeBetPayoff(marble, stake, outcome) instead
+	// of the legacy flat 19× rule. The same `outcome` built above (jackpot
+	// rule applied, Tier 2 active flag respected) is reused so the manifest
+	// + payoff are derived from the same inputs. Bets that don't podium and
+	// don't have a pickup pay 0 (= loss); bets that do, pay the v2 model's
+	// stack-aware payoff, capped at 100× via the jackpot rule.
 	var roundBetOutcomes []RoundBetOutcome
 	if pr != nil {
 		var totalBets, totalPayout float64
 		roundBetOutcomes = make([]RoundBetOutcome, len(pr.bets))
 		for i, rb := range pr.bets {
-			won := rb.MarbleIdx == simRes.WinnerMarbleIndex
-			var payout float64
+			payout := ComputeBetPayoff(rb.MarbleIdx, rb.Amount, outcome)
+			won := payout > 0.0
 			if won {
-				payout = rb.Amount * PayoutMultiplier
 				payoutUnits := uint64(payout * 100)
 				creditTxID := rb.BetID + ":credit"
 				if cerr := m.cfg.Wallet.Credit(rb.PlayerID, payoutUnits, creditTxID); cerr != nil {
@@ -443,8 +533,8 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 			}
 		}
 		totalLoss := totalBets - totalPayout
-		fmt.Fprintf(os.Stderr, "rgs: round %d round-bets settled: count=%d total_bets=%.2f total_payout=%.2f total_loss=%.2f\n",
-			roundID, len(pr.bets), totalBets, totalPayout, totalLoss)
+		fmt.Fprintf(os.Stderr, "rgs: round %d round-bets settled (v2 model): count=%d total_bets=%.2f total_payout=%.2f total_loss=%.2f jackpot=%v\n",
+			roundID, len(pr.bets), totalBets, totalPayout, totalLoss, outcome.JackpotTriggered)
 	}
 	m.mu.Lock()
 	m.prevTrack = int(trackID)

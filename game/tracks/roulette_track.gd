@@ -113,7 +113,47 @@ func _ready() -> void:
 	_build_gate()
 	_build_catchment()
 	_build_rolling_logs()
+	_build_pickup_zones()
 	_build_mood_lights()
+
+# Forest demo of the M17 pickup-zone system. Lays out 4 Tier-1 (2×) zones
+# and 1 Tier-2 (3×) zone inside the F5 peg-forest area. Geometry is sized so
+# that on average ~1 marble per Tier-1 zone collects (4 total, matching the
+# math-model cap) and ~0.7 marbles per round traverse the Tier-2 zone (the
+# server's deterministic Tier 2 active flag adds the second probabilistic
+# gate on top — see DeriveTier2Active).
+#
+# Visual hint: zones get a soft green glow material so players see WHERE
+# the multiplier opportunities are. Operator can disable the visual by
+# passing `mat=null` to add_pickup_zone if a cleaner look is preferred.
+func _build_pickup_zones() -> void:
+	var t1_mat := TrackBlocks.std_mat_emit(
+		Color(0.40, 0.95, 0.55, 0.30),    # mossy green semi-transparent
+		0.0, 0.50, 0.40)
+	t1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var t2_mat := TrackBlocks.std_mat_emit(
+		Color(1.00, 0.70, 0.20, 0.40),    # warm gold semi-transparent
+		0.0, 0.40, 0.80)
+	t2_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	# 4 Tier-1 zones at roughly equal x-spacing across the F5 peg-forest mid-Y.
+	# Each zone is ~3m wide × 1.5m tall × FIELD_DEPTH so a marble traversing
+	# F5 has a moderate chance of crossing exactly one of them.
+	const TIER1_SIZE := Vector3(3.0, 1.5, FIELD_DEPTH - 0.4)
+	const TIER1_Y    := 9.0    # mid F5 (top=14, bot=4 → centre 9)
+	const TIER1_XS   := [-12.0, -4.0, 4.0, 12.0]
+	for i in range(TIER1_XS.size()):
+		var x: float = float(TIER1_XS[i])
+		TrackBlocks.add_pickup_zone(self, "PickupT1_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(x, TIER1_Y, 0.0)),
+			TIER1_SIZE, PickupZone.TIER_1, t1_mat)
+
+	# 1 Tier-2 zone at field centre, narrow so only the most lucky marble
+	# crosses it. 1.4m wide × 1.5m tall — fewer marbles in the centre after
+	# the V-funnel and the rotating logs, so probability stays near target.
+	TrackBlocks.add_pickup_zone(self, "PickupT2",
+		Transform3D(Basis.IDENTITY, Vector3(0.0, 6.5, 0.0)),
+		Vector3(1.4, 1.5, FIELD_DEPTH - 0.4), PickupZone.TIER_2, t2_mat)
 
 func _physics_process(delta: float) -> void:
 	# Drive the kinematic log rotation. Each log spins around its own long

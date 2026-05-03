@@ -42,9 +42,21 @@ type Winner struct {
 	FinishTick  int `json:"finish_tick"`
 }
 
+// PodiumEntry is one rank on the top-3 finish board (added in M16, payout v2).
+// MarbleIndex == -1 means "no marble crossed in this slot before the recorder
+// tail closed" (incomplete race). Tick mirrors the meaning of Winner.FinishTick.
+type PodiumEntry struct {
+	MarbleIndex int `json:"marble_index"`
+	FinishTick  int `json:"finish_tick"`
+}
+
 // Manifest is the server's ground-truth record of one round. A verifier can
 // re-derive everything in here from ServerSeedHex + Participants + TrackID +
 // the track constants, and compare against the stored replay.bin.
+//
+// v3 → v4 (M16): adds Podium [3]PodiumEntry and PickupPerMarble []float64.
+// Old v3 manifests stay decode-able — Podium and PickupPerMarble default to
+// zero values (interpreted as "podium info unavailable, fall back to Winner").
 type Manifest struct {
 	RoundID           uint64        `json:"round_id"`
 	CreatedAt         time.Time     `json:"created_at"`
@@ -55,7 +67,24 @@ type Manifest struct {
 	ServerSeedHex     string        `json:"server_seed_hex"`
 	Participants      []Participant `json:"participants"`
 	Winner            Winner        `json:"winner"`
-	ReplaySHA256Hex   string        `json:"replay_sha256_hex"`
+	// v4 — payout v2 fields. Empty/zero on v3 manifests; safe to read with
+	// defaulting (Winner.MarbleIndex is the canonical 1° fallback).
+	Podium            [3]PodiumEntry `json:"podium,omitempty"`
+	// PickupTier1Marbles/PickupTier2Marble are the RAW pickup-zone
+	// collections from physics. Tier2Active flags whether the Tier 2 was
+	// "live" for this round (derived from seed via DeriveTier2Active);
+	// when false, the Tier 2 marble's pickup is downgraded to Tier 1
+	// (or no pickup) at payoff time.
+	PickupTier1Marbles []int          `json:"pickup_tier_1_marbles,omitempty"`
+	PickupTier2Marble  int            `json:"pickup_tier_2_marble,omitempty"`
+	Tier2Active        bool           `json:"tier_2_active,omitempty"`
+	// PickupPerMarble is a derived convenience array for fast payoff lookup;
+	// length = participants count, values 1.0 (no pickup) / 2.0 (Tier 1) /
+	// 3.0 (Tier 2). Built by the manager after applying Tier2Active.
+	PickupPerMarble    []float64      `json:"pickup_per_marble,omitempty"`
+	JackpotTriggered   bool           `json:"jackpot_triggered,omitempty"`
+	JackpotMarbleIdx   int            `json:"jackpot_marble_index,omitempty"`
+	ReplaySHA256Hex    string         `json:"replay_sha256_hex"`
 }
 
 type Store struct {

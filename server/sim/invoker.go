@@ -47,24 +47,46 @@ type Request struct {
 	LiveStreamAddr string
 }
 
-// Result is the parsed outcome.
+// Result is the parsed outcome. PodiumMarbleIndices and PodiumFinishTicks
+// were added in M16 (payout v2 spec): each is a [3]int for 1°/2°/3°. -1
+// means "no marble crossed in that podium slot" (incomplete race tail).
+// PodiumMarbleIndices[0] == WinnerMarbleIndex when both are populated;
+// the legacy field is kept for backward compat with the v3 payout flow.
+// ProtocolVersion reflects the status JSON version emitted by Godot (3 =
+// pre-M16 single-winner, 4 = podium-aware).
+//
+// PickupTier1Marbles + PickupTier2Marble (M17) carry the raw pickup-zone
+// collection from the sim. The server applies DeriveTier2Active() to filter
+// the Tier 2 marble at payoff time — the manifest stores the unfiltered
+// physics outcome so replays remain byte-stable across re-derivations.
 type Result struct {
-	RoundID           uint64
-	WinnerMarbleIndex int
-	FinishTick        int
-	ReplayPath        string
-	ServerSeedHashHex string
-	TickRateHz        int
+	RoundID              uint64
+	WinnerMarbleIndex    int
+	FinishTick           int
+	PodiumMarbleIndices  [3]int
+	PodiumFinishTicks    [3]int
+	PickupTier1Marbles   []int   // marble indices that picked up 2× (max 4)
+	PickupTier2Marble    int     // marble index that picked up 3×, or -1
+	ProtocolVersion      int
+	ReplayPath           string
+	ServerSeedHashHex    string
+	TickRateHz           int
 }
 
 type statusFile struct {
-	RoundID           uint64 `json:"round_id"`
-	OK                bool   `json:"ok"`
-	WinnerMarbleIndex int    `json:"winner_marble_index"`
-	FinishTick        int    `json:"finish_tick"`
-	ReplayPath        string `json:"replay_path"`
-	ServerSeedHashHex string `json:"server_seed_hash_hex"`
-	TickRateHz        int    `json:"tick_rate_hz"`
+	RoundID              uint64 `json:"round_id"`
+	OK                   bool   `json:"ok"`
+	WinnerMarbleIndex    int    `json:"winner_marble_index"`
+	FinishTick           int    `json:"finish_tick"`
+	// v4 additions — empty/zero on v3 status files.
+	PodiumMarbleIndices  []int  `json:"podium_marble_indices,omitempty"`
+	PodiumFinishTicks    []int  `json:"podium_finish_ticks,omitempty"`
+	PickupTier1Marbles   []int  `json:"pickup_tier_1_marbles,omitempty"`
+	PickupTier2Marble    *int   `json:"pickup_tier_2_marble,omitempty"`
+	ProtocolVersion      int    `json:"protocol_version,omitempty"`
+	ReplayPath           string `json:"replay_path"`
+	ServerSeedHashHex    string `json:"server_seed_hash_hex"`
+	TickRateHz           int    `json:"tick_rate_hz"`
 }
 
 type specFile struct {
@@ -153,14 +175,46 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, ErrStatusNotOK
 	}
 
-	return Result{
-		RoundID:           status.RoundID,
-		WinnerMarbleIndex: status.WinnerMarbleIndex,
-		FinishTick:        status.FinishTick,
-		ReplayPath:        status.ReplayPath,
-		ServerSeedHashHex: status.ServerSeedHashHex,
-		TickRateHz:        status.TickRateHz,
-	}, nil
+	// Map status fields → Result. Default protocol version 3 if absent so
+	// older Godot builds (or pre-M16 status files in test fixtures) keep
+	// working. Podium arrays default to [-1, -1, -1] so callers can rely on
+	// the v4 fields always being present in the Result struct.
+	out := Result{
+		RoundID:              status.RoundID,
+		WinnerMarbleIndex:    status.WinnerMarbleIndex,
+		FinishTick:           status.FinishTick,
+		PodiumMarbleIndices:  [3]int{-1, -1, -1},
+		PodiumFinishTicks:    [3]int{-1, -1, -1},
+		PickupTier1Marbles:   nil,
+		PickupTier2Marble:    -1,
+		ProtocolVersion:      status.ProtocolVersion,
+		ReplayPath:           status.ReplayPath,
+		ServerSeedHashHex:    status.ServerSeedHashHex,
+		TickRateHz:           status.TickRateHz,
+	}
+	if out.ProtocolVersion == 0 {
+		out.ProtocolVersion = 3
+	}
+	for i := 0; i < 3 && i < len(status.PodiumMarbleIndices); i++ {
+		out.PodiumMarbleIndices[i] = status.PodiumMarbleIndices[i]
+	}
+	for i := 0; i < 3 && i < len(status.PodiumFinishTicks); i++ {
+		out.PodiumFinishTicks[i] = status.PodiumFinishTicks[i]
+	}
+	if len(status.PickupTier1Marbles) > 0 {
+		out.PickupTier1Marbles = append([]int{}, status.PickupTier1Marbles...)
+	}
+	if status.PickupTier2Marble != nil {
+		out.PickupTier2Marble = *status.PickupTier2Marble
+	}
+	// On v4 status without explicit winner field, derive it from the podium
+	// (1° = winner). Legacy v3 callers that only used WinnerMarbleIndex stay
+	// unaffected when the godot side keeps emitting both.
+	if out.WinnerMarbleIndex < 0 && out.PodiumMarbleIndices[0] >= 0 {
+		out.WinnerMarbleIndex = out.PodiumMarbleIndices[0]
+		out.FinishTick = out.PodiumFinishTicks[0]
+	}
+	return out, nil
 }
 
 func writeJSON(path string, v any) error {

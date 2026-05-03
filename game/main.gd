@@ -542,11 +542,49 @@ func _on_finalized(_path: String, finish: FinishLine) -> void:
 	if winner != null:
 		winner_idx = int(String(winner.name).trim_prefix("Marble_"))
 		finish_tick = int(finish.get_crossings().get(winner, -1))
+	# Podium top-3 (added in M16, payout v2). Each entry is the marble's
+	# drop-order index. -1 = no marble in that podium slot (incomplete race
+	# — at most 2 marbles crossed during the recorder's 1s tail). The order
+	# is finish-tick ascending (earliest crosser first = 1°). The legacy
+	# `winner_marble_index` field is kept untouched for backward compat with
+	# the M9 server payout flow; it equals podium_marble_indices[0] when the
+	# race completed normally.
+	var crossings: Dictionary = finish.get_crossings()
+	var podium_indices := [-1, -1, -1]
+	var podium_ticks := [-1, -1, -1]
+	var podium_marbles: Array = finish.get_podium(3)
+	for i in range(podium_marbles.size()):
+		if i >= 3:
+			break
+		var m: RigidBody3D = podium_marbles[i]
+		if m == null:
+			continue
+		podium_indices[i] = int(String(m.name).trim_prefix("Marble_"))
+		podium_ticks[i] = int(crossings.get(m, -1))
+
+	# Pickup zones (added in M17, payout v2). Walk every PickupZone under
+	# the active track, sort marbles by entry tick across all zones of the
+	# same tier, and trim to the math-model caps (4 Tier 1, 1 Tier 2). The
+	# server applies the `Tier 2 active` flag at payoff time; we always
+	# emit the raw "what physics produced" data so the manifest is stable.
+	var tier1_marbles: Array = []
+	var tier2_marble: int = -1
+	if _live_track != null:
+		var aggregated := _aggregate_pickups(_live_track)
+		tier1_marbles = aggregated["tier1"] as Array
+		tier2_marble = int(aggregated["tier2"])
+
 	var status := {
 		"round_id": _round_id,
 		"ok": winner != null,
 		"winner_marble_index": winner_idx,
 		"finish_tick": finish_tick,
+		# v4 additions — server constructs RoundOutcome from these:
+		"podium_marble_indices": podium_indices,    # [1°, 2°, 3°] drop-order
+		"podium_finish_ticks":   podium_ticks,      # tick of each crossing
+		"pickup_tier_1_marbles": tier1_marbles,     # up to 4 marble indices
+		"pickup_tier_2_marble":  tier2_marble,      # single marble index, or -1
+		"protocol_version":      4,
 		"replay_path": _replay_path,
 		"server_seed_hash_hex": FairSeed.to_hex(_server_seed_hash),
 		"tick_rate_hz": TickRecorder.TICK_RATE_HZ,
@@ -558,6 +596,64 @@ func _on_finalized(_path: String, finish: FinishLine) -> void:
 		f.store_string(JSON.stringify(status))
 		f.close()
 	get_tree().quit(0)
+
+# Walk the track tree, find every PickupZone, and aggregate pickups by tier.
+# Enforces the math-model caps:
+#   - Tier 1 (2×): up to 4 distinct marbles. If more than 4 collected
+#     (across all Tier 1 zones combined), keep the 4 earliest by tick.
+#   - Tier 2 (3×): exactly 1 marble. If more than 1 collected, keep the
+#     earliest by tick.
+# Returns {"tier1": Array[int], "tier2": int}.
+#
+# Since each zone already self-caps (Tier 1 zones cap at 4 each, Tier 2 at 1),
+# the aggregator only re-applies the cap when multiple zones are placed
+# (a track with 3 Tier 1 zones could otherwise produce 12 Tier 1 marbles).
+func _aggregate_pickups(track: Node) -> Dictionary:
+	var tier1_collected: Array = []   # array of {idx, tick}
+	var tier2_collected: Array = []
+	for zone in track.find_children("*", "PickupZone", true, false):
+		var pz := zone as PickupZone
+		if pz == null:
+			continue
+		var collected: Dictionary = pz.get_collected()
+		var tier: int = pz.tier
+		for idx in collected.keys():
+			var entry := {"idx": int(idx), "tick": int(collected[idx])}
+			if tier == PickupZone.TIER_2:
+				tier2_collected.append(entry)
+			else:
+				tier1_collected.append(entry)
+
+	# Sort by tick, dedup by idx (a marble can enter multiple zones; only
+	# the FIRST entry counts toward the cap), trim to caps.
+	tier1_collected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["tick"] < b["tick"]
+	)
+	tier2_collected.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return a["tick"] < b["tick"]
+	)
+
+	var tier1_idxs: Array = []
+	var seen: Dictionary = {}
+	for e in tier1_collected:
+		var idx: int = int(e["idx"])
+		if seen.has(idx):
+			continue
+		seen[idx] = true
+		tier1_idxs.append(idx)
+		if tier1_idxs.size() >= PickupZone.MAX_TIER_1:
+			break
+
+	var tier2_idx: int = -1
+	for e in tier2_collected:
+		var idx: int = int(e["idx"])
+		# Tier 2 marble can ALSO be in tier1 list; the server resolves the
+		# conflict (Tier 2 takes precedence as MAX). Keep the tier1 list
+		# as-is for replay completeness.
+		if tier2_idx == -1:
+			tier2_idx = idx
+			break
+	return {"tier1": tier1_idxs, "tier2": tier2_idx}
 
 func _build_environment(track: Track) -> void:
 	var overrides: Dictionary = track.environment_overrides()

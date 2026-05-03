@@ -281,6 +281,51 @@ static func build_outer_frame(parent: Node, name_prefix: String,
 			Vector3(0.0, center_y, depth * 0.5 + wall_thick * 0.5)),
 		Vector3(field_w + wall_thick * 2.0, height, wall_thick))
 
+# ─── Pickup zone (M17 — payout v2 multiplier collection) ────────────────────
+# Builds a PickupZone (Area3D) at `tx` with the given size and tier.
+#
+# Tier 1 (2×) zones: place 4 of them at high-traffic points so the math
+# model's expected E[n2] = 4 holds. Place them BETWEEN obstacles (not on
+# top of them), wide enough that ~1 marble per zone naturally collects.
+#
+# Tier 2 (3×) zones: place 1 narrow zone in a "premium" position so only
+# the most lucky marble passes through. Geometry should be tight enough
+# that only ~0.5-0.7 marbles per round on average traverse it (the
+# probabilistic activation comes from the server's Tier 2 active flag —
+# this geometry caps the upper bound).
+#
+# Returns the PickupZone node so the caller can stash it for late tweaks.
+static func add_pickup_zone(parent: Node, node_name: String, tx: Transform3D,
+		size: Vector3, tier: int,
+		mat: StandardMaterial3D = null) -> PickupZone:
+	var zone := PickupZone.new()
+	zone.name = node_name
+	zone.tier = tier
+	zone.transform = tx
+
+	var coll := CollisionShape3D.new()
+	coll.name = node_name + "_shape"
+	var box := BoxShape3D.new()
+	box.size = size
+	coll.shape = box
+	zone.add_child(coll)
+
+	# Optional visual marker — semi-transparent volume that tints the area
+	# the marble can be picked up in. Helps players see why some marbles
+	# get a multiplier and others don't. Skip the mesh if no material was
+	# passed (some operators may want pickup zones to be invisible).
+	if mat != null:
+		var mesh := MeshInstance3D.new()
+		mesh.name = node_name + "_mesh"
+		var bm := BoxMesh.new()
+		bm.size = size
+		mesh.mesh = bm
+		mesh.material_override = mat
+		zone.add_child(mesh)
+
+	parent.add_child(zone)
+	return zone
+
 # ─── Composite: catchment floor ─────────────────────────────────────────────
 # Flat catcher well below the gate. Catches marbles that bounce out of the
 # finish gate so they don't fall forever (which would also leak the round
