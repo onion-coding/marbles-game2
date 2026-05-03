@@ -99,9 +99,18 @@ var _winner_modal: Control
 var _winner_modal_card: PanelContainer
 var _winner_color_swatch: ColorRect
 var _winner_caption_label: Label
-var _winner_name_label: Label
+var _winner_name_label: Label                # P1 podium name (winner)
 var _winner_payout_label: Label
 var _winner_next_round_label: Label
+
+# Final-leaderboard nodes (podium top 3 + table for positions 4..20).
+var _podium_name_p2: Label
+var _podium_name_p3: Label
+var _podium_pillar_p1: PanelContainer
+var _podium_pillar_p2: PanelContainer
+var _podium_pillar_p3: PanelContainer
+var _final_standings_list: VBoxContainer
+var _last_ranked: Array = []                 # cached final standings, [{idx, dist}, ...]
 
 # ─── Toast nodes ────────────────────────────────────────────────────────────
 
@@ -398,6 +407,7 @@ func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return a["dist"] < b["dist"]
 	)
+	_last_ranked = ranked   # cache for the final-leaderboard render
 	# Apply rank changes — tween each row's y position smoothly.
 	for rank in range(ranked.size()):
 		var idx: int = ranked[rank]["idx"]
@@ -469,9 +479,17 @@ func update_tick(tick: int, tick_rate_hz: float) -> void:
 func reveal_winner(name: String, color: Color, prize: String = "",
 		breakdown: Dictionary = {}) -> void:
 	_apply_phase(PHASE_FINISHED)
-	_winner_name_label.text = name
+	# P1 podium name (reuses _winner_name_label) — _populate_podium will
+	# overwrite this with the authoritative entry from _last_ranked, but we
+	# still set it here as a fallback if the cache is empty.
+	_winner_name_label.text = name.to_upper()
 	_winner_name_label.label_settings = HudTheme.ls_hero(color)
 	_winner_color_swatch.color = color
+
+	# Fill the top-3 podium and the 4..20 standings table.
+	_populate_podium()
+	_populate_final_table()
+
 	if prize != "":
 		_winner_payout_label.text = prize
 		_winner_payout_label.label_settings = HudTheme.ls_metric(HudTheme.C_GOLD, HudTheme.FS_NUMBER_LARGE)
@@ -1574,14 +1592,14 @@ func _build_winner_modal() -> Control:
 	control.visible = false
 	_winner_modal = control
 
-	# Dark scrim.
+	# Dark scrim — slightly heavier for the fullscreen leaderboard treatment.
 	var scrim := ColorRect.new()
 	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	scrim.color = Color(0, 0, 0, 0.78)
+	scrim.color = Color(0, 0, 0, 0.86)
 	scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	control.add_child(scrim)
 
-	# Centered hero card.
+	# Centered hero card — wider now to host podium + standings table.
 	var center := CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	control.add_child(center)
@@ -1589,15 +1607,15 @@ func _build_winner_modal() -> Control:
 	_winner_modal_card = PanelContainer.new()
 	_winner_modal_card.add_theme_stylebox_override("panel",
 		HudTheme.sb_card(HudTheme.C_SURFACE_HERO, HudTheme.C_GOLD))
-	_winner_modal_card.custom_minimum_size = Vector2(520, 0)
+	_winner_modal_card.custom_minimum_size = Vector2(960, 0)
 	center.add_child(_winner_modal_card)
 
 	var vb := VBoxContainer.new()
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_theme_constant_override("separation", 14)
+	vb.add_theme_constant_override("separation", 18)
 	_winner_modal_card.add_child(vb)
 
-	# "🏁 WINNER" caption row with color chip.
+	# "🏁 WINNER" caption row with color chip — kept (i18n) above the podium.
 	var caption_hb := HBoxContainer.new()
 	caption_hb.alignment = BoxContainer.ALIGNMENT_CENTER
 	caption_hb.add_theme_constant_override("separation", 12)
@@ -1615,12 +1633,38 @@ func _build_winner_modal() -> Control:
 	_winner_caption_label.set_meta("i18n_key", "hud.winner.caption")
 	caption_hb.add_child(_winner_caption_label)
 
-	# Marble name — hero size.
-	_winner_name_label = Label.new()
-	_winner_name_label.text = "—"
-	_winner_name_label.label_settings = HudTheme.ls_hero(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_HERO_NUM)
-	_winner_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(_winner_name_label)
+	# Podium row — P2 / P1 / P3, packed bottom so taller pillars rise higher.
+	var podium_hb := HBoxContainer.new()
+	podium_hb.alignment = BoxContainer.ALIGNMENT_CENTER
+	podium_hb.add_theme_constant_override("separation", 16)
+	vb.add_child(podium_hb)
+	podium_hb.add_child(_make_podium_column(2, 150))
+	podium_hb.add_child(_make_podium_column(1, 220))
+	podium_hb.add_child(_make_podium_column(3, 110))
+
+	# Final standings table — positions 4..20 in two columns.
+	var table_panel := PanelContainer.new()
+	table_panel.add_theme_stylebox_override("panel",
+		HudTheme.sb_panel(HudTheme.C_SURFACE_1, HudTheme.C_BORDER, 8, 1))
+	vb.add_child(table_panel)
+
+	var table_vb := VBoxContainer.new()
+	table_vb.add_theme_constant_override("separation", 8)
+	table_panel.add_child(table_vb)
+
+	var table_header := Label.new()
+	table_header.text = "FINAL STANDINGS"
+	table_header.label_settings = HudTheme.ls_label_caps(HudTheme.C_GOLD, HudTheme.FS_LABEL)
+	table_vb.add_child(table_header)
+
+	var table_sep := ColorRect.new()
+	table_sep.color = HudTheme.C_GOLD
+	table_sep.custom_minimum_size = Vector2(0, 2)
+	table_vb.add_child(table_sep)
+
+	_final_standings_list = VBoxContainer.new()
+	_final_standings_list.add_theme_constant_override("separation", 4)
+	table_vb.add_child(_final_standings_list)
 
 	# Payout result — hidden when no bets / non-RGS mode.
 	_winner_payout_label = Label.new()
@@ -1645,7 +1689,6 @@ func _build_winner_modal() -> Control:
 	div.custom_minimum_size = Vector2(0, 1)
 	vb.add_child(div)
 
-	# Next-round countdown.
 	_winner_next_round_label = Label.new()
 	_winner_next_round_label.text = ""
 	_winner_next_round_label.label_settings = HudTheme.ls_label_caps(HudTheme.C_CYAN, HudTheme.FS_LABEL)
@@ -1654,6 +1697,173 @@ func _build_winner_modal() -> Control:
 	vb.add_child(_winner_next_round_label)
 
 	return control
+
+# Build a single podium column. Children pack to bottom (alignment=END), so a
+# taller pillar pushes the name + caption upward — that's what creates the
+# 1-2-3 silhouette when columns sit side-by-side in an HBox.
+func _make_podium_column(rank: int, pillar_height: int) -> Control:
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_END
+	col.add_theme_constant_override("separation", 6)
+	col.custom_minimum_size = Vector2(180, 0)
+
+	var place_caption := Label.new()
+	place_caption.text = ["1ST", "2ND", "3RD"][rank - 1]
+	place_caption.label_settings = HudTheme.ls_label_caps(
+		HudTheme.C_GOLD if rank == 1 else HudTheme.C_TEXT_SECONDARY,
+		HudTheme.FS_LABEL)
+	place_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(place_caption)
+
+	var name_lbl := Label.new()
+	name_lbl.text = "—"
+	name_lbl.label_settings = HudTheme.ls_hero(
+		HudTheme.C_TEXT_PRIMARY,
+		HudTheme.FS_HERO_NUM if rank == 1 else HudTheme.FS_TITLE)
+	name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(name_lbl)
+	if rank == 1:
+		_winner_name_label = name_lbl     # P1 name reuses the existing field
+	elif rank == 2:
+		_podium_name_p2 = name_lbl
+	else:
+		_podium_name_p3 = name_lbl
+
+	# Pillar — colored block with a giant rank digit centered inside.
+	var pillar := PanelContainer.new()
+	pillar.custom_minimum_size = Vector2(0, pillar_height)
+	pillar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var pstyle := StyleBoxFlat.new()
+	pstyle.bg_color = HudTheme.C_SURFACE_2
+	pstyle.border_color = HudTheme.C_GOLD if rank == 1 else HudTheme.C_BORDER
+	pstyle.set_border_width_all(2 if rank == 1 else 1)
+	pstyle.corner_radius_top_left  = 6
+	pstyle.corner_radius_top_right = 6
+	pstyle.corner_radius_bottom_left  = 0
+	pstyle.corner_radius_bottom_right = 0
+	pillar.add_theme_stylebox_override("panel", pstyle)
+
+	var pillar_center := CenterContainer.new()
+	pillar.add_child(pillar_center)
+
+	var num_lbl := Label.new()
+	num_lbl.text = str(rank)
+	# Hero+ size for the pillar digit; FS_HERO_NUM = 56, scale up for P1/P2/P3.
+	var ls := LabelSettings.new()
+	ls.font_color = HudTheme.C_TEXT_PRIMARY
+	ls.font_size = 120 if rank == 1 else 88
+	num_lbl.label_settings = ls
+	num_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	num_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	pillar_center.add_child(num_lbl)
+
+	if rank == 1:
+		_podium_pillar_p1 = pillar
+	elif rank == 2:
+		_podium_pillar_p2 = pillar
+	else:
+		_podium_pillar_p3 = pillar
+
+	col.add_child(pillar)
+	return col
+
+# Fill top-3 names + tint each pillar with the marble's livery from _last_ranked.
+func _populate_podium() -> void:
+	if _last_ranked.is_empty() or _marble_meta.is_empty():
+		return
+	var slots := [
+		{"name_lbl": _winner_name_label, "pillar": _podium_pillar_p1},
+		{"name_lbl": _podium_name_p2,    "pillar": _podium_pillar_p2},
+		{"name_lbl": _podium_name_p3,    "pillar": _podium_pillar_p3},
+	]
+	for r in range(slots.size()):
+		var slot: Dictionary = slots[r]
+		var name_lbl: Label = slot["name_lbl"]
+		var pillar: PanelContainer = slot["pillar"]
+		if name_lbl == null or pillar == null:
+			continue
+		if r >= _last_ranked.size():
+			name_lbl.text = "—"
+			continue
+		var idx: int = int(_last_ranked[r]["idx"])
+		if idx < 0 or idx >= _marble_meta.size():
+			continue
+		var meta: Dictionary = _marble_meta[idx]
+		var marble_color: Color = meta["color"]
+		name_lbl.text = String(meta["name"]).to_upper()
+		var ls := LabelSettings.new()
+		ls.font_color = marble_color
+		ls.font_size = HudTheme.FS_HERO_NUM if r == 0 else HudTheme.FS_TITLE
+		name_lbl.label_settings = ls
+		# Tint pillar bg with marble livery (translucent so digit stays legible).
+		var sb: StyleBoxFlat = (pillar.get_theme_stylebox("panel") as StyleBoxFlat).duplicate()
+		sb.bg_color = Color(marble_color.r, marble_color.g, marble_color.b, 0.42)
+		pillar.add_theme_stylebox_override("panel", sb)
+
+# Rebuild positions 4..20 into a 2-column table (so it doesn't overflow).
+func _populate_final_table() -> void:
+	if _final_standings_list == null:
+		return
+	for c in _final_standings_list.get_children():
+		c.queue_free()
+	var max_rows: int = mini(_last_ranked.size(), 20)
+	var entries_count: int = max(0, max_rows - 3)
+	if entries_count == 0:
+		return
+	var per_column: int = (entries_count + 1) / 2
+
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 28)
+	hb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var col1 := VBoxContainer.new()
+	col1.add_theme_constant_override("separation", 4)
+	col1.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(col1)
+
+	var col2 := VBoxContainer.new()
+	col2.add_theme_constant_override("separation", 4)
+	col2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(col2)
+
+	for r in range(3, max_rows):
+		var entry: Dictionary = _last_ranked[r]
+		var idx: int = int(entry["idx"])
+		if idx < 0 or idx >= _marble_meta.size():
+			continue
+		var meta: Dictionary = _marble_meta[idx]
+		var row := _make_final_table_row(r + 1, String(meta["name"]), meta["color"])
+		if (r - 3) < per_column:
+			col1.add_child(row)
+		else:
+			col2.add_child(row)
+
+	_final_standings_list.add_child(hb)
+
+func _make_final_table_row(rank: int, marble_name: String, color: Color) -> Control:
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 10)
+
+	var rank_lbl := Label.new()
+	rank_lbl.text = "%02d" % rank
+	rank_lbl.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_SECONDARY, HudTheme.FS_TEXT)
+	rank_lbl.custom_minimum_size = Vector2(38, 0)
+	hb.add_child(rank_lbl)
+
+	var bar := ColorRect.new()
+	bar.color = color
+	bar.custom_minimum_size = Vector2(6, 24)
+	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(bar)
+
+	var name_lbl := Label.new()
+	name_lbl.text = marble_name.to_upper()
+	name_lbl.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TEXT)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(name_lbl)
+
+	return hb
 
 func _show_winner_modal() -> void:
 	_winner_modal.visible = true
