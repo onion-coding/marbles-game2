@@ -187,6 +187,255 @@ EOF
 )"
 ```
 
+### Commit 3: M12 HUD broadcast redesign
+
+```
+git add game/ui/hud.gd game/ui/hud_theme.gd
+# Forest unique geometry was added in this session too — bundle with the HUD commit
+# OR split it into its own commit if you prefer (it touches game/tracks/roulette_track.gd
+# and game/tracks/track_blocks.gd).
+
+git commit -m "$(cat <<'EOF'
+HUD: M12 broadcast redesign + Forest unique geometry
+
+HUD rewrite under a single design language: F1/ESPN-inspired broadcast
+overlay replacing the M9 Godot-default Controls layout.
+
+New: game/ui/hud_theme.gd — single source for palette (16 semantic
+colors), font sizes (8 levels), StyleBoxFlat factories (panel/card/
+pill/top_bar/row/button/chip/toast/phase), LabelSettings factories
+(caption/caps/title/metric/timer/hero), and format helpers
+(format_money with thousand separators, format_race_time broadcast
+M:SS.MS precision, format_signed_money). Changing the entire
+aesthetic now means editing one file.
+
+Rewritten: game/ui/hud.gd (861 → 770 lines). Same public API contract
+preserved so main.gd / live_main.gd / web_main.gd / playback_main.gd
+keep working without changes:
+  - signals: marble_selected(int), bet_requested(int, float)
+  - methods: setup, set_track_name, update_tick, update_standings,
+    reveal_winner, enable_rgs_mode, start_bet_countdown,
+    start_next_round_countdown, update_balance, apply_settlement,
+    on_bet_confirmed, show_error_toast, set_following, reset
+  - constants: PHASE_WAITING/RACING/FINISHED, MOCK_BALANCE
+
+Visual changes:
+  - Top broadcast bar full-width 64px: brand mark + track name +
+    phase pill (cyan/green/gold) + animated LIVE dot + round indicator
+    + balance card with thousand-separator amount + USD caption.
+  - Timing tower right-side: rows are absolute-positioned via
+    offset_top/offset_bottom (no anchor warnings), tween-animated rank
+    changes (cubic ease-out 0.32s), leader gold-tinted with border,
+    top-3 highlighted, follow-marker as cyan left border.
+  - Timer hero center-bottom: card with shadow + rounded corners 14px,
+    caption "RACE TIME" caps + monospace 48pt timer with outline,
+    "BETS LOCKED" amber pill below when applicable.
+  - Bet panel sportsbook-style: header + countdown (amber→red pulse
+    final 3s), marble color chip strip, preset chips (5/10/25/50/100),
+    quick-adjust ±1/±10, monospace stake amount, POTENTIAL WIN
+    live-calc label, premium gold CTA full-width.
+  - Winner modal theatrical: dark scrim, gold-bordered hero card
+    with color swatch + 56pt name + big payout (green/red), entrance
+    animation (scale 0.92→1.0 + alpha 0→1 cubic 0.28s), divider,
+    next-round countdown.
+  - Toast pill bottom-center: type-coded border (green/red/amber/cyan),
+    pop-in tween, auto-fade.
+
+Track-name pretty-print: RouletteTrack/CrapsTrack/etc → Forest Run /
+Volcano Run / Ice Run / Cavern Run / Sky Run / Stadium Run, matching
+the M11 themes.
+
+Forest unique mechanic (game/tracks/roulette_track.gd): three
+horizontal rotating logs (AnimatableBody3D, kinematic) above F2/F3/F4
+ramps. Angular velocities derived from _hash_with_tag("forest_log_<i>")
+so each round shows different log behaviour while staying replay-stable.
+Log radius 0.6m, length 4m, ω in [-1.6, +1.6] rad/s. Clearance 1.0m
+above slab top so marbles pass under but bouncing ones get nudged.
+
+CLI alias fix (game/main.gd, game/tracks/track_registry.gd,
+server/cmd/roundd/main.go, server/rgs/manager.go,
+server/rgs/manager_test.go):
+  --track=forest|volcano|ice|cavern|sky|stadium  — M11 theme names
+  --track=roulette|craps|poker|slots|plinko       — technical aliases
+                                                    (same map as theme)
+  --track=ramp                                     — legacy id 0
+  no flag                                          — random pick of
+                                                    the 6 themed tracks
+                                                    (ramp excluded)
+SELECTABLE = [1,2,3,4,5,6] (no ramp). is_valid_id still accepts ramp
+for old replay decode. Server-side TrackPool default aligned.
+
+Headless smoke convenience (game/main.gd): auto-quit 3s after race
+finish when DisplayServer is "headless" so batch scripts don't depend
+on --quit-after frame counts (frames, not seconds — common foot-gun).
+
+Validation:
+  - 6/6 track smoke pass with the new HUD wired in.
+  - verify_main passes on Forest replay (commit/slots/colors/positions).
+  - test_vectors_main 4/4 pass (Python regression invariant).
+  - go test ./... 12/12 pass on the server side.
+  - Zero parse errors / warnings on hud.gd in headless smoke.
+
+Pending for next session: mobile portrait layout (BREAKPOINT_MOBILE
+constant placed but switch logic not wired), operator branding hooks
+runtime (HudTheme centralised; URL param theme load not wired),
+i18n (all strings still hardcoded English), lap progress bar under
+timer (needs race-progress 0-100% expose), top-3 podium ribbon in
+top bar.
+
+EOF
+)"
+```
+
+### Commit 4: M13 — unique geometry per track (Cavern / Volcano / Ice / Sky / Stadium)
+
+```
+git add game/tracks/
+
+git commit -m "$(cat <<'EOF'
+Tracks: M13 — unique geometric mechanic per track
+
+Closes the "all six tracks share the same skeleton" debt from M11. Each
+track now has a distinguishing static or kinematic feature on top of
+the shared drop-cascade backbone, so the six themes finally play
+differently and not just look differently.
+
+Forest (RouletteTrack) — shipped earlier:
+  - Three rotating wooden logs (AnimatableBody3D, kinematic) above
+    F2/F3/F4 ramps. Angular velocities derived from
+    _hash_with_tag("forest_log_<i>"). Smoke ~32s.
+
+Cavern (SlotsTrack):
+  - Stalactites (5 hanging crystal cylinders from the F5 ceiling) +
+    stalagmites (4 rising crystal cylinders from the F5 floor),
+    hex-staggered with alternating Z offsets. Marbles must zigzag
+    through. Static, fairness unaffected. Smoke ~29s.
+
+Volcano (CrapsTrack):
+  - Four kinematic vertical lava-geyser cylinders inside the F5 zone,
+    each oscillating between y=5.5 and y=11 at 1.2 rad/s. Phases
+    derived from _hash_with_tag("volcano_geyser_<i>") so every round
+    shows different emergence timing. Marbles getting clipped by a
+    rising column get launched upward. Smoke ~31s.
+
+Ice (PokerTrack):
+  - Replaced the F5 cylinder peg field with a 5×7 hex grid of vertical
+    ice shards (thin tall slabs, 0.4×2.5×0.5m). Flat-faced collisions
+    deflect at sharper angles than rounded peg bounces. Smoke ~28s.
+
+Sky (PlinkoTrack):
+  - Replaced the dense cylinder peg field with 12 horizontal cloud
+    platforms scattered across 4 y-levels. Marbles bounce down a
+    stepping-stone path. Each platform tilted ±3° around Z so marbles
+    don't park on top. Smoke ~26s.
+
+Stadium (StadiumTrack):
+  - Spinning windmill paddle at the centre of F5 (y=9, x=0). Single
+    AnimatableBody3D with two crossing 6m-long blades + central hub,
+    rotating around world Y at a seed-derived ω in ±1.4 rad/s. Smoke
+    ~31s.
+
+Library extension:
+  - TrackBlocks.add_animatable_cylinder added in M11 (Forest); reused
+    by Cavern, Volcano. Stadium uses raw AnimatableBody3D directly to
+    build a multi-shape windmill body.
+
+Validation:
+  - 6/6 tracks finish in 26-31s on smoke (real gravity 9.8 m/s²,
+    no SLOW_GRAVITY).
+  - verify_main passes on Stadium replay (commit/slots/colors/positions).
+  - test_vectors_main 4/4 pass — fairness chain unaffected.
+  - Each kinematic obstacle's animation parameter is derived from
+    _hash_with_tag(<unique tag>) so replay determinism holds across
+    rounds with different seeds.
+
+The six themes are now genuinely different geometries, not palette
+swaps.
+
+EOF
+)"
+```
+
+### Commit 5: M14 — Phase 1.5 HUD broadcast completion (podium / lap progress / mobile / branding / i18n)
+
+```
+git add game/ui/hud.gd game/ui/hud_theme.gd \
+        game/ui/hud_i18n.gd game/ui/hud_i18n.gd.uid
+
+git commit -m "$(cat <<'EOF'
+HUD: M14 — Phase 1.5 broadcast completion
+
+Closes the open items left at the end of M12 broadcast HUD redesign:
+top-3 podium ribbon, lap progress bar, mobile responsive switch,
+operator branding hooks runtime, and i18n scaffold (en/it/es/de/pt).
+
+Public API additions (all backward-compatible — main / live / web /
+playback paths keep working unchanged):
+  - HUD.apply_operator_theme(config: Dictionary) — accepts any subset
+    of {accent_color, brand_text, brand_logo, lang}; re-styles brand
+    mark, CTA button, standings header, progress bar fill, and
+    winner caption. Re-localises all tagged labels on the same call.
+  - HUD.set_lang(lang: String) — language-only switch.
+  - HUD.update_progress(percent: float) — optional 0..1 progress
+    setter; if main.gd doesn't call it, the bar drives itself from
+    the leader_dist/initial_max_dist captured inside update_standings.
+
+New file: game/ui/hud_i18n.gd — string table for the HUD with five
+languages (en, it, es, de, pt). HudI18n.t(key) returns the localised
+string with English fallback; missing-key fallback to the key itself
+(no crash). Default language en, settable via set_lang(). Walks via
+node metadata "i18n_key" so labels can be re-localised at runtime
+without rebuilding the layout.
+
+Extension: game/ui/hud_theme.gd
+  - HudTheme.apply_operator_overrides(config) stores accent_color /
+    brand_text / brand_logo overrides. Sentinel-based (zero-alpha,
+    empty string, null) so unset overrides fall back to defaults.
+  - HudTheme.accent() / brand_text() / brand_logo() — helpers used
+    instead of the bare C_GOLD / "MARBLES" constants in widgets that
+    operators may want to skin.
+
+Visual additions to HUD layout:
+  - Top-3 podium ribbon (3 chips after the round indicator): rank
+    "1°/2°/3°" tinted gold/silver/bronze + color chip + marble id.
+    Hidden in WAITING phase, visible once standings tick. Hidden in
+    mobile portrait to save space.
+  - Race progress bar (slim 4px) under the timer, accent-coloured.
+    Driven by leader_distance / initial_max_distance computed in
+    update_standings; main.gd doesn't need changes.
+  - Brand mark holds an optional TextureRect alongside the "M"
+    glyph. apply_operator_theme({brand_logo: tex}) flips visibility.
+  - Mobile portrait switch: viewport.x < BREAKPOINT_MOBILE (768)
+    triggers _apply_mobile_layout() — collapsed brand subtitle,
+    hidden podium ribbon, narrow timing tower (200px right-docked),
+    full-width bottom-sheet bet panel, smaller timer card. Switch
+    only fires on breakpoint crossing (no per-frame layout thrash).
+
+i18n migration:
+  - All hardcoded HUD strings replaced with HudI18n.t() calls:
+    BALANCE / WAITING / RACING / FINISHED / STANDINGS / RACE TIME /
+    BETS LOCKED / PLACE YOUR BET / PICK A MARBLE / STAKE / POTENTIAL
+    WIN / PLACE BET / YOUR BETS / Insufficient balance / WINNER /
+    NEXT ROUND IN / STARTING NEXT ROUND.
+  - Dynamic-format strings (countdown, payout) use t("key") with
+    %.1f / %s placeholders embedded in the translation values.
+  - Track display names (Forest Run / Volcano Run / etc.) localised
+    via hud.track.* keys; set_track_name() stores the i18n_key in
+    Label meta so set_lang() can re-render later.
+
+Validation:
+  - Smoke headless on Forest: WINNER tick 1777 (29.6s), replay
+    roundtrip OK, zero errors, zero warnings.
+  - verify_main passes on the new replay (commit/slots/colors/
+    positions integri).
+  - test_vectors_main 4/4 pass — fairness chain unchanged.
+  - HUD public API contract preserved → main.gd / live_main.gd /
+    web_main.gd / playback_main.gd unmodified.
+
+EOF
+)"
+```
+
 ### Push
 
 ```
@@ -217,7 +466,17 @@ L'utente vuole verificare visualmente il risultato di M11 prima di decidere la p
 & "D:/Downloads/Godot_v4.6.2-stable_win64.exe/Godot_v4.6.2-stable_win64.exe" --path "D:\Documents\GitHub\marbles-game2\.claude\worktrees\compassionate-hellman-4f7e39\game" --% -- --track=stadium
 ```
 
-Sostituisci `stadium` con `roulette / craps / poker / slots / plinko` per le altre 5 tracce.
+**Nomi `--track=` accettati (post fix CLI 2026-05-02):**
+- `forest`, `roulette` → ROULETTE / Forest theme (id 1)
+- `volcano`, `craps` → CRAPS / Volcano theme (id 2)
+- `ice`, `poker` → POKER / Ice theme (id 3)
+- `cavern`, `slots` → SLOTS / Cavern theme (id 4)
+- `sky`, `plinko` → PLINKO / Sky theme (id 5)
+- `stadium` → STADIUM theme (id 6)
+- `ramp` → RAMP legacy (id 0, **fuori dal random pool**)
+- _senza flag_ → random pick tra i 6 temati (forest/volcano/ice/cavern/sky/stadium)
+
+I nomi tematici e gli alias casino tecnici puntano alla **STESSA mappa** — class names + track_ids stabili, content riscritto in M11.
 
 Domande aperte all'utente per la prossima sessione:
 1. La forma drop-cascade è la direzione giusta o vuole percorsi più orizzontali tipo S-curve banked (la prima versione di stadium che è fallita)?
