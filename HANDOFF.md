@@ -436,6 +436,109 @@ EOF
 )"
 ```
 
+### Commit 6: M15 — Payout v2 spec + multiplier module (math model + Go module, no integration yet)
+
+```
+git add docs/math-model.md \
+        server/rgs/multiplier.go \
+        server/rgs/multiplier_test.go
+
+git commit -m "$(cat <<'EOF'
+Payout: M15 — v2 model spec (30 marbles, podium 9/4.5/3, pickup
+multipliers, jackpot 100x rule B2)
+
+Replaces the M9 single-multiplier model (20 marbles, flat 19x payout)
+with a richer payout structure agreed with the user 2026-05-02:
+
+  - 30 marbles per round (was 20).
+  - Top-3 podium pays 9x / 4.5x / 3x of stake.
+  - Pickup multipliers via geometric zones (deterministic-by-physics):
+      Tier 1 (2x): max 4 marbles per round (hard cap from user brief).
+      Tier 2 (3x): max 1 marble per round, activated probabilistically
+                   per round (~41.7% under canonical 95% RTP) so the
+                   server can scale RTP between 92-99% by tuning the
+                   activation probability via Tier2ProbForRTP().
+  - Stack rule: payoff = base_podium x pickup (multiplicative). Multiple
+    pickup zone traversals take MAX, not product.
+  - Pickup wins even without podium: a marble that picked up 2x but
+    finished 15th still pays 2x to a bettor on it.
+  - Jackpot rule B2: when 1° marble has Tier 2 (3x) pickup, payoff is
+    100x outright (overrides podium x pickup). Frequency ~1 per 72
+    rounds under canonical config — "session-level" jackpot moments.
+
+New file: docs/math-model.md (~370 lines). Canonical math spec for the
+v2 model, formatted for handoff to a certification lab (iTech / GLI /
+BMM). Includes:
+  - §1-3: bet model, RoundOutcome states, EV per marble, RTP scenarios.
+  - §3.4 corrected: EV[3x pickup] = 6.78 (NOT 4.35) because jackpot
+    overrides podium x pickup. Solving for RTP=95% gives p=0.417.
+  - §4: cross-map audit pipeline (1000-round smoke + RTP simulation
+    + chi-square distribution check) — every new map must pass before
+    entering SELECTABLE.
+  - §5: per-map payout structure proposals (pickup zone placement for
+    Stadium Sprint / Spiral Skies / Volcano Chaos / Forest Maze / Ice
+    Slide / Cavern Drop) plus casino-themed alternatives (Roulette
+    wheel, Plinko bins, Darts board).
+  - §6: 3 design decisions captured for production (RTP target, jackpot
+    rule, casino-themed flavour).
+  - §7: regression-test scaffold for CI.
+
+New file: server/rgs/multiplier.go (~330 lines). Pure Go module
+implementing the v2 math:
+  - RoundOutcome struct with podium + pickups + jackpot fields.
+  - ComputeBetPayoff(marbleIdx, stake, outcome) — canonical payoff calc.
+  - DeriveTier2Active(seed, round_id) — SHA-256 based deterministic
+    Tier 2 activation, mirrors Godot _hash_with_tag pattern so cross-
+    language verification is byte-stable.
+  - Tier2ProbForRTP(rtp) — inverse formula for RTP→p tuning, used by
+    the server when operator configures non-default RGSD_RTP_BPS.
+  - ValidatePickupCounts() — caps enforcement (max 4 Tier 1, max 1
+    Tier 2). Defensive against Godot-side bugs that would distort RTP.
+  - MapPayoutModel interface + implementations:
+      DefaultPayoutModel — canonical podium x pickup.
+      RoulettePayoutModel — 37-slot wheel with jackpot on green 0.
+      PlinkoPayoutModel  — 13-bin pyramid with edge-bin 50x.
+      DartsPayoutModel   — 4-zone target (bullseye 50x, miss 0x).
+    Per-map override plumbed for casino-themed alt finishes.
+
+New file: server/rgs/multiplier_test.go (~340 lines). 8 test groups,
+all passing:
+  - TestComputeBetPayoff_Podium      — 5 podium-only cases.
+  - TestComputeBetPayoff_PickupOnly  — pickup-without-podium rule.
+  - TestComputeBetPayoff_Stack       — base x pickup multiplicative.
+  - TestJackpotRule_B2               — 4 trigger/no-trigger scenarios.
+  - TestDeriveTier2Active_Determinism — 100 rounds x 5 trials, no drift.
+  - TestDeriveTier2Active_Distribution — empirical 41.7% +/- 3% on
+    10000 trials.
+  - TestTier2ProbForRTP — RTP→p inverse for 6 representative RTPs.
+  - TestValidatePickupCounts — cap enforcement.
+  - TestRTPSimulation — 50000 rounds Monte-Carlo, empirical RTP 95% +/- 2%.
+  - TestCasinoModels — Roulette / Plinko / Darts smoke.
+
+What this commit does NOT do (deferred to next session):
+  - manager.go integration: replacing PayoutMultiplier=19.0 with
+    ComputeBetPayoff requires the Godot sim to return podium top-3
+    (currently returns only first winner) + pickup tracking. Server-
+    side sim invocation + replay format v4 (additive manifest fields)
+    are needed first.
+  - Replay format v4: additive marble_count / podium_payouts /
+    pickup_per_marble / jackpot_triggered / jackpot_marble_index
+    fields. Spec'd in math-model §4.3 but not coded yet.
+  - Godot pickup zone scene scripts (game/sim/pickup_zone.gd etc.).
+    Phase 6 territory — depends on per-map geometric design.
+  - HUD update: pickup multiplier badges, payoff calc preview with
+    new math.
+
+Validation:
+  - go test ./... — 12/12 packages pass (multiplier_test added 8
+    test groups, all green).
+  - Math model documented thoroughly enough that a certification lab
+    auditor can replicate the RTP calculation independently.
+
+EOF
+)"
+```
+
 ### Push
 
 ```
