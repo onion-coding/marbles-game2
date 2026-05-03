@@ -863,6 +863,81 @@ L'utente vuole arrivare al "livello William Hill" ma realisticamente il target �
 
 Plan completo in `C:\Users\danie\.claude\plans\fai-un-controllo-dell-intero-frolicking-lampson.md`. Roadmap a 5 fasi (Fase 0 fatta in questa sessione, Fase 1-5 pending) con costi/timeline/file critici per ciascuna.
 
+## M19-M22 — payout v2 end-to-end completion (sessione 2026-05-03)
+
+Continuazione della sessione M15-M18 (payout v2 spec + sim plumbing + settle wire-up).
+Tutti i commit sono già su questo branch worktree (NON pushati).
+
+```
+eeeac2c CI: M22 — RTP regression gate for the v2 payout model
+df39898 HUD: M21 follow-up — wire set_track_node + fix %.4g format crash
+b2e62fa HUD: M21 — pickup badges + v2 payout preview + winner breakdown
+e413fcf Sim: M20 — bump marble field 20 → 30 (slot_count 24 → 32)
+6ce1b34 Tracks: M19 — pickup zones for the other 5 maps (Volcano/Ice/Cavern/Sky/Stadium)
+2bff9f9 Payout: M16+M17+M18 — v2 model live in settle path
+```
+
+**M19** (commit `6ce1b34`): pickup zones su tutti e 5 i restanti track (Volcano,
+Ice, Cavern, Sky, Stadium). Forest era già completato in M17. Layout per ogni
+track tunato sulla geometria specifica (audit-ready):
+- Volcano/Ice/Stadium: layout standard 4× T1 a y=9 + 1× T2 a y=6.5
+- Cavern: T1 a y=9 nel corridoio fra stalattiti/stalagmiti, T2 a y=2.5
+- Sky: T1 nei gap fra cloud platform levels (y=11, y=8), T2 a y=5.5
+
+**M20** (commit `e413fcf`, fairness-auditor delegated): bump marble count
+20→30 e slot_count 24→32 (8×4 grid). Backward compat preserved per old
+20-marble replays:
+- Append-only: primi 24 slot positions invariati (formula `(r-1.0)*SPAWN_DZ`
+  byte-equivalent al vecchio `(r-(SPAWN_ROWS-1)*0.5)*SPAWN_DZ` con
+  SPAWN_ROWS=3).
+- 8 nuovi slot a z=+2.0 (entro FIELD_DEPTH=5m).
+- F6_LANES bumped 20→30 su tutti i track.
+- MaxMarbles default 20→30 in `server/rgs/manager.go`, `cmd/rgsd/main.go`,
+  `cmd/roundd/main.go`.
+- Tutti i test Go aggiornati: stake assertions ricalcolate per pool 30
+  marbles. 12/12 packages pass.
+- Validato: smoke Forest+Stadium con 30 marbles → ROUNDTRIP OK; verifier
+  PASS (30 marbles across 32 slots); test_vectors_main 4/4 vectors PASS.
+
+**M21** (commit `b2e62fa`, ux-hud-designer delegated + commit `df39898`
+follow-up):
+- Pickup badges nel timing tower: poll a 5 Hz durante RACING, "+2×" green
+  per Tier-1 / "+3×" gold per Tier-2.
+- Bet panel: payout matrix 6-row (1°/2°/3°/+T1/+T2/JACKPOT) con valori live
+  in €.
+- Winner modal: breakdown line ("1st (9×) + Pickup ×2 = 18× × €5 = €90").
+- Marble count display "30 RACERS" ovunque.
+- i18n keys aggiunte in tutti e 5 i locale (en/it/es/de/pt).
+- Follow-up: wire `_hud.set_track_node(track)` in main.gd + live_main.gd
+  per attivare il poller. Sostituito `%.4g` (non supportato da GDScript) con
+  un helper `_format_compact_float()` che gestisce 9.0→"9", 4.5→"4.5",
+  100.0→"100".
+
+**M22** (commit `eeeac2c`): `scripts/rtp_smoke_v2.sh` + nuovo CI job
+`rtp-regression`. Tier 1 (CI gate, ~50ms): TestRTPSimulation 50k rounds
+con tolleranza ±0.02 sul target 0.95, più tutti i test math regressivi
+(ComputeBetPayoff, NewRoundOutcome, DeriveTier2Active, Tier2ProbForRTP,
+casino models). Tier 2 (opzionale, richiede GODOT_BIN): batch end-to-end
+N rounds via roundd + analyze_replays.py. Validato locale: tier 1 PASS,
+empirical RTP = 0.9542.
+
+**Stato finale del payout v2**: LIVE end-to-end su tutti e 6 i track con 30
+marbles. RTP gated in CI. HUD player-facing aggiornata.
+
+**Cosa NON è stato fatto e resta pending**:
+- Real-wallet HTTP client (sostituire MockWallet) — Phase 1 roadmap originale.
+- Fase 2 visual polish (tribune, banners, particles ambient).
+- Fase 3 broadcast cameras + winner reveal cinematico + replay highlights.
+- Fase 4 audio assets + event hooks.
+- Fase 5 web/operator readiness (postMessage bridge full wiring, theme
+  runtime, i18n full coverage incl. browser detection).
+- Fase 6 next-gen tracks (track_id 7-12 con geometrie radicalmente diverse).
+- regen di `docs/fairness-vectors.json` per aggiungere un vector
+  slot_count=32 + 30 marbles (opzionale, i 4 esistenti continuano a passare).
+
+**Push step**: `git push origin claude/compassionate-hellman-4f7e39` quando
+l'utente conferma.
+
 ## Note tecniche per il prossimo Claude
 
 - `make` non è installato nella bash dell'utente Windows. Il Makefile è corretto, lui può `winget install GnuWin32.Make` o usare le `make` targets come reference per i comandi sotto.
