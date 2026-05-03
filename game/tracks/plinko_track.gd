@@ -71,7 +71,44 @@ func _ready() -> void:
 	_build_peg_field()
 	_build_gate()
 	_build_catchment()
+	_build_pickup_zones()
 	_build_mood_lights()
+
+# M19 — Sky pickup zones. Cloud platforms sit at y=[12.5, 9.5, 6.5, 4.5]
+# (slim 0.4-m slabs). Pickup zones occupy the GAPS between platform
+# levels — the y=11 strip (between L1 and L2) and the y=8 strip (between
+# L2 and L3) are clear corridors marbles fall through. T1 layout: 2 zones
+# at y=11 and 2 at y=8, alternating x-positions to match the platform
+# offset pattern. T2 zone in the lowest gap (y=5.5) where the marble
+# stream has narrowed before the gate.
+func _build_pickup_zones() -> void:
+	var t1_mat := TrackBlocks.std_mat_emit(
+		Color(0.65, 0.85, 1.00, 0.30),    # sky-blue semi-transparent
+		0.0, 0.50, 0.70)
+	t1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var t2_mat := TrackBlocks.std_mat_emit(
+		Color(1.00, 0.85, 0.30, 0.45),    # sun-gold semi-transparent
+		0.0, 0.30, 1.10)
+	t2_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	const TIER1_SIZE := Vector3(3.5, 1.2, FIELD_DEPTH - 0.4)
+	# 2 zones in the L1-L2 gap (y=11), 2 in the L2-L3 gap (y=8). x
+	# positions chosen to land between platforms at each level.
+	var zones: Array = [
+		{"name": "PickupT1_0", "pos": Vector3(-9.0, 11.0, 0.0)},
+		{"name": "PickupT1_1", "pos": Vector3( 6.0, 11.0, 0.0)},
+		{"name": "PickupT1_2", "pos": Vector3(-2.0,  8.0, 0.0)},
+		{"name": "PickupT1_3", "pos": Vector3(10.0,  8.0, 0.0)},
+	]
+	for z in zones:
+		TrackBlocks.add_pickup_zone(self, String(z["name"]),
+			Transform3D(Basis.IDENTITY, z["pos"]),
+			TIER1_SIZE, PickupZone.TIER_1, t1_mat)
+
+	# T2 in L3-L4 gap (y=5.5), at field centre, narrow (1.4 m wide).
+	TrackBlocks.add_pickup_zone(self, "PickupT2",
+		Transform3D(Basis.IDENTITY, Vector3(0.0, 5.5, 0.0)),
+		Vector3(1.4, 1.0, FIELD_DEPTH - 0.4), PickupZone.TIER_2, t2_mat)
 
 func _init_physics_materials() -> void:
 	# Stadium-aligned physics for reliable finish.

@@ -73,7 +73,46 @@ func _ready() -> void:
 	_build_cavern_formations()
 	_build_gate()
 	_build_catchment()
+	_build_pickup_zones()
 	_build_mood_lights()
+
+# M19 — Cavern pickup zones. Stalactites occupy y=10..14, stalagmites
+# y=4..8 — the marble-traffic corridor sits at y=8..10. T1 zones at y=9
+# fit cleanly in this 2-m corridor (1.5 m tall, centred on the corridor
+# midline). T2 zone at y=6.5 sits between stalagmite tops and the gate,
+# narrower so only the most centred marble crosses it. X positions
+# alternate between stalactite columns to keep zones in the actual marble
+# path after stalactite deflection.
+func _build_pickup_zones() -> void:
+	var t1_mat := TrackBlocks.std_mat_emit(
+		Color(0.85, 0.45, 1.00, 0.30),    # crystal-magenta semi-transparent
+		0.0, 0.45, 0.80)
+	t1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var t2_mat := TrackBlocks.std_mat_emit(
+		Color(1.00, 0.40, 0.95, 0.45),    # bright magenta semi-transparent
+		0.0, 0.30, 1.10)
+	t2_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	const TIER1_SIZE := Vector3(2.5, 1.0, FIELD_DEPTH - 0.4)
+	const TIER1_Y    := 9.0    # midpoint of the y=8..10 marble corridor
+	# Stagger between stalactite columns ([-12, -6, 0, 6, 12]) and
+	# stalagmite columns ([-9, -3, 3, 9]) to avoid sitting directly under
+	# a stalactite tip.
+	const TIER1_XS   := [-9.0, -3.0, 3.0, 9.0]
+	for i in range(TIER1_XS.size()):
+		var x: float = float(TIER1_XS[i])
+		TrackBlocks.add_pickup_zone(self, "PickupT1_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(x, TIER1_Y, 0.0)),
+			TIER1_SIZE, PickupZone.TIER_1, t1_mat)
+
+	# T2 below stalagmites (top y=8) and above gate (y=0). Centre x=0 falls
+	# under a stalactite column but the stalactite tip is at y=10 — well
+	# above the T2 zone at y=2.5. Marble path through centre stalagmite
+	# zigzag funnels toward the gate centre, so this zone is reachable but
+	# narrow.
+	TrackBlocks.add_pickup_zone(self, "PickupT2",
+		Transform3D(Basis.IDENTITY, Vector3(0.0, 2.5, 0.0)),
+		Vector3(1.4, 1.2, FIELD_DEPTH - 0.4), PickupZone.TIER_2, t2_mat)
 
 # ─── Cavern unique mechanic: stalactites + stalagmites ──────────────────────
 # Vertical crystal pillars layered above the existing peg field. Each row

@@ -94,7 +94,39 @@ func _ready() -> void:
 	_build_lava_geysers()
 	_build_gate()
 	_build_catchment()
+	_build_pickup_zones()
 	_build_mood_lights()
+
+# M19 — Volcano pickup zones (lava-themed). Same standardized layout as
+# Forest (4 Tier-1 + 1 Tier-2 around F5 mid-Y), tuned colors for the lava
+# theme. PickupZone is an Area3D filtered to RigidBody3D marbles, so the
+# kinematic geyser cylinders sweeping through these volumes don't trigger
+# false pickups even when the geyser column intersects a zone's bounds.
+func _build_pickup_zones() -> void:
+	var t1_mat := TrackBlocks.std_mat_emit(
+		Color(1.00, 0.50, 0.20, 0.35),    # molten orange semi-transparent
+		0.0, 0.40, 0.85)
+	t1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var t2_mat := TrackBlocks.std_mat_emit(
+		Color(1.00, 0.20, 0.10, 0.45),    # white-hot red semi-transparent
+		0.0, 0.30, 1.20)
+	t2_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	const TIER1_SIZE := Vector3(3.0, 1.5, FIELD_DEPTH - 0.4)
+	const TIER1_Y    := 9.0    # mid F5 (top=14, bot=4 → centre 9)
+	const TIER1_XS   := [-12.0, -4.0, 4.0, 12.0]
+	for i in range(TIER1_XS.size()):
+		var x: float = float(TIER1_XS[i])
+		TrackBlocks.add_pickup_zone(self, "PickupT1_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(x, TIER1_Y, 0.0)),
+			TIER1_SIZE, PickupZone.TIER_1, t1_mat)
+
+	# Tier 2: narrow centre zone in the lower F5 zone where geyser min y is
+	# just above (centre y=5.5 → bottom y=3.5). Sits at y=6.5 so descending
+	# marbles cross it after most peg/geyser interactions.
+	TrackBlocks.add_pickup_zone(self, "PickupT2",
+		Transform3D(Basis.IDENTITY, Vector3(0.0, 6.5, 0.0)),
+		Vector3(1.4, 1.5, FIELD_DEPTH - 0.4), PickupZone.TIER_2, t2_mat)
 
 func _physics_process(delta: float) -> void:
 	# Drive each geyser's vertical position. y_center = midpoint + sin(t·ω + φ)·amp.

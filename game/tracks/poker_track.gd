@@ -71,7 +71,35 @@ func _ready() -> void:
 	_build_peg_field()
 	_build_gate()
 	_build_catchment()
+	_build_pickup_zones()
 	_build_mood_lights()
+
+# M19 — Ice pickup zones. Same standardized layout as Forest, ice-themed
+# colors. The shard rows are at y≈[12.3, 10.7, 9.0, 7.3, 5.7]; T1 zones at
+# y=9 sit in the middle row's plane, but they're Area3D and don't collide
+# with the static StaticBody3D shards.
+func _build_pickup_zones() -> void:
+	var t1_mat := TrackBlocks.std_mat_emit(
+		Color(0.55, 0.85, 1.00, 0.30),    # frosty cyan semi-transparent
+		0.0, 0.45, 0.70)
+	t1_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var t2_mat := TrackBlocks.std_mat_emit(
+		Color(0.30, 0.90, 1.00, 0.45),    # bright aqua semi-transparent
+		0.0, 0.30, 1.10)
+	t2_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	const TIER1_SIZE := Vector3(3.0, 1.5, FIELD_DEPTH - 0.4)
+	const TIER1_Y    := 9.0
+	const TIER1_XS   := [-12.0, -4.0, 4.0, 12.0]
+	for i in range(TIER1_XS.size()):
+		var x: float = float(TIER1_XS[i])
+		TrackBlocks.add_pickup_zone(self, "PickupT1_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(x, TIER1_Y, 0.0)),
+			TIER1_SIZE, PickupZone.TIER_1, t1_mat)
+
+	TrackBlocks.add_pickup_zone(self, "PickupT2",
+		Transform3D(Basis.IDENTITY, Vector3(0.0, 6.5, 0.0)),
+		Vector3(1.4, 1.5, FIELD_DEPTH - 0.4), PickupZone.TIER_2, t2_mat)
 
 func _init_physics_materials() -> void:
 	# Stadium-aligned physics for reliable finish.
