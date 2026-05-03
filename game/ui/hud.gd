@@ -153,8 +153,33 @@ var _bet_countdown_active: bool = false
 var _next_round_countdown_remaining: float = 0.0
 var _next_round_countdown_active: bool = false
 
-# RGS payout multiplier — informational only (server is authoritative).
-const PAYOUT_MULT := 19.0
+# v2 payout model constants (M15/M18) — informational only, server is authoritative.
+const PAYOUT_MULT        := 19.0  # legacy fallback (kept for _apply_local_payout_summary)
+const PAYOUT_1ST         := 9.0
+const PAYOUT_2ND         := 4.5
+const PAYOUT_3RD         := 3.0
+const PAYOUT_TIER1_MULT  := 2.0   # stacks on top of podium
+const PAYOUT_TIER2_MULT  := 3.0
+const PAYOUT_JACKPOT     := 100.0  # 1st + Tier-2 stack
+
+# M20: marble field is 30, slot count 32.
+const MARBLE_COUNT := 30
+
+# Pickup badge poll interval — 5 Hz so we're not walking the tree every frame.
+const PICKUP_POLL_INTERVAL := 0.20
+
+# Per-marble pickup state (original_index → {tier1: bool, tier2: bool}).
+var _pickup_state: Dictionary = {}
+
+# Timer accumulator for pickup polling.
+var _pickup_poll_timer: float = 0.0
+
+# Reference to the live track node — set by set_track_node() so we can
+# walk PickupZone children for badge updates.
+var _track_node: Node = null
+
+# Winner modal breakdown label ref (populated during _build_winner_modal).
+var _winner_breakdown_label: Label = null
 
 # ─── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -215,6 +240,13 @@ func _process(delta: float) -> void:
 		if should_be_mobile != _is_mobile:
 			_is_mobile = should_be_mobile
 			_apply_responsive_layout()
+
+	# Pickup badge poll — walk PickupZone children at ~5 Hz during RACING.
+	if _current_phase == PHASE_RACING and _track_node != null:
+		_pickup_poll_timer -= delta
+		if _pickup_poll_timer <= 0.0:
+			_pickup_poll_timer = PICKUP_POLL_INTERVAL
+			_poll_pickup_badges()
 
 # ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -427,7 +459,15 @@ func update_tick(tick: int, tick_rate_hz: float) -> void:
 	var seconds: float = float(elapsed_ticks) / tick_rate_hz
 	_timer_label.text = HudTheme.format_race_time(seconds)
 
-func reveal_winner(name: String, color: Color, prize: String = "") -> void:
+# reveal_winner: show the winner modal.
+# `prize`    — optional raw payout string ("€180.00"); overrides local calc.
+# `breakdown` — optional dict describing how the payout was constructed:
+#   { "rank": int (1/2/3), "podium_mult": float, "pickup_tier": int (0/1/2),
+#     "pickup_mult": float, "jackpot": bool, "total_mult": float,
+#     "stake": float, "total_payout": float }
+#   When provided, the modal shows a human-readable breakdown line.
+func reveal_winner(name: String, color: Color, prize: String = "",
+		breakdown: Dictionary = {}) -> void:
 	_apply_phase(PHASE_FINISHED)
 	_winner_name_label.text = name
 	_winner_name_label.label_settings = HudTheme.ls_hero(color)
@@ -442,6 +482,13 @@ func reveal_winner(name: String, color: Color, prize: String = "") -> void:
 		_apply_local_payout_summary(name)
 	else:
 		_winner_payout_label.visible = (prize != "")
+	# Breakdown line.
+	if _winner_breakdown_label != null:
+		if not breakdown.is_empty():
+			_winner_breakdown_label.text = _format_winner_breakdown(breakdown)
+			_winner_breakdown_label.visible = true
+		else:
+			_winner_breakdown_label.visible = false
 	_show_winner_modal()
 
 func apply_settlement(outcomes: Array, winner_marble_idx: int) -> void:
@@ -490,6 +537,14 @@ func set_following(index: int) -> void:
 	if index >= 0:
 		_apply_following_marker(index, true)
 
+# Provide the live Track node so the HUD can walk PickupZone children for
+# per-marble pickup badges. Call this from live_main / web_main / playback_main
+# immediately after the track is instantiated. Pass null to clear.
+func set_track_node(track: Node) -> void:
+	_track_node = track
+	_pickup_state.clear()
+	_pickup_poll_timer = 0.0
+
 func reset() -> void:
 	_clear_timing_tower()
 	_clear_bet_marble_chips()
@@ -515,6 +570,11 @@ func reset() -> void:
 	if _winner_next_round_label != null:
 		_winner_next_round_label.visible = false
 		_winner_next_round_label.text = ""
+	if _winner_breakdown_label != null:
+		_winner_breakdown_label.visible = false
+		_winner_breakdown_label.text = ""
+	_pickup_state.clear()
+	_track_node = null
 	if _track_name_label != null:
 		_track_name_label.text = ""
 	if _round_label != null:
@@ -806,7 +866,7 @@ func _build_timing_tower() -> Control:
 
 	_timing_tower_canvas = Control.new()
 	_timing_tower_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_timing_tower_canvas.custom_minimum_size = Vector2(0, 20 * TT_ROW_PITCH)
+	_timing_tower_canvas.custom_minimum_size = Vector2(0, MARBLE_COUNT * TT_ROW_PITCH)
 	_timing_tower_scroll.add_child(_timing_tower_canvas)
 
 	return panel
@@ -878,6 +938,21 @@ func _make_tower_row(orig_idx: int, marble_name: String, color: Color) -> Contro
 	id_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	hb.add_child(id_label)
 
+	# Pickup badge — hidden by default; shown when the marble collects a zone.
+	# "+2×" in green for Tier-1, "+3×" in gold for Tier-2.
+	var badge := PanelContainer.new()
+	badge.name = "PickupBadge"
+	badge.visible = false
+	badge.add_theme_stylebox_override("panel",
+		HudTheme.sb_pill(Color(HudTheme.C_GREEN.r, HudTheme.C_GREEN.g, HudTheme.C_GREEN.b, 0.25)))
+	var badge_lbl := Label.new()
+	badge_lbl.name = "PickupBadgeLabel"
+	badge_lbl.text = HudI18n.t("hud.pickup.tier1_badge")
+	badge_lbl.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN, HudTheme.FS_TINY)
+	badge.add_child(badge_lbl)
+	badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(badge)
+
 	btn.pressed.connect(func() -> void:
 		marble_selected.emit(orig_idx)
 	)
@@ -942,8 +1017,67 @@ func _clear_timing_tower() -> void:
 
 func _update_timing_tower_count() -> void:
 	if _timing_tower_count != null:
-		_timing_tower_count.text = "%d %s" % [
-			_marble_meta.size(), HudI18n.t("hud.standings.count_suffix")]
+		var n: int = _marble_meta.size()
+		# Use the "N RACERS" key when available; fall back to the old pattern.
+		var racers_key := "hud.standings.racers"
+		if HudI18n.t(racers_key) != racers_key:
+			_timing_tower_count.text = HudI18n.t(racers_key) % n
+		else:
+			_timing_tower_count.text = "%d %s" % [n, HudI18n.t("hud.standings.count_suffix")]
+
+# Walk the track tree for PickupZone nodes and refresh per-marble badges.
+# PickupZones expose get_collected() -> bool (set when a marble passes through)
+# and get_marble_index() -> int / get_tier() -> int to identify which marble
+# and which multiplier tier. Called at ~5 Hz from _process() during RACING.
+func _poll_pickup_badges() -> void:
+	if _track_node == null or not is_instance_valid(_track_node):
+		return
+	# Accumulate tier-per-marble by walking all PickupZone children recursively.
+	var tier_for: Dictionary = {}   # marble_original_index -> max tier int (1 or 2)
+	_walk_pickup_zones(_track_node, tier_for)
+	# Apply badge visibility to timing tower rows.
+	for orig_idx in tier_for:
+		if not _rows_by_index.has(orig_idx):
+			continue
+		var tier: int = int(tier_for[orig_idx])
+		var entry: Dictionary = _rows_by_index[orig_idx]
+		var row: Control = entry["row"]
+		var badge := row.find_child("PickupBadge", true, false) as PanelContainer
+		if badge == null:
+			continue
+		var badge_lbl := badge.find_child("PickupBadgeLabel", true, false) as Label
+		var prev: Dictionary = _pickup_state.get(orig_idx, {"tier": 0})
+		if int(prev.get("tier", 0)) == tier:
+			continue  # no change — skip re-styling
+		_pickup_state[orig_idx] = {"tier": tier}
+		if tier == 2:
+			badge.add_theme_stylebox_override("panel",
+				HudTheme.sb_pill(Color(HudTheme.C_GOLD.r, HudTheme.C_GOLD.g, HudTheme.C_GOLD.b, 0.28)))
+			if badge_lbl != null:
+				badge_lbl.text = HudI18n.t("hud.pickup.tier2_badge")
+				badge_lbl.label_settings = HudTheme.ls_label_caps(HudTheme.C_GOLD, HudTheme.FS_TINY)
+		else:
+			badge.add_theme_stylebox_override("panel",
+				HudTheme.sb_pill(Color(HudTheme.C_GREEN.r, HudTheme.C_GREEN.g, HudTheme.C_GREEN.b, 0.25)))
+			if badge_lbl != null:
+				badge_lbl.text = HudI18n.t("hud.pickup.tier1_badge")
+				badge_lbl.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN, HudTheme.FS_TINY)
+		badge.visible = true
+
+func _walk_pickup_zones(node: Node, result: Dictionary) -> void:
+	# Check if this node is a PickupZone. We detect it duck-typed: if it
+	# exposes get_collected(), get_marble_index(), and get_tier() it qualifies.
+	if node.has_method("get_collected") and node.has_method("get_marble_index") \
+			and node.has_method("get_tier"):
+		if node.get_collected():
+			var marble_idx: int = node.get_marble_index()
+			var tier: int       = node.get_tier()
+			# Keep the highest tier seen for this marble.
+			var prev_tier: int = int(result.get(marble_idx, 0))
+			if tier > prev_tier:
+				result[marble_idx] = tier
+	for child in node.get_children():
+		_walk_pickup_zones(child, result)
 
 # ─── Layout — timer hero ────────────────────────────────────────────────────
 
@@ -1122,11 +1256,71 @@ func _build_bet_panel() -> Control:
 	_bet_stake_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	adj_hb.add_child(_bet_stake_label)
 
-	# ── Potential payout ─────────────────────────────────────────────────
+	# ── Payout matrix (v2 model) ─────────────────────────────────────────
+	var pm_header := Label.new()
+	pm_header.text = HudI18n.t("hud.bet.payout_matrix.header")
+	pm_header.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	pm_header.set_meta("i18n_key", "hud.bet.payout_matrix.header")
+	vb.add_child(pm_header)
+
+	var pm_card := PanelContainer.new()
+	pm_card.add_theme_stylebox_override("panel",
+		HudTheme.sb_panel(Color(1, 1, 1, 0.04), HudTheme.C_BORDER_DIM, 8, 1))
+	vb.add_child(pm_card)
+
+	var pm_vb := VBoxContainer.new()
+	pm_vb.add_theme_constant_override("separation", 3)
+	pm_card.add_child(pm_vb)
+
+	# Helper to create a payout row: "LABEL  mult  =  €amount"
+	# Returns the row Control so the HUD can update €amount when stake changes.
+	for row_data in [
+		{"key": "hud.bet.payout_1st",  "mult": PAYOUT_1ST,    "name": "Row1st",
+		 "color": HudTheme.C_GOLD},
+		{"key": "hud.bet.payout_2nd",  "mult": PAYOUT_2ND,    "name": "Row2nd",
+		 "color": HudTheme.C_TEXT_PRIMARY},
+		{"key": "hud.bet.payout_3rd",  "mult": PAYOUT_3RD,    "name": "Row3rd",
+		 "color": HudTheme.C_TEXT_PRIMARY},
+		{"key": "hud.bet.payout_tier1","mult": PAYOUT_TIER1_MULT,"name": "RowT1",
+		 "color": HudTheme.C_GREEN},
+		{"key": "hud.bet.payout_tier2","mult": PAYOUT_TIER2_MULT,"name": "RowT2",
+		 "color": HudTheme.C_GOLD},
+		{"key": "hud.bet.payout_jackpot","mult": PAYOUT_JACKPOT,"name": "RowJP",
+		 "color": HudTheme.C_AMBER},
+	]:
+		var r_hb := HBoxContainer.new()
+		r_hb.name = String(row_data["name"])
+		r_hb.add_theme_constant_override("separation", 6)
+		pm_vb.add_child(r_hb)
+
+		var r_lbl := Label.new()
+		r_lbl.text = HudI18n.t(String(row_data["key"]))
+		r_lbl.set_meta("i18n_key", String(row_data["key"]))
+		r_lbl.label_settings = HudTheme.ls_caption(Color(row_data["color"]), HudTheme.FS_SMALL)
+		r_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		r_hb.add_child(r_lbl)
+
+		var r_mult := Label.new()
+		r_mult.name = "MultLabel"
+		r_mult.text = ("%.4g" % float(row_data["mult"])) + "×"
+		r_mult.label_settings = HudTheme.ls_metric(Color(row_data["color"]), HudTheme.FS_SMALL)
+		r_hb.add_child(r_mult)
+
+		var r_val := Label.new()
+		r_val.name = "ValLabel"
+		r_val.text = "= —"
+		r_val.label_settings = HudTheme.ls_metric(HudTheme.C_TEXT_SECONDARY, HudTheme.FS_SMALL)
+		r_val.custom_minimum_size = Vector2(64, 0)
+		r_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		r_hb.add_child(r_val)
+
+	# Legacy single-line payout label — kept for compatibility (hidden by default
+	# now that the matrix is shown, but _update_potential_payout() may still use it).
 	_bet_potential_payout = Label.new()
-	_bet_potential_payout.text = "%s —" % HudI18n.t("hud.bet.potential_win")
+	_bet_potential_payout.text = ""
 	_bet_potential_payout.label_settings = HudTheme.ls_label_caps(HudTheme.C_GREEN, HudTheme.FS_TEXT)
 	_bet_potential_payout.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_bet_potential_payout.visible = false
 	vb.add_child(_bet_potential_payout)
 
 	# ── CTA ──────────────────────────────────────────────────────────────
@@ -1297,10 +1491,35 @@ func _validate_bet_button() -> void:
 
 func _update_potential_payout() -> void:
 	if _selected_marble < 0:
-		_bet_potential_payout.text = "%s —" % HudI18n.t("hud.bet.potential_win")
+		# Matrix euro columns cleared when no marble is selected.
+		_refresh_payout_matrix_values(0.0)
 		return
-	var payout := _bet_amount * PAYOUT_MULT
-	_bet_potential_payout.text = HudI18n.t("hud.bet.potential_win_value") % HudTheme.format_money(payout)
+	_refresh_payout_matrix_values(_bet_amount)
+
+# Refresh the "= €X" value column in the payout matrix rows.
+func _refresh_payout_matrix_values(stake: float) -> void:
+	if _bet_panel_card == null:
+		return
+	var row_specs := [
+		{"name": "Row1st", "mult": PAYOUT_1ST},
+		{"name": "Row2nd", "mult": PAYOUT_2ND},
+		{"name": "Row3rd", "mult": PAYOUT_3RD},
+		{"name": "RowT1",  "mult": PAYOUT_TIER1_MULT},
+		{"name": "RowT2",  "mult": PAYOUT_TIER2_MULT},
+		{"name": "RowJP",  "mult": PAYOUT_JACKPOT},
+	]
+	for spec in row_specs:
+		var r_hb := _bet_panel_card.find_child(String(spec["name"]), true, false)
+		if r_hb == null:
+			continue
+		var val_lbl := r_hb.find_child("ValLabel", true, false) as Label
+		if val_lbl == null:
+			continue
+		if stake <= 0.0:
+			val_lbl.text = "= —"
+		else:
+			var payout := stake * float(spec["mult"])
+			val_lbl.text = "= €%s" % HudTheme.format_money(payout)
 
 func _refresh_bets_list() -> void:
 	for c in _bets_list.get_children():
@@ -1408,6 +1627,15 @@ func _build_winner_modal() -> Control:
 	_winner_payout_label.visible = false
 	vb.add_child(_winner_payout_label)
 
+	# Payout breakdown line — shows rank × pickup mult × jackpot in plain text.
+	_winner_breakdown_label = Label.new()
+	_winner_breakdown_label.text = ""
+	_winner_breakdown_label.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_SECONDARY, HudTheme.FS_SMALL)
+	_winner_breakdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_winner_breakdown_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_winner_breakdown_label.visible = false
+	vb.add_child(_winner_breakdown_label)
+
 	# Subtle divider before next-round countdown.
 	var div := ColorRect.new()
 	div.color = HudTheme.C_BORDER_DIM
@@ -1436,6 +1664,45 @@ func _show_winner_modal() -> void:
 	t.set_trans(Tween.TRANS_CUBIC)
 	t.tween_property(_winner_modal_card, "modulate:a", 1.0, HudTheme.ANIM_NORMAL)
 	t.tween_property(_winner_modal_card, "scale", Vector2(1.0, 1.0), HudTheme.ANIM_NORMAL)
+
+# Build the human-readable breakdown string shown below the payout number.
+# Example: "1st (9×) + Tier 2 pickup (×3) = 27× × €5.00 = €135.00"
+# When jackpot triggered: "1st + T2 JACKPOT = 100× × €5.00 = €500.00"
+func _format_winner_breakdown(bd: Dictionary) -> String:
+	var rank: int       = int(bd.get("rank", 1))
+	var podium_mult: float = float(bd.get("podium_mult", PAYOUT_1ST))
+	var pickup_tier: int   = int(bd.get("pickup_tier", 0))
+	var pickup_mult: float = float(bd.get("pickup_mult", 1.0))
+	var jackpot: bool      = bool(bd.get("jackpot", false))
+	var total_mult: float  = float(bd.get("total_mult", podium_mult))
+	var stake: float       = float(bd.get("stake", 0.0))
+	var total_payout: float = float(bd.get("total_payout", 0.0))
+
+	var rank_str: String
+	match rank:
+		1: rank_str = HudI18n.t("hud.bet.payout_1st")
+		2: rank_str = HudI18n.t("hud.bet.payout_2nd")
+		3: rank_str = HudI18n.t("hud.bet.payout_3rd")
+		_: rank_str = "%d" % rank
+
+	var parts: Array[String] = []
+	if jackpot:
+		parts.append("%s + T2 %s" % [rank_str, HudI18n.t("hud.winner.jackpot_trigger")])
+	else:
+		parts.append("%s (%.4g" % [rank_str, podium_mult] + "×)")
+		if pickup_tier == 1:
+			parts.append(HudI18n.t("hud.winner.pickup_bonus") % "2")
+		elif pickup_tier == 2:
+			parts.append(HudI18n.t("hud.winner.pickup_bonus") % "3")
+
+	var left := " ".join(PackedStringArray(parts))
+	var right := ""
+	if stake > 0.0 and total_payout > 0.0:
+		right = (" = %.4g" % total_mult) + "× × €" + HudTheme.format_money(stake) \
+			+ " = €" + HudTheme.format_money(total_payout)
+	elif total_mult > 0.0:
+		right = " = " + ("%.4g" % total_mult) + "×"
+	return left + right
 
 func _apply_local_payout_summary(winner_name: String) -> void:
 	# Compute payout from local _placed_bets given the winning marble.

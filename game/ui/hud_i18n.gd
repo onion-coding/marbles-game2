@@ -85,6 +85,31 @@ const _EN := {
 	"hud.track.sky_run":            "SKY RUN",
 	"hud.track.stadium_run":        "STADIUM RUN",
 	"hud.track.ramp":               "RAMP",
+
+	# Payout matrix (M21 — v2 payout model)
+	"hud.bet.payout_matrix.header": "PAYOUT TIERS",
+	"hud.bet.payout_1st":           "1st",
+	"hud.bet.payout_2nd":           "2nd",
+	"hud.bet.payout_3rd":           "3rd",
+	"hud.bet.payout_tier1":         "+Tier 1 pickup",
+	"hud.bet.payout_tier2":         "+Tier 2 pickup",
+	"hud.bet.payout_jackpot":       "JACKPOT (1st + T2)",
+
+	# Pickup badges in timing tower
+	"hud.pickup.tier1_badge":       "+2×",
+	"hud.pickup.tier2_badge":       "+3×",
+	"hud.pickup.tier1_label":       "TIER 1",
+	"hud.pickup.tier2_label":       "TIER 2",
+
+	# Winner modal breakdown
+	"hud.winner.breakdown_label":   "PAYOUT BREAKDOWN",
+	"hud.winner.podium_rank":       "Podium %s",
+	"hud.winner.pickup_bonus":      "+ Pickup ×%s",
+	"hud.winner.jackpot_trigger":   "JACKPOT",
+	"hud.winner.total_mult":        "= %s× stake",
+
+	# Marble count (M20)
+	"hud.standings.racers":         "%d RACERS",
 }
 
 # Italian — partial; missing keys fall back to English.
@@ -118,6 +143,21 @@ const _IT := {
 	"hud.track.cavern_run":         "PISTA CAVERNA",
 	"hud.track.sky_run":            "PISTA CIELO",
 	"hud.track.stadium_run":        "PISTA STADIO",
+	"hud.bet.payout_matrix.header": "FASCE DI PAYOUT",
+	"hud.bet.payout_1st":           "1°",
+	"hud.bet.payout_2nd":           "2°",
+	"hud.bet.payout_3rd":           "3°",
+	"hud.bet.payout_tier1":         "+Pickup Tier 1",
+	"hud.bet.payout_tier2":         "+Pickup Tier 2",
+	"hud.bet.payout_jackpot":       "JACKPOT (1° + T2)",
+	"hud.pickup.tier1_badge":       "+2×",
+	"hud.pickup.tier2_badge":       "+3×",
+	"hud.winner.breakdown_label":   "DETTAGLIO PAYOUT",
+	"hud.winner.podium_rank":       "Podio %s",
+	"hud.winner.pickup_bonus":      "+ Pickup ×%s",
+	"hud.winner.jackpot_trigger":   "JACKPOT",
+	"hud.winner.total_mult":        "= %s× puntata",
+	"hud.standings.racers":         "%d GARE",
 }
 
 # Spanish — partial.
@@ -142,6 +182,21 @@ const _ES := {
 	"hud.bet.insufficient":         "Saldo insuficiente",
 	"hud.winner.caption":           "GANADOR",
 	"hud.winner.next_round_in":     "PRÓXIMA RONDA EN %.1fs",
+	"hud.bet.payout_matrix.header": "NIVELES DE PAGO",
+	"hud.bet.payout_1st":           "1°",
+	"hud.bet.payout_2nd":           "2°",
+	"hud.bet.payout_3rd":           "3°",
+	"hud.bet.payout_tier1":         "+Pickup Nivel 1",
+	"hud.bet.payout_tier2":         "+Pickup Nivel 2",
+	"hud.bet.payout_jackpot":       "JACKPOT (1° + T2)",
+	"hud.pickup.tier1_badge":       "+2×",
+	"hud.pickup.tier2_badge":       "+3×",
+	"hud.winner.breakdown_label":   "DESGLOSE DE PAGO",
+	"hud.winner.podium_rank":       "Podio %s",
+	"hud.winner.pickup_bonus":      "+ Pickup ×%s",
+	"hud.winner.jackpot_trigger":   "JACKPOT",
+	"hud.winner.total_mult":        "= %s× apuesta",
+	"hud.standings.racers":         "%d CORREDORES",
 }
 
 # German — partial.
@@ -165,6 +220,21 @@ const _DE := {
 	"hud.bet.your_bets":            "DEINE WETTEN",
 	"hud.winner.caption":           "GEWINNER",
 	"hud.winner.next_round_in":     "NÄCHSTE RUNDE IN %.1fs",
+	"hud.bet.payout_matrix.header": "AUSZAHLUNGSSTUFEN",
+	"hud.bet.payout_1st":           "1.",
+	"hud.bet.payout_2nd":           "2.",
+	"hud.bet.payout_3rd":           "3.",
+	"hud.bet.payout_tier1":         "+Pickup Stufe 1",
+	"hud.bet.payout_tier2":         "+Pickup Stufe 2",
+	"hud.bet.payout_jackpot":       "JACKPOT (1. + T2)",
+	"hud.pickup.tier1_badge":       "+2×",
+	"hud.pickup.tier2_badge":       "+3×",
+	"hud.winner.breakdown_label":   "AUSZAHLUNG DETAIL",
+	"hud.winner.podium_rank":       "Podium %s",
+	"hud.winner.pickup_bonus":      "+ Pickup ×%s",
+	"hud.winner.jackpot_trigger":   "JACKPOT",
+	"hud.winner.total_mult":        "= %s× Einsatz",
+	"hud.standings.racers":         "%d TEILNEHMER",
 }
 
 # Portuguese — partial.
@@ -179,6 +249,21 @@ const _PT := {
 	"hud.bet.header":               "FAÇA SUA APOSTA",
 	"hud.bet.cta":                  "APOSTAR",
 	"hud.winner.caption":           "VENCEDOR",
+	"hud.bet.payout_matrix.header": "NÍVEIS DE PAGAMENTO",
+	"hud.bet.payout_1st":           "1°",
+	"hud.bet.payout_2nd":           "2°",
+	"hud.bet.payout_3rd":           "3°",
+	"hud.bet.payout_tier1":         "+Pickup Nível 1",
+	"hud.bet.payout_tier2":         "+Pickup Nível 2",
+	"hud.bet.payout_jackpot":       "JACKPOT (1° + T2)",
+	"hud.pickup.tier1_badge":       "+2×",
+	"hud.pickup.tier2_badge":       "+3×",
+	"hud.winner.breakdown_label":   "DETALHES DO PAGAMENTO",
+	"hud.winner.podium_rank":       "Pódio %s",
+	"hud.winner.pickup_bonus":      "+ Pickup ×%s",
+	"hud.winner.jackpot_trigger":   "JACKPOT",
+	"hud.winner.total_mult":        "= %s× aposta",
+	"hud.standings.racers":         "%d CORREDORES",
 }
 
 const _BY_LANG := {
