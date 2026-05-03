@@ -1,16 +1,22 @@
 class_name PlinkoTrack
 extends Track
 
-# PlinkoTrack — REBUILT as "Sky Run" (post-M6 visual overhaul).
+# PlinkoTrack — REBUILT as "Sky Run" (M11 + Sky unique geometry).
 #
 # Class name kept as PlinkoTrack so existing replays with track_id=5 still
-# decode through TrackRegistry. The old peg-wall + spinner-bars are gone;
-# this is now a sky-themed drop-cascade course in bright daylight, the
-# brightest of the six tracks.
+# decode through TrackRegistry. The casino-plinko obstacles (peg wall +
+# spinner bars) are gone; this is now a sky-themed bright-daylight course
+# with the M11 drop-cascade backbone PLUS a distinguishing "cloud
+# stepping-stones" mechanic — instead of a dense peg field, F5 is a
+# scatter of horizontal cloud platforms at multiple y-levels, forcing
+# marbles to bounce down a zigzag path.
 #
 # Drop-cascade design (real gravity, no slow-motion):
-#   y=42 spawn → F1 cloud V-funnel → F2-F4 sky ramps → F5 cloud-pillar peg
-#   field (denser than usual) → F6 sun-gold gate.
+#   y=42 spawn → F1 cloud V-funnel → F2-F4 sky ramps →
+#   F5 CLOUD PLATFORM STEPPING-STONES (scattered horizontal slabs) →
+#   F6 sun-gold gate.
+#
+# Determinism: cloud platforms are static, replay-stable by construction.
 #
 # Palette + sky from TrackPalette.theme_for(PLINKO).
 
@@ -115,15 +121,57 @@ func _build_directed_floor(prefix: String, y_pos: float, gap_dir: int,
 		RAMP_TILT_DEG, gap_dir, floor_mat, curb_mat)
 
 func _build_peg_field() -> void:
-	# Cloud pillars: bright white with slight gold emission for sun-kiss feel.
-	var peg_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.20, 0.40, 0.20)
-	var pegs := StaticBody3D.new()
-	pegs.name = "F5_Clouds"
-	pegs.physics_material_override = _mat_peg
-	add_child(pegs)
-	TrackBlocks.build_peg_forest(pegs, "F5",
-		F5_TOP_Y, F5_BOT_Y, FIELD_W, FIELD_DEPTH,
-		F5_ROWS, F5_COLS, F5_PEG_RADIUS, F5_COL_SPACING, peg_mat)
+	# Sky unique mechanic: replace the dense cylinder peg field with a
+	# scattered set of horizontal CLOUD PLATFORMS at multiple y-levels.
+	# Marbles bounce down from platform to platform on a zigzag path —
+	# distinct from the chaotic ricocheting of a peg field, more like
+	# step-down obstacle navigation.
+	#
+	# Platform widths and y-levels are tuned so:
+	#   - Marbles always have a platform below them when falling (no
+	#     marble can drop straight from F4 to F6 without intersecting at
+	#     least one platform).
+	#   - Gaps between platforms are wide enough (>1m) for the 0.6m
+	#     diameter marble to pass through.
+	const CLOUD_W: float  = 5.0    # X extent — wider than peg radius
+	const CLOUD_H: float  = 0.4    # Y extent — slim slab
+	const CLOUD_D: float  = 4.0    # Z extent — leaves margin to side walls
+
+	var peg_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.20, 0.40, 0.30)
+	var clouds := StaticBody3D.new()
+	clouds.name = "F5_CloudPlatforms"
+	clouds.physics_material_override = _mat_peg
+	add_child(clouds)
+
+	# 4 levels × 3 platforms each = 12 stepping-stones. Per-level x positions
+	# alternate so adjacent levels don't perfectly stack (marbles must drift
+	# laterally to find the next platform).
+	# Levels run from y_top (just below F5_TOP_Y) down to y just above F5_BOT_Y.
+	var levels: Array = [
+		# Level 1 (y=12.5): platforms left-of-centre + right-of-centre.
+		{"y": 12.5, "xs": [-13.0, -3.0,  9.0]},
+		# Level 2 (y=9.5): inverted offset.
+		{"y":  9.5, "xs": [-7.0,  3.0, 13.0]},
+		# Level 3 (y=6.5): cluster middle.
+		{"y":  6.5, "xs": [-11.0, 0.0,  6.0]},
+		# Level 4 (y=4.5): final spread before drop to gate.
+		{"y":  4.5, "xs": [-5.0,  5.0, 12.0]},
+	]
+	var idx: int = 0
+	for level in levels:
+		var y: float = float(level["y"])
+		for x in level["xs"]:
+			var px: float = float(x)
+			# Cloud platform: slightly tilted (3°) toward an alternating
+			# direction so marbles don't park on top — they roll off the
+			# downhill edge after a brief rest.
+			var tilt: float = (-3.0 if (idx % 2 == 0) else 3.0)
+			var basis := Basis(Vector3(0, 0, 1), deg_to_rad(tilt))
+			TrackBlocks.add_box(clouds, "Cloud_l%d_p%d" % [int(level["y"]), idx],
+				Transform3D(basis, Vector3(px, y, 0.0)),
+				Vector3(CLOUD_W, CLOUD_H, CLOUD_D),
+				peg_mat)
+			idx += 1
 
 func _build_gate() -> void:
 	var floor_mat := TrackBlocks.std_mat_emit(_theme["gate"], 0.80, 0.25, 0.65)

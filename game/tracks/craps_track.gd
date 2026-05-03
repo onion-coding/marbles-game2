@@ -1,16 +1,24 @@
 class_name CrapsTrack
 extends Track
 
-# CrapsTrack — REBUILT as "Volcano Run" (post-M6 visual overhaul).
+# CrapsTrack — REBUILT as "Volcano Run" (M11 + Volcano unique geometry).
 #
 # Class name kept as CrapsTrack so existing replays with track_id=2 still
-# decode through TrackRegistry. The old felt table + dice obstacles are
-# gone; this is now a volcano-themed drop-cascade course with denser pegs
-# (chaos) and bouncier physics (lava cools fast, marbles ricochet hard).
+# decode through TrackRegistry. The casino-craps obstacles (dice, felt
+# table) are gone; this is now a volcano-themed course with the M11
+# drop-cascade backbone PLUS a distinguishing "lava geyser" mechanic —
+# four kinematic vertical cylinders that oscillate up and down inside
+# the F5 zone, pushing passing marbles upward when they emerge.
 #
 # Drop-cascade design (real gravity, no slow-motion):
-#   y=42 spawn → F1 V-funnel (lava) → F2 ramp (basalt) → F3 ramp (orange)
-#   → F4 ramp (rock) → F5 dense peg field (obsidian) → F6 lava gate.
+#   y=42 spawn → F1 V-funnel (lava) → F2-F4 basalt ramps →
+#   F5 dense obsidian peg field + 4 LAVA GEYSERS oscillating →
+#   F6 lava gate.
+#
+# Determinism: each geyser's phase is derived from
+# _hash_with_tag("volcano_geyser_<i>") so every round shows different
+# geyser timing while staying replay-stable. Animation uses a constant
+# frequency + per-geyser phase offset, integrated in _physics_process.
 #
 # Palette + sky from TrackPalette.theme_for(CRAPS).
 
@@ -49,11 +57,30 @@ const SPAWN_DZ   := 1.0
 const FINISH_Y_OFF := 2.5
 const FINISH_BOX   := Vector3(FIELD_W + 2.0, 5.0, FIELD_DEPTH + 1.0)
 
+# ─── Lava geyser config (Volcano unique mechanic) ──────────────────────────
+# 4 vertical kinematic cylinders inside the F5 zone, oscillating between
+# y_low and y_high at a constant frequency. Each has a phase offset
+# derived from the round's server_seed so different rounds = different
+# emergence timing.
+const GEYSER_RADIUS    := 0.6
+const GEYSER_LENGTH    := 4.0
+const GEYSER_FREQ      := 1.2     # rad/s — period ≈ 5.2 s
+const GEYSER_Y_MIN     := 5.5     # cylinder centre at lowest point
+const GEYSER_Y_MAX     := 11.0    # cylinder centre at highest point
+const GEYSER_X_COLS    := [-13.0, -4.5, 4.5, 13.0]    # 4 geysers, edges + middle
+
 var _theme: Dictionary
-var _mat_floor: PhysicsMaterial = null
-var _mat_peg:   PhysicsMaterial = null
-var _mat_wall:  PhysicsMaterial = null
-var _mat_gate:  PhysicsMaterial = null
+var _mat_floor:  PhysicsMaterial = null
+var _mat_peg:    PhysicsMaterial = null
+var _mat_wall:   PhysicsMaterial = null
+var _mat_gate:   PhysicsMaterial = null
+var _mat_geyser: PhysicsMaterial = null
+
+# Lava geyser kinematic state.
+var _geysers: Array[AnimatableBody3D] = []
+var _geyser_xs: Array = []        # parallel float array
+var _geyser_phases: Array = []    # parallel float array
+var _geyser_time: float = 0.0
 
 func _ready() -> void:
 	_theme = TrackPalette.theme_for(TrackRegistry.CRAPS)
@@ -64,9 +91,24 @@ func _ready() -> void:
 	_build_directed_floor("F3", F3_Y, -1, _theme["floor_c"])
 	_build_directed_floor("F4", F4_Y, +1, _theme["floor_d"])
 	_build_peg_field()
+	_build_lava_geysers()
 	_build_gate()
 	_build_catchment()
 	_build_mood_lights()
+
+func _physics_process(delta: float) -> void:
+	# Drive each geyser's vertical position. y_center = midpoint + sin(t·ω + φ)·amp.
+	# The cylinder is solid — colliding marbles get pushed by the kinematic
+	# velocity at the contact point (Jolt handles this correctly via
+	# AnimatableBody3D + sync_to_physics).
+	_geyser_time += delta
+	var mid_y: float = (GEYSER_Y_MIN + GEYSER_Y_MAX) * 0.5
+	var amp: float = (GEYSER_Y_MAX - GEYSER_Y_MIN) * 0.5
+	for i in range(_geysers.size()):
+		var phase: float = float(_geyser_phases[i])
+		var y: float = mid_y + sin(_geyser_time * GEYSER_FREQ + phase) * amp
+		var x: float = float(_geyser_xs[i])
+		_geysers[i].global_transform = Transform3D(Basis.IDENTITY, Vector3(x, y, 0.0))
 
 func _init_physics_materials() -> void:
 	# Stadium-aligned physics for reliable finish.
@@ -82,6 +124,11 @@ func _init_physics_materials() -> void:
 	_mat_gate = PhysicsMaterial.new()
 	_mat_gate.friction = 0.55
 	_mat_gate.bounce   = 0.10
+	# Geyser: smooth, very bouncy — marbles riding the rising column should
+	# feel "launched" rather than sticky.
+	_mat_geyser = PhysicsMaterial.new()
+	_mat_geyser.friction = 0.20
+	_mat_geyser.bounce   = 0.60
 
 func _build_outer_frame() -> void:
 	var wall_mat := TrackBlocks.std_mat(_theme["wall"], 0.20, 0.80)
@@ -146,6 +193,35 @@ func _build_catchment() -> void:
 	add_child(body)
 	TrackBlocks.build_catchment(body, "Catch",
 		FLOOR_BASE_Y, FIELD_W, FIELD_DEPTH, FLOOR_THICK, mat)
+
+func _build_lava_geysers() -> void:
+	# Four kinematic vertical cylinders. Material tinted with strong lava
+	# emission so each geyser column reads as "molten" — bloom turns it
+	# into a glowing pillar even at the lowest oscillation point.
+	var geyser_mat := TrackBlocks.std_mat_emit(_theme["accent"], 0.10, 0.30, 1.10)
+
+	var mid_y: float = (GEYSER_Y_MIN + GEYSER_Y_MAX) * 0.5
+	for i in range(GEYSER_X_COLS.size()):
+		var x: float = float(GEYSER_X_COLS[i])
+		var pivot := Vector3(x, mid_y, 0.0)
+		# Default Basis = cylinder along Y (vertical), which is what we want.
+		var tx := Transform3D(Basis.IDENTITY, pivot)
+		var body := TrackBlocks.add_animatable_cylinder(
+			self, "LavaGeyser_%d" % i,
+			tx, GEYSER_RADIUS, GEYSER_LENGTH, geyser_mat)
+		body.physics_material_override = _mat_geyser
+		_geysers.append(body)
+		_geyser_xs.append(x)
+		# Phase from seed: first byte mapped to [0, 2π] so each geyser fires
+		# at a different point in the cycle every round.
+		var hash_bytes: PackedByteArray = _hash_with_tag("volcano_geyser_%d" % i)
+		var phase: float
+		if hash_bytes.size() >= 1:
+			phase = (float(int(hash_bytes[0])) / 255.0) * TAU
+		else:
+			# Fallback: evenly distribute phases across the 4 geysers.
+			phase = (float(i) / float(GEYSER_X_COLS.size())) * TAU
+		_geyser_phases.append(phase)
 
 func _build_mood_lights() -> void:
 	# Dramatic volcano lighting: dim warm key + bright bottom-up red glow.

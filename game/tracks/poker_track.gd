@@ -1,16 +1,22 @@
 class_name PokerTrack
 extends Track
 
-# PokerTrack — REBUILT as "Ice Run" (post-M6 visual overhaul).
+# PokerTrack — REBUILT as "Ice Run" (M11 + Ice unique geometry).
 #
 # Class name kept as PokerTrack so existing replays with track_id=3 still
-# decode through TrackRegistry. The old felt + flipping cards are gone;
-# this is now an icy course where marbles slide fast on low-friction floors
-# and ricochet off crystalline pegs.
+# decode through TrackRegistry. The casino-poker obstacles (cards, felt
+# table) are gone; this is now an icy course with the M11 drop-cascade
+# backbone PLUS a distinguishing "vertical ice shards" obstacle field —
+# tall thin vertical slabs in F5 instead of round cylinder pegs, giving
+# a flat-faced collision pattern that deflects marbles in sharp angles
+# (vs the soft round bounces of cylindrical pegs).
 #
 # Drop-cascade design (real gravity, no slow-motion):
-#   y=42 spawn → F1 V-funnel (ice white) → F2-F4 ice ramps → F5 crystal
-#   peg field → F6 ice-blue gate.
+#   y=42 spawn → F1 V-funnel (ice white) → F2-F4 ice ramps →
+#   F5 ICE SHARD FOREST (zigzag of vertical thin slabs) →
+#   F6 ice-blue gate.
+#
+# Determinism: shards are static, replay-stable by construction.
 #
 # Palette + sky from TrackPalette.theme_for(POKER).
 
@@ -115,15 +121,43 @@ func _build_directed_floor(prefix: String, y_pos: float, gap_dir: int,
 		RAMP_TILT_DEG, gap_dir, floor_mat, curb_mat)
 
 func _build_peg_field() -> void:
-	# Crystal pillars: very high specular, slight cyan emission.
-	var peg_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.70, 0.20, 0.25)
-	var pegs := StaticBody3D.new()
-	pegs.name = "F5_Crystals"
-	pegs.physics_material_override = _mat_peg
-	add_child(pegs)
-	TrackBlocks.build_peg_forest(pegs, "F5",
-		F5_TOP_Y, F5_BOT_Y, FIELD_W, FIELD_DEPTH,
-		F5_ROWS, F5_COLS, F5_PEG_RADIUS, F5_COL_SPACING, peg_mat)
+	# Ice unique mechanic: replace cylindrical pegs with VERTICAL ICE SHARDS.
+	# Each shard is a thin tall slab oriented along Z (depth axis), narrow
+	# face pointing along X (the marble travel direction). Marbles striking
+	# the flat face deflect at sharp angles — distinct from the rounded
+	# bounces of cylinder pegs. Hex-staggered grid for slalom feel.
+	const SHARD_W: float = 0.4    # x extent — narrow face hits marbles
+	const SHARD_H: float = 2.5    # y extent — taller than pegs for drama
+	const SHARD_D: float = 0.5    # z extent (depth) — full slab depth into Z
+	const SHARD_ROWS: int = 5     # fewer rows than pegs (each shard is bigger)
+	const SHARD_COLS: int = 7
+	const SHARD_X_SPACING: float = 5.0
+	const SHARD_Z_OFFSETS: Array = [-1.6, 0.0, 1.6]   # 3 z-rows per row, hex-ish
+
+	var shard_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.85, 0.15, 0.45)
+	var shards := StaticBody3D.new()
+	shards.name = "F5_IceShards"
+	shards.physics_material_override = _mat_peg
+	add_child(shards)
+
+	var row_spacing: float = (F5_TOP_Y - F5_BOT_Y) / float(SHARD_ROWS + 1)
+	for row in range(SHARD_ROWS):
+		var y: float = F5_TOP_Y - row_spacing * float(row + 1)
+		var x_offset: float = 0.0 if (row % 2 == 0) else SHARD_X_SPACING * 0.5
+		var x_origin: float = -float(SHARD_COLS - 1) * 0.5 * SHARD_X_SPACING + x_offset
+		# Per row, scatter shards across z too — alternate which z-offset
+		# each col uses based on (row+col) parity so the pattern doesn't
+		# form a regular grid.
+		for col in range(SHARD_COLS):
+			var x: float = x_origin + float(col) * SHARD_X_SPACING
+			if absf(x) > FIELD_W * 0.5 - SHARD_W * 0.5 - 0.4:
+				continue
+			var z_idx: int = (row + col) % SHARD_Z_OFFSETS.size()
+			var z: float = float(SHARD_Z_OFFSETS[z_idx])
+			TrackBlocks.add_box(shards, "Shard_r%d_c%d" % [row, col],
+				Transform3D(Basis.IDENTITY, Vector3(x, y, z)),
+				Vector3(SHARD_W, SHARD_H, SHARD_D),
+				shard_mat)
 
 func _build_gate() -> void:
 	var floor_mat := TrackBlocks.std_mat_emit(_theme["gate"], 0.50, 0.25, 0.55)

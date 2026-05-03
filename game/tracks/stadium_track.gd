@@ -113,10 +113,27 @@ const COL_F5_PEG := Color(0.92, 0.96, 1.00)   # chrome
 const COL_F6     := Color(0.92, 0.78, 0.18)   # finish gold
 const COL_WALL   := Color(0.10, 0.10, 0.14)   # near-black frame
 
-var _mat_floor: PhysicsMaterial = null
-var _mat_peg:   PhysicsMaterial = null
-var _mat_wall:  PhysicsMaterial = null
-var _mat_gate:  PhysicsMaterial = null
+# ─── Stadium unique mechanic: spinning windmill paddle ──────────────────────
+# A 4-blade horizontal cross-shaped paddle at the centre of the F5 zone,
+# rotating around the world Y axis at a seed-derived ω. Marbles falling
+# through F5 encounter the spinning blades and get sent sideways.
+const WINDMILL_BLADE_LEN  := 6.0    # half-length × 2 = full span
+const WINDMILL_BLADE_H    := 0.4
+const WINDMILL_BLADE_T    := 0.4    # thickness along blade-perpendicular X
+const WINDMILL_Y          := 9.0    # mid F5 zone (top=14, bot=4 → center 9)
+const WINDMILL_OMEGA_MAX  := 1.4    # rad/s magnitude cap (≈4.5 s/rev)
+const WINDMILL_OMEGA_MIN  := 0.5
+
+var _mat_floor:    PhysicsMaterial = null
+var _mat_peg:      PhysicsMaterial = null
+var _mat_wall:     PhysicsMaterial = null
+var _mat_gate:     PhysicsMaterial = null
+var _mat_windmill: PhysicsMaterial = null
+
+# Windmill state.
+var _windmill: AnimatableBody3D = null
+var _windmill_omega: float = 0.0
+var _windmill_time: float = 0.0
 
 func _ready() -> void:
 	_init_physics_materials()
@@ -126,9 +143,21 @@ func _ready() -> void:
 	_build_floor2_ramp(_F3_DIR, F3_Y, COL_F3)
 	_build_floor2_ramp(_F4_DIR, F4_Y, COL_F4)
 	_build_floor5_peg_forest()
+	_build_stadium_windmill()
 	_build_floor6_gate()
 	_build_catchment_floor()
 	_build_mood_lights()
+
+func _physics_process(delta: float) -> void:
+	# Drive the windmill rotation around world Y. Constant ω; phase
+	# (effective starting orientation) is naturally part of the rotation
+	# evolution from the seed-derived ω value.
+	if _windmill == null:
+		return
+	_windmill_time += delta
+	var angle: float = _windmill_omega * _windmill_time
+	var basis := Basis(Vector3.UP, angle)
+	_windmill.global_transform = Transform3D(basis, Vector3(0.0, WINDMILL_Y, 0.0))
 
 func _init_physics_materials() -> void:
 	_mat_floor = PhysicsMaterial.new()
@@ -142,6 +171,10 @@ func _init_physics_materials() -> void:
 	_mat_wall = PhysicsMaterial.new()
 	_mat_wall.friction = 0.30
 	_mat_wall.bounce   = 0.30
+
+	_mat_windmill = PhysicsMaterial.new()
+	_mat_windmill.friction = 0.30
+	_mat_windmill.bounce   = 0.45
 
 	_mat_gate = PhysicsMaterial.new()
 	_mat_gate.friction = 0.55
@@ -325,6 +358,72 @@ func _build_catchment_floor() -> void:
 		Transform3D(Basis.IDENTITY, Vector3(0.0, FLOOR_BASE_Y, 0.0)),
 		Vector3(FIELD_W, FLOOR_THICK, FIELD_DEPTH),
 		catcher_mat)
+
+# ─── Stadium windmill paddle (kinematic Y-axis spinner) ─────────────────────
+# Built as a single AnimatableBody3D parented at (0, WINDMILL_Y, 0) with
+# 4 box children laid out as a + cross (one along X, one along Z, plus
+# their negatives — so the cross is built from 2 long boxes through the
+# centre). Spin is driven from _physics_process by rotating the body's
+# basis around world Y; the children inherit the rotation automatically.
+
+func _build_stadium_windmill() -> void:
+	var blade_mat := _std_mat_emit(
+		Color(1.00, 0.85, 0.30),       # gold blades — broadcast accent
+		0.85, 0.20, 0.40)
+
+	var body := AnimatableBody3D.new()
+	body.name = "StadiumWindmill"
+	body.sync_to_physics = true
+	body.physics_material_override = _mat_windmill
+	body.global_transform = Transform3D(Basis.IDENTITY, Vector3(0, WINDMILL_Y, 0))
+	add_child(body)
+
+	# Two long crossing blades = a + cross. First along X, second rotated
+	# 90° around Y to lie along Z.
+	for i in range(2):
+		var orient := Basis.IDENTITY
+		if i == 1:
+			orient = Basis(Vector3.UP, deg_to_rad(90.0))
+		# Collision shape (box, sized for the blade).
+		var coll := CollisionShape3D.new()
+		coll.name = "Blade%d_shape" % i
+		coll.transform = Transform3D(orient, Vector3.ZERO)
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(WINDMILL_BLADE_LEN, WINDMILL_BLADE_H, WINDMILL_BLADE_T)
+		coll.shape = shape
+		body.add_child(coll)
+		# Mesh.
+		var mesh := MeshInstance3D.new()
+		mesh.name = "Blade%d_mesh" % i
+		mesh.transform = Transform3D(orient, Vector3.ZERO)
+		var bm := BoxMesh.new()
+		bm.size = Vector3(WINDMILL_BLADE_LEN, WINDMILL_BLADE_H, WINDMILL_BLADE_T)
+		mesh.mesh = bm
+		mesh.material_override = blade_mat
+		body.add_child(mesh)
+
+	# Central hub for visual anchor (small box).
+	var hub_mesh := MeshInstance3D.new()
+	hub_mesh.name = "WindmillHub"
+	var hub_bm := BoxMesh.new()
+	hub_bm.size = Vector3(0.6, 0.5, 0.6)
+	hub_mesh.mesh = hub_bm
+	hub_mesh.material_override = blade_mat
+	body.add_child(hub_mesh)
+
+	_windmill = body
+
+	# ω from seed: first byte → -1..+1, scaled by WINDMILL_OMEGA_MAX, with
+	# minimum |ω| floor so the paddle always spins visibly.
+	var hash_bytes: PackedByteArray = _hash_with_tag("stadium_windmill")
+	var raw_omega: float
+	if hash_bytes.size() >= 1:
+		raw_omega = float(int(hash_bytes[0]) - 128) / 128.0
+	else:
+		raw_omega = 0.7
+	if absf(raw_omega) < (WINDMILL_OMEGA_MIN / WINDMILL_OMEGA_MAX):
+		raw_omega = (WINDMILL_OMEGA_MIN / WINDMILL_OMEGA_MAX) * (1.0 if raw_omega >= 0 else -1.0)
+	_windmill_omega = raw_omega * WINDMILL_OMEGA_MAX
 
 # ─── Mood lighting ───────────────────────────────────────────────────────────
 

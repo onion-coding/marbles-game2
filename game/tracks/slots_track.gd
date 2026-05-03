@@ -1,16 +1,22 @@
 class_name SlotsTrack
 extends Track
 
-# SlotsTrack — REBUILT as "Cavern Run" (post-M6 visual overhaul).
+# SlotsTrack — REBUILT as "Cavern Run" (M11 + Cavern unique geometry).
 #
 # Class name kept as SlotsTrack so existing replays with track_id=4 still
 # decode through TrackRegistry. The old slot-machine reels are gone; this
-# is now an underground cavern course with bigger crystal pillars (stalactites)
-# and dim mood lighting.
+# is now an underground cavern course with the M11 drop-cascade backbone
+# PLUS a distinguishing "stalactite + stalagmite slalom" — vertical
+# crystal pillars hanging from the ceiling and rising from the floor of
+# F5, forming a tight zigzag the marbles must navigate.
 #
 # Drop-cascade design (real gravity, no slow-motion):
-#   y=42 spawn → F1 V-funnel (deep purple) → F2-F4 cave ramps → F5 crystal
-#   stalactites (bigger, sparser) → F6 crystal magenta gate.
+#   y=42 spawn → F1 V-funnel (deep purple) → F2-F4 cave ramps →
+#   F5 crystal slalom (stalactites + stalagmites + base peg field) →
+#   F6 crystal magenta gate.
+#
+# Determinism: stalactites and stalagmites are static — no kinematic
+# state, replay-stable by construction.
 #
 # Palette + sky from TrackPalette.theme_for(SLOTS).
 
@@ -64,9 +70,59 @@ func _ready() -> void:
 	_build_directed_floor("F3", F3_Y, -1, _theme["floor_c"])
 	_build_directed_floor("F4", F4_Y, +1, _theme["floor_d"])
 	_build_peg_field()
+	_build_cavern_formations()
 	_build_gate()
 	_build_catchment()
 	_build_mood_lights()
+
+# ─── Cavern unique mechanic: stalactites + stalagmites ──────────────────────
+# Vertical crystal pillars layered above the existing peg field. Each row
+# is hex-staggered relative to the others so marbles must zigzag through.
+# All static (no kinematic motion), so the fairness chain is unaffected.
+const CAVERN_PILLAR_RADIUS := 0.55
+const CAVERN_PILLAR_LEN    := 4.0
+# Stalactites hang from the F5 ceiling (top) downward.
+const CAVERN_STAL_TOP_Y    := F5_TOP_Y                              # 14.0
+const CAVERN_STAL_BOT_Y    := F5_TOP_Y - CAVERN_PILLAR_LEN          # 10.0
+# Stalagmites rise from the F5 floor (bottom) upward.
+const CAVERN_MITE_TOP_Y    := F5_BOT_Y + CAVERN_PILLAR_LEN          # 8.0
+const CAVERN_MITE_BOT_Y    := F5_BOT_Y                              # 4.0
+# X positions: stalactites at full columns, stalagmites at half-offset
+# columns so the slalom forces marbles to weave.
+const CAVERN_STAL_COLS     := [-12.0, -6.0, 0.0, 6.0, 12.0]
+const CAVERN_MITE_COLS     := [-9.0, -3.0, 3.0, 9.0]
+
+func _build_cavern_formations() -> void:
+	# Crystal magenta with strong emission so stalactites read as "lit from
+	# within" — bloom turns each pillar into a glowing column.
+	var stal_mat := TrackBlocks.std_mat_emit(_theme["peg"], 0.55, 0.20, 0.85)
+	var mite_mat := TrackBlocks.std_mat_emit(_theme["accent"], 0.40, 0.25, 0.65)
+
+	var pillars := StaticBody3D.new()
+	pillars.name = "F5_CavernFormations"
+	pillars.physics_material_override = _mat_peg
+	add_child(pillars)
+
+	# Stalactites — cylinders along Y, centered between F5 ceiling and
+	# CAVERN_STAL_BOT_Y. Their tip points DOWN; we don't taper (visual only,
+	# physics stays a uniform cylinder for reliable collisions).
+	var stal_y_center: float = (CAVERN_STAL_TOP_Y + CAVERN_STAL_BOT_Y) * 0.5
+	for i in range(CAVERN_STAL_COLS.size()):
+		var x: float = float(CAVERN_STAL_COLS[i])
+		# Stagger Z slightly for depth (-0.5 / +0.5 alternating).
+		var z: float = -0.5 if (i % 2 == 0) else 0.5
+		TrackBlocks.add_cylinder(pillars, "Stal_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(x, stal_y_center, z)),
+			CAVERN_PILLAR_RADIUS, CAVERN_PILLAR_LEN, stal_mat)
+
+	# Stalagmites — same shape, anchored at the floor of F5, rising up.
+	var mite_y_center: float = (CAVERN_MITE_TOP_Y + CAVERN_MITE_BOT_Y) * 0.5
+	for i in range(CAVERN_MITE_COLS.size()):
+		var x: float = float(CAVERN_MITE_COLS[i])
+		var z: float = 0.5 if (i % 2 == 0) else -0.5     # opposite Z stagger
+		TrackBlocks.add_cylinder(pillars, "Mite_%d" % i,
+			Transform3D(Basis.IDENTITY, Vector3(x, mite_y_center, z)),
+			CAVERN_PILLAR_RADIUS, CAVERN_PILLAR_LEN, mite_mat)
 
 func _init_physics_materials() -> void:
 	# Stadium-aligned physics for reliable finish.
