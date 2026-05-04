@@ -19,12 +19,17 @@ const POKER := 3
 const SLOTS := 4
 const PLINKO := 5
 const STADIUM := 6
+# Phase 6 prototypes — geometrically distinct silhouettes (M23+).
+# Not in SELECTABLE until validated end-to-end.
+const SERPENT := 7
+const SPIRAL_DROP := 8
 
 # Track IDs currently available for selection by roundd / random pick.
 # Six M11 themed tracks (forest/volcano/ice/cavern/sky/stadium). The legacy
 # RAMP (id 0) stays a valid ID for replay decode (is_valid_id below) but is
 # NOT in the random rotation pool — it was the dev/default S-curve from M5
 # and doesn't fit the M11 visual language.
+# SERPENT (7) is a Phase-6 prototype, kept out of the pool until approved.
 const SELECTABLE := [ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM]
 
 static func count() -> int:
@@ -34,7 +39,7 @@ static func is_valid_id(id: int) -> bool:
 	# Any ID ever shipped is valid for decode. Only SELECTABLE are picked
 	# by the server for new rounds.
 	match id:
-		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM:
+		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM, SERPENT, SPIRAL_DROP:
 			return true
 		_:
 			return false
@@ -55,6 +60,10 @@ static func instance(id: int) -> Track:
 			return PlinkoTrack.new()
 		STADIUM:
 			return StadiumTrack.new()
+		SERPENT:
+			return SerpentTrack.new()
+		SPIRAL_DROP:
+			return SpiralDropTrack.new()
 		_:
 			push_error("TrackRegistry: unknown track_id=%d — falling back to RampTrack" % id)
 			return RampTrack.new()
@@ -75,5 +84,9 @@ static func name_of(id: int) -> String:
 			return "PlinkoTrack"
 		STADIUM:
 			return "StadiumTrack"
+		SERPENT:
+			return "SerpentTrack"
+		SPIRAL_DROP:
+			return "SpiralDropTrack"
 		_:
 			return "unknown(%d)" % id

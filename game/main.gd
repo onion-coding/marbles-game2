@@ -500,20 +500,18 @@ func _pick_interactive_track() -> int:
 				"cavern", "slots":              return TrackRegistry.SLOTS
 				"sky", "plinko":                return TrackRegistry.PLINKO
 				"stadium":                      return TrackRegistry.STADIUM
+				"serpent", "snake":             return TrackRegistry.SERPENT
+				"spiral", "spiral_drop":        return TrackRegistry.SPIRAL_DROP
 				_:
 					push_warning("--track=%s not recognized; falling back to random themed track" % name)
 					break
-	# Random pick — all 6 themed tracks; ramp legacy excluded.
-	var themed: Array = [
-		TrackRegistry.ROULETTE,
-		TrackRegistry.CRAPS,
-		TrackRegistry.POKER,
-		TrackRegistry.SLOTS,
-		TrackRegistry.PLINKO,
-		TrackRegistry.STADIUM,
-	]
-	randomize()
-	return int(themed[randi() % themed.size()])
+	# Phase 6 default: SPIRAL_DROP only.  Old M11 cascade tracks
+	# (ROULETTE/CRAPS/POKER/SLOTS/PLINKO/STADIUM) are still valid for replay
+	# decode but excluded from interactive random pick — they're the
+	# "scatola schifosa" the user explicitly rejected.  When the rest of
+	# Phase 6 (Pinball Chaos / Zig-Zag / Funnel / Split / Rotating Rings)
+	# lands, append them here.
+	return TrackRegistry.SPIRAL_DROP
 
 func _load_spec_from_cli() -> Dictionary:
 	var args := OS.get_cmdline_user_args()
