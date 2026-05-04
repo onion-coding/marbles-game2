@@ -50,13 +50,28 @@ type PodiumEntry struct {
 	FinishTick  int `json:"finish_tick"`
 }
 
+// ProtocolVersion4 is the current manifest protocol version. The writer
+// always emits v4; the reader accepts both v3 (missing v4 fields default
+// to zero / empty) and v4. Clients that only know v3 will silently ignore
+// the extra JSON keys, which is safe because JSON is open-schema.
+const ProtocolVersion4 = 4
+
 // Manifest is the server's ground-truth record of one round. A verifier can
 // re-derive everything in here from ServerSeedHex + Participants + TrackID +
 // the track constants, and compare against the stored replay.bin.
 //
-// v3 → v4 (M16): adds Podium [3]PodiumEntry and PickupPerMarble []float64.
-// Old v3 manifests stay decode-able — Podium and PickupPerMarble default to
-// zero values (interpreted as "podium info unavailable, fall back to Winner").
+// Version history:
+//   v3 (M9-M15): single Winner, no podium/pickup fields.
+//   v4 (M16+):   adds Podium, PickupPerMarble*, MarbleCount, PodiumPayouts,
+//                PickupPerMarbleTier, JackpotTriggered, JackpotMarbleIndex,
+//                FinishOrder. Old v3 manifests remain decode-able; all new
+//                fields default to zero / empty and are backward-compatible.
+//
+// Certification note (iTech/GLI/BMM): an auditor can recompute the gross
+// payoff for any marble from this manifest alone — no need to trust the
+// settle record. Formula: PickupPerMarbleTier[i] maps to multiplier
+// (0→1×, 1→2×, 2→3×), PodiumPayouts[rank] gives the base payoff in cents
+// for stake=1.0 unit. JackpotTriggered overrides 1° payoff with 100×.
 type Manifest struct {
 	RoundID           uint64        `json:"round_id"`
 	CreatedAt         time.Time     `json:"created_at"`
@@ -67,24 +82,60 @@ type Manifest struct {
 	ServerSeedHex     string        `json:"server_seed_hex"`
 	Participants      []Participant `json:"participants"`
 	Winner            Winner        `json:"winner"`
-	// v4 — payout v2 fields. Empty/zero on v3 manifests; safe to read with
-	// defaulting (Winner.MarbleIndex is the canonical 1° fallback).
-	Podium            [3]PodiumEntry `json:"podium,omitempty"`
-	// PickupTier1Marbles/PickupTier2Marble are the RAW pickup-zone
-	// collections from physics. Tier2Active flags whether the Tier 2 was
-	// "live" for this round (derived from seed via DeriveTier2Active);
-	// when false, the Tier 2 marble's pickup is downgraded to Tier 1
-	// (or no pickup) at payoff time.
-	PickupTier1Marbles []int          `json:"pickup_tier_1_marbles,omitempty"`
-	PickupTier2Marble  int            `json:"pickup_tier_2_marble,omitempty"`
-	Tier2Active        bool           `json:"tier_2_active,omitempty"`
+
+	// ── v4 base payout fields ─────────────────────────────────────────────
+	// Present on all v4 manifests; zero/empty on v3 (use Winner as fallback).
+
+	// Podium holds the top-3 finish entries. MarbleIndex==-1 means "no marble
+	// crossed in this slot" (incomplete race tail).
+	Podium [3]PodiumEntry `json:"podium,omitempty"`
+
+	// MarbleCount is the number of marbles that raced. v3 tracks had 20;
+	// v2-model (M11+) tracks use 30. Defaults to 0 on v3 manifests — callers
+	// should treat 0 as "unknown / legacy, assume 20".
+	MarbleCount uint8 `json:"marble_count,omitempty"`
+
+	// PodiumPayouts is the pre-computed gross payoff in cents for a 1-unit
+	// stake on each of the top-3 positions ([0]=1°, [1]=2°, [2]=3°). Derived
+	// by the manager via ComputeBetPayoff(marble_idx, 1.0, outcome) so an
+	// external auditor can verify payout without re-running game logic.
+	// Nil on v3 manifests (fixed-size arrays cannot use omitempty; pointer
+	// form is used so that absent=nil is distinguished from all-zeroes).
+	PodiumPayouts *[3]uint64 `json:"podium_payouts,omitempty"`
+
+	// PickupTier1Marbles/PickupTier2Marble are the RAW pickup-zone collections
+	// from physics. Tier2Active flags whether the Tier 2 zone was "live" for
+	// this round (derived from seed via DeriveTier2Active); when false, the
+	// Tier 2 marble's pickup is downgraded to Tier 1 / no-pickup at payoff time.
+	PickupTier1Marbles []int `json:"pickup_tier_1_marbles,omitempty"`
+	PickupTier2Marble  int   `json:"pickup_tier_2_marble,omitempty"`
+	Tier2Active        bool  `json:"tier_2_active,omitempty"`
+
 	// PickupPerMarble is a derived convenience array for fast payoff lookup;
-	// length = participants count, values 1.0 (no pickup) / 2.0 (Tier 1) /
+	// length = MarbleCount, float values 1.0 (no pickup) / 2.0 (Tier 1) /
 	// 3.0 (Tier 2). Built by the manager after applying Tier2Active.
-	PickupPerMarble    []float64      `json:"pickup_per_marble,omitempty"`
-	JackpotTriggered   bool           `json:"jackpot_triggered,omitempty"`
-	JackpotMarbleIdx   int            `json:"jackpot_marble_index,omitempty"`
-	ReplaySHA256Hex    string         `json:"replay_sha256_hex"`
+	// Kept for backward compat with v3 readers; prefer PickupPerMarbleTier.
+	PickupPerMarble []float64 `json:"pickup_per_marble,omitempty"`
+
+	// PickupPerMarbleTier is the v4 canonical form of pickup data: one byte
+	// per marble (length = MarbleCount), values 0=no pickup, 1=Tier1 (2×),
+	// 2=Tier2 (3×). This is what a certification auditor reads.
+	// Constraints (per math-model §2.1): at most 4 entries == 1, at most 1
+	// entry == 2.
+	PickupPerMarbleTier []uint8 `json:"pickup_per_marble_tier,omitempty"`
+
+	JackpotTriggered bool `json:"jackpot_triggered,omitempty"`
+	// JackpotMarbleIdx is the marble that triggered the jackpot, or -1.
+	// NOTE: JSON omitempty on int fields omits 0, which is a valid marble
+	// index. We keep the field non-omitempty so a zero index is preserved.
+	JackpotMarbleIdx int `json:"jackpot_marble_index"`
+
+	// FinishOrder is the full sorted marble finish order (1°→last°). Length
+	// may be less than MarbleCount if the race was truncated. Empty on v3
+	// manifests (only Winner is available).
+	FinishOrder []int `json:"finish_order,omitempty"`
+
+	ReplaySHA256Hex string `json:"replay_sha256_hex"`
 }
 
 type Store struct {
@@ -226,6 +277,35 @@ func (s *Store) Verify(id uint64) error {
 
 func (s *Store) roundDir(id uint64) string {
 	return filepath.Join(s.root, strconv.FormatUint(id, 10))
+}
+
+// ValidateJackpotConsistency checks the three-way invariant required by the
+// certification spec (docs/math-model.md §4.3): when JackpotTriggered is
+// true the manifest must satisfy all of:
+//  1. JackpotMarbleIdx >= 0
+//  2. PickupPerMarbleTier[JackpotMarbleIdx] == 2 (the marble held a Tier 2 pickup)
+//  3. FinishOrder[0] == JackpotMarbleIdx (the jackpot marble won 1°)
+//
+// Returns nil when JackpotTriggered is false (no constraints apply) or when
+// all three conditions hold. Returns a descriptive error otherwise so an
+// audit tool can surface the exact violation.
+func ValidateJackpotConsistency(m *Manifest) error {
+	if !m.JackpotTriggered {
+		return nil
+	}
+	if m.JackpotMarbleIdx < 0 {
+		return fmt.Errorf("replay: JackpotMarbleIdx must be >= 0 when JackpotTriggered (got %d)", m.JackpotMarbleIdx)
+	}
+	idx := m.JackpotMarbleIdx
+	if idx < len(m.PickupPerMarbleTier) && m.PickupPerMarbleTier[idx] != 2 {
+		return fmt.Errorf("replay: PickupPerMarbleTier[JackpotMarbleIdx] must be 2 (got %d for marble %d)",
+			m.PickupPerMarbleTier[idx], idx)
+	}
+	if len(m.FinishOrder) > 0 && m.FinishOrder[0] != idx {
+		return fmt.Errorf("replay: FinishOrder[0] must equal JackpotMarbleIdx (FinishOrder[0]=%d, JackpotMarbleIdx=%d)",
+			m.FinishOrder[0], idx)
+	}
+	return nil
 }
 
 func validateManifestForSave(m *Manifest) error {

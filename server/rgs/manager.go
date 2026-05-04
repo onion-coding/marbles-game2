@@ -464,22 +464,72 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	// later changes the Tier 2 activation rule.
 	tier1Snapshot := append([]int{}, simRes.PickupTier1Marbles...)
 
+	// ── v4 fields ────────────────────────────────────────────────────────
+
+	// PickupPerMarbleTier: canonical uint8 tier array for certification
+	// auditors. Maps float64 multiplier → tier byte (0/1/2).
+	pickupPerMarbleTier := make([]uint8, len(pickupPerMarble))
+	for i, mult := range pickupPerMarble {
+		switch {
+		case mult >= PickupTier2:
+			pickupPerMarbleTier[i] = 2
+		case mult >= PickupTier1:
+			pickupPerMarbleTier[i] = 1
+		default:
+			pickupPerMarbleTier[i] = 0
+		}
+	}
+
+	// PodiumPayouts: gross payoff in cents for a 1-unit stake on each podium
+	// position. Auditor can verify: stake × PodiumPayouts[rank] / 100 = payoff.
+	// For the jackpot marble (1° + Tier 2) ComputeBetPayoff returns 100×, so
+	// PodiumPayouts[0] reflects the jackpot rule automatically.
+	// Stored as a pointer so JSON omitempty can distinguish nil (v3 absent)
+	// from a legitimately all-zero array.
+	var podiumPayoutsArr [3]uint64
+	for rank := 0; rank < 3; rank++ {
+		idx := podium[rank].MarbleIndex
+		if idx >= 0 {
+			gross := ComputeBetPayoff(idx, 1.0, outcome)
+			podiumPayoutsArr[rank] = uint64(gross * 100)
+		}
+	}
+	podiumPayouts := &podiumPayoutsArr
+
+	// FinishOrder: full sorted finish order from the sim. For v4 sims the
+	// podium top-3 are known; for v3 sims only slot [0] is available.
+	// We build as much as we can from the podium array.
+	var finishOrder []int
+	if pv >= 4 {
+		for _, pe := range podium {
+			if pe.MarbleIndex >= 0 {
+				finishOrder = append(finishOrder, pe.MarbleIndex)
+			}
+		}
+	} else if simRes.WinnerMarbleIndex >= 0 {
+		finishOrder = []int{simRes.WinnerMarbleIndex}
+	}
+
 	manifest := &replay.Manifest{
-		RoundID:            roundID,
-		ProtocolVersion:    pv,
-		TickRateHz:         simRes.TickRateHz,
-		TrackID:            trackID,
-		ServerSeedHashHex:  hex.EncodeToString(commit[:]),
-		ServerSeedHex:      hex.EncodeToString(revealed[:]),
-		Participants:       storeParts,
-		Winner:             replay.Winner{MarbleIndex: simRes.WinnerMarbleIndex, FinishTick: simRes.FinishTick},
-		Podium:             podium,
-		PickupTier1Marbles: tier1Snapshot,
-		PickupTier2Marble:  simRes.PickupTier2Marble,
-		Tier2Active:        tier2Active,
-		PickupPerMarble:    pickupPerMarble,
-		JackpotTriggered:   outcome.JackpotTriggered,
-		JackpotMarbleIdx:   outcome.JackpotMarbleIdx,
+		RoundID:             roundID,
+		ProtocolVersion:     replay.ProtocolVersion4,
+		TickRateHz:          simRes.TickRateHz,
+		TrackID:             trackID,
+		ServerSeedHashHex:   hex.EncodeToString(commit[:]),
+		ServerSeedHex:       hex.EncodeToString(revealed[:]),
+		Participants:        storeParts,
+		Winner:              replay.Winner{MarbleIndex: simRes.WinnerMarbleIndex, FinishTick: simRes.FinishTick},
+		Podium:              podium,
+		MarbleCount:         uint8(m.cfg.MaxMarbles),
+		PodiumPayouts:       podiumPayouts,
+		PickupTier1Marbles:  tier1Snapshot,
+		PickupTier2Marble:   simRes.PickupTier2Marble,
+		Tier2Active:         tier2Active,
+		PickupPerMarble:     pickupPerMarble,
+		PickupPerMarbleTier: pickupPerMarbleTier,
+		JackpotTriggered:    outcome.JackpotTriggered,
+		JackpotMarbleIdx:    outcome.JackpotMarbleIdx,
+		FinishOrder:         finishOrder,
 	}
 	replayFile, err := os.Open(simRes.ReplayPath)
 	if err != nil {
