@@ -49,6 +49,8 @@ const _EN := {
 	# Timing tower
 	"hud.standings.header":         "STANDINGS",
 	"hud.standings.count_suffix":   "MARBLES",
+	"hud.finishers.header":         "FINISHED",
+	"hud.finishers.subtitle":       "RESULTS COMING SOON",
 
 	# Timer
 	"hud.timer.caption":            "RACE TIME",

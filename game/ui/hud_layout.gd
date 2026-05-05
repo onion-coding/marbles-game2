@@ -1045,3 +1045,106 @@ static func build_session_stats(refs: Dictionary) -> Control:
 	refs["session_recent_list"] = recent_list
 
 	return panel
+
+# ─── Finishers list (top-right; visible during the 15-s settle window) ──────
+#
+# Shown the moment the first marble crosses the finish line, replacing the
+# timing tower. Lists marbles in the order they cross, with a countdown to
+# the full leaderboard reveal in the header.
+static func build_finishers_list(refs: Dictionary, marble_count: int) -> Control:
+	var panel := PanelContainer.new()
+	panel.name = "FinishersList"
+	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
+	panel.offset_left = -300
+	panel.offset_top = 80
+	panel.offset_right = -16
+	panel.offset_bottom = -180
+	panel.add_theme_stylebox_override("panel",
+		HudTheme.sb_panel(HudTheme.C_SURFACE_1, HudTheme.accent(), 10, 2))
+	panel.visible = false   # only shown during the settle window
+	refs["finishers_panel"] = panel
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+
+	# Header row: "FINISHED" label + countdown.
+	var head_hb := HBoxContainer.new()
+	head_hb.add_theme_constant_override("separation", 8)
+	vb.add_child(head_hb)
+
+	var header := Label.new()
+	header.text = "FINISHED"
+	header.label_settings = HudTheme.ls_label_caps(HudTheme.accent(), HudTheme.FS_LABEL)
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head_hb.add_child(header)
+	refs["finishers_header"] = header
+
+	var countdown := Label.new()
+	countdown.text = ""
+	countdown.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	head_hb.add_child(countdown)
+	refs["finishers_countdown"] = countdown
+
+	var sep := ColorRect.new()
+	sep.color = HudTheme.C_BORDER_DIM
+	sep.custom_minimum_size = Vector2(0, 1)
+	vb.add_child(sep)
+
+	# Subtitle: "Results in 15s"
+	var subtitle := Label.new()
+	subtitle.text = ""
+	subtitle.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_DIM, HudTheme.FS_TINY)
+	vb.add_child(subtitle)
+	refs["finishers_subtitle"] = subtitle
+
+	# Scrollable list of finisher rows.
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(scroll)
+
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 3)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+	refs["finishers_list"] = list
+
+	# Pre-allocate hidden hint that grows to marble_count on insert.
+	# (Currently unused — placeholder for future styling tweaks per row count.)
+	var _unused := marble_count
+
+	return panel
+
+# Build one row of the finishers list: place number + colour swatch + name.
+# Caller appends the returned Control to the finishers_list VBox.
+static func make_finisher_row(place: int, marble_name: String, color: Color) -> Control:
+	var row := PanelContainer.new()
+	row.add_theme_stylebox_override("panel",
+		HudTheme.sb_row(Color(1.0, 1.0, 1.0, 0.05)))
+	row.custom_minimum_size = Vector2(0, 26)
+
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 8)
+	row.add_child(hb)
+
+	var place_label := Label.new()
+	place_label.text = "%d." % place
+	place_label.label_settings = HudTheme.ls_metric(HudTheme.accent(), HudTheme.FS_SMALL)
+	place_label.custom_minimum_size = Vector2(28, 0)
+	hb.add_child(place_label)
+
+	var swatch := ColorRect.new()
+	swatch.color = color
+	swatch.custom_minimum_size = Vector2(14, 14)
+	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(swatch)
+
+	var name_lbl := Label.new()
+	name_lbl.text = marble_name
+	name_lbl.label_settings = HudTheme.ls_caption(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_SMALL)
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(name_lbl)
+
+	return row

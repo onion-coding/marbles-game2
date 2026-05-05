@@ -37,9 +37,31 @@ func process_tick(delta: float) -> void:
 	_tick_toast(delta)
 	_tick_bet_countdown(delta)
 	_tick_next_round_countdown(delta)
+	_tick_finish_settle(delta)
 	_tick_live_dot()
 	_tick_responsive()
 	_tick_pickup_badges(delta)
+
+# Counts down the post-finish settle window. While active, the FinishersList
+# panel's countdown label shows seconds remaining. On expiry, the HUD's
+# stashed winner payload is revealed via finish_settle_complete() (which
+# hides the panel and shows the winner modal).
+func _tick_finish_settle(delta: float) -> void:
+	if not _hud._finish_settle_active:
+		return
+	_hud._finish_settle_remaining -= delta
+	if _hud._finish_settle_remaining <= 0.0:
+		_hud._finish_settle_remaining = 0.0
+		_hud.finish_settle_complete()
+		return
+	# Update the seconds-remaining label in the FinishersList header.
+	if _hud._finishers_countdown != null:
+		_hud._finishers_countdown.text = "%ds" % int(ceil(_hud._finish_settle_remaining))
+	# Pulse colour amber → red in the last 3s for emphasis.
+	if _hud._finishers_countdown != null and _hud._finish_settle_remaining < 3.0:
+		var pulse: float = 0.5 + 0.5 * sin(float(Engine.get_frames_drawn()) * 0.18)
+		var c: Color = HudTheme.C_AMBER.lerp(HudTheme.C_RED, pulse)
+		_hud._finishers_countdown.label_settings = HudTheme.ls_label_caps(c, HudTheme.FS_TINY)
 
 func _tick_toast(delta: float) -> void:
 	if _hud._toast_timer > 0.0:

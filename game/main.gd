@@ -5,6 +5,10 @@ const MARBLE_COUNT := 30
 const RGS_BET_WINDOW_SEC := 10.0
 # How many seconds to display the winner modal before starting the next round.
 const RGS_BETWEEN_ROUNDS_SEC := 15.0
+# How many seconds the live finishers panel (top-right) shows BEFORE the
+# full leaderboard modal appears. Hold the leaderboard back so spectators
+# can watch the rest of the field cross the line. Per user spec.
+const POST_FINISH_SETTLE_SEC := 15.0
 
 var _status_path: String = ""  # if non-empty, write status JSON on race completion
 var _round_id: int = 0
@@ -362,13 +366,36 @@ func _start_race(spec: Dictionary) -> void:
 		_hud.marble_selected.connect(_freecam.follow_marble_index)
 		_freecam.following_changed.connect(_hud.set_following)
 
+		# Per-marble crossing → top-right FinishersList entry. Fires for every
+		# marble in finish-line order. The first crossing also fires
+		# race_finished below.
+		finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
+			if _hud == null:
+				return
+			var nm := String(marble.name)
+			var trimmed := nm.trim_prefix("Marble_")
+			if not trimmed.is_valid_int():
+				return
+			var idx: int = int(trimmed)
+			if idx < 0 or idx >= colors.size():
+				return
+			_hud.add_finisher(idx, colors[idx], nm)
+		)
+
 		finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
 			var winner_name: String = String(winner.name)
 			var winner_idx: int = int(winner_name.trim_prefix("Marble_"))
 			_live_racing = false
 			_winner_idx_at_finish = winner_idx
 			_race_visually_finished = true
-			_hud.reveal_winner(winner_name, colors[winner_idx])
+
+			# Hold the full leaderboard back. Show only the live FinishersList
+			# (top-right) for POST_FINISH_SETTLE_SEC seconds — spectators see
+			# the rest of the field cross the line before the modal lands.
+			# HudRuntime ticks the countdown and calls reveal_winner() at 0.
+			_hud.start_finish_settle(POST_FINISH_SETTLE_SEC,
+				winner_name, colors[winner_idx])
+
 			# In RGS mode: apply settlement overlay if server result already arrived,
 			# otherwise _on_round_completed will call apply_settlement when it lands.
 			if _rgs_client != null:
@@ -379,7 +406,9 @@ func _start_race(spec: Dictionary) -> void:
 				# (a) server hasn't responded yet — _on_round_completed will call apply_settlement, or
 				# (b) round_failed was emitted — no overlay shown (already push_warning'd).
 
-				# Start the between-rounds countdown and then trigger the next round.
+				# Wait the settle window first, THEN show the next-round
+				# countdown (so the leaderboard sits visible for its full 15s).
+				await get_tree().create_timer(POST_FINISH_SETTLE_SEC).timeout
 				_hud.start_next_round_countdown(RGS_BETWEEN_ROUNDS_SEC)
 				await get_tree().create_timer(RGS_BETWEEN_ROUNDS_SEC).timeout
 				_cleanup_round()

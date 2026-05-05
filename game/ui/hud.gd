@@ -120,6 +120,14 @@ var _podium_pillar_p3: PanelContainer
 var _final_standings_list: VBoxContainer
 var _last_ranked: Array = []
 
+# ─── Finishers list nodes (top-right post-finish panel) ──────────────────────
+
+var _finishers_panel: PanelContainer
+var _finishers_header: Label
+var _finishers_countdown: Label
+var _finishers_subtitle: Label
+var _finishers_list: VBoxContainer
+
 # ─── Toast nodes ─────────────────────────────────────────────────────────────
 
 var _toast_anchor: Control
@@ -159,6 +167,23 @@ var _bet_countdown_remaining: float = 0.0
 var _bet_countdown_active: bool = false
 var _next_round_countdown_remaining: float = 0.0
 var _next_round_countdown_active: bool = false
+
+# Finish-settle window: between the first marble crossing the line and the
+# full leaderboard modal appearing. During this window the timing tower is
+# hidden and the FinishersList panel (top-right) lists marbles in the order
+# they cross. Default 15 s, started by start_finish_settle(). On expiry the
+# winner modal is revealed via the runtime tick.
+var _finish_settle_remaining: float = 0.0
+var _finish_settle_active: bool = false
+var _finish_settle_total: float = 0.0
+# Pending winner-reveal payload — captured by start_finish_settle(), applied
+# by HudRuntime when the countdown reaches zero.
+var _pending_winner_name: String = ""
+var _pending_winner_color: Color = Color.WHITE
+var _pending_winner_prize: String = ""
+var _pending_winner_breakdown: Dictionary = {}
+# How many marbles have crossed (= next "place" number to assign).
+var _finishers_count: int = 0
 
 # ─── Pickup state ────────────────────────────────────────────────────────────
 
@@ -218,6 +243,7 @@ func _build_layout() -> void:
 		_runtime.on_adjust_amount,
 		_runtime.on_place_bet_pressed))
 	root.add_child(HudLayout.build_winner_modal(refs))
+	root.add_child(HudLayout.build_finishers_list(refs, MARBLE_COUNT))
 	root.add_child(HudLayout.build_toast(refs))
 	root.add_child(HudLayout.build_session_stats(refs))
 
@@ -278,6 +304,12 @@ func _unpack_refs(r: Dictionary) -> void:
 	_podium_pillar_p2       = r.get("podium_pillar_p2")
 	_podium_pillar_p3       = r.get("podium_pillar_p3")
 	_final_standings_list   = r.get("final_standings_list")
+
+	_finishers_panel        = r.get("finishers_panel")
+	_finishers_header       = r.get("finishers_header")
+	_finishers_countdown    = r.get("finishers_countdown")
+	_finishers_subtitle     = r.get("finishers_subtitle")
+	_finishers_list         = r.get("finishers_list")
 
 	_toast_anchor           = r.get("toast_anchor")
 	_toast_card             = r.get("toast_card")
@@ -388,6 +420,16 @@ func setup(header: Array) -> void:
 	_bets_locked_pill.visible = (_rgs_mode and not _placed_bets.is_empty())
 	_bet_countdown_active = false
 	_initial_max_dist = -1.0
+	_finish_settle_active = false
+	_finish_settle_remaining = 0.0
+	_finishers_count = 0
+	if _finishers_panel != null:
+		_finishers_panel.visible = false
+	if _finishers_list != null:
+		for c in _finishers_list.get_children():
+			c.queue_free()
+	if _timing_tower != null:
+		_timing_tower.visible = true
 	if _race_progress_bar != null:
 		_race_progress_bar.value = 0.0
 	if _podium_box != null:
@@ -449,6 +491,65 @@ func update_tick(tick: int, tick_rate_hz: float) -> void:
 	var elapsed_ticks: int = max(0, tick - _start_tick)
 	var seconds: float = float(elapsed_ticks) / tick_rate_hz
 	_timer_label.text = HudTheme.format_race_time(seconds)
+
+# Begin the post-finish settle window. The full leaderboard modal is held
+# back for `seconds` seconds; during that window the timing tower is hidden
+# and the FinishersList panel is revealed in its place. The pending winner
+# payload is stashed so HudRuntime can call reveal_winner() on countdown
+# expiry.
+func start_finish_settle(seconds: float, winner_name: String, winner_color: Color,
+		prize: String = "", breakdown: Dictionary = {}) -> void:
+	_finish_settle_total = seconds
+	_finish_settle_remaining = seconds
+	_finish_settle_active = true
+	_pending_winner_name = winner_name
+	_pending_winner_color = winner_color
+	_pending_winner_prize = prize
+	_pending_winner_breakdown = breakdown
+	_finishers_count = 0
+
+	# Hide the timing tower so the finishers list takes its slot.
+	if _timing_tower != null:
+		_timing_tower.visible = false
+
+	# Reset finishers list contents and reveal the panel.
+	if _finishers_list != null:
+		for c in _finishers_list.get_children():
+			c.queue_free()
+	if _finishers_subtitle != null:
+		_finishers_subtitle.text = HudI18n.t("hud.finishers.subtitle")
+	if _finishers_countdown != null:
+		_finishers_countdown.text = "%ds" % int(ceil(seconds))
+	if _finishers_panel != null:
+		_finishers_panel.visible = true
+
+# Append a finisher entry to the top-right list. Called from main.gd as each
+# marble crosses the finish line. `place` is auto-derived from internal count
+# so callers don't need to track it.
+func add_finisher(idx: int, color: Color, marble_name: String = "") -> void:
+	if _finishers_list == null:
+		return
+	_finishers_count += 1
+	var resolved_name := marble_name
+	if resolved_name == "" and idx >= 0 and idx < _marble_meta.size():
+		resolved_name = String(_marble_meta[idx].get("name", "Marble_%02d" % idx))
+	if resolved_name == "":
+		resolved_name = "Marble_%02d" % idx
+	var row := HudLayout.make_finisher_row(_finishers_count, resolved_name, color)
+	_finishers_list.add_child(row)
+
+# Internal — called from HudRuntime when the settle countdown reaches zero.
+# Hides the finishers panel and shows the regular winner modal.
+func finish_settle_complete() -> void:
+	_finish_settle_active = false
+	_finish_settle_remaining = 0.0
+	if _finishers_panel != null:
+		_finishers_panel.visible = false
+	# Restore timing tower visibility — the modal usually covers it but a
+	# scrim/transparency could leave it visible briefly. Cleaner to leave it
+	# hidden until reset() runs at next-round time.
+	reveal_winner(_pending_winner_name, _pending_winner_color,
+		_pending_winner_prize, _pending_winner_breakdown)
 
 func reveal_winner(name: String, color: Color, prize: String = "",
 		breakdown: Dictionary = {}) -> void:
@@ -567,6 +668,21 @@ func reset() -> void:
 	if _race_progress_bar != null:
 		_race_progress_bar.value = 0.0
 	_initial_max_dist = -1.0
+	_finish_settle_active = false
+	_finish_settle_remaining = 0.0
+	_finish_settle_total = 0.0
+	_pending_winner_name = ""
+	_pending_winner_color = Color.WHITE
+	_pending_winner_prize = ""
+	_pending_winner_breakdown = {}
+	_finishers_count = 0
+	if _finishers_panel != null:
+		_finishers_panel.visible = false
+	if _finishers_list != null:
+		for c in _finishers_list.get_children():
+			c.queue_free()
+	if _timing_tower != null:
+		_timing_tower.visible = true
 	_runtime.refresh_bets_list()
 
 # ─── Player session / persistence API ────────────────────────────────────────
