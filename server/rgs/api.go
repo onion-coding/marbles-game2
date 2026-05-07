@@ -71,19 +71,21 @@ type openSessionRequest struct {
 }
 
 type sessionResponse struct {
-	SessionID  string             `json:"session_id"`
-	PlayerID   string             `json:"player_id"`
-	State      string             `json:"state"`
-	Balance    uint64             `json:"balance"`
-	OpenedAt   time.Time          `json:"opened_at"`
-	UpdatedAt  time.Time          `json:"updated_at"`
-	Bet        *betResponse       `json:"bet,omitempty"`
+	SessionID  string              `json:"session_id"`
+	PlayerID   string              `json:"player_id"`
+	State      string              `json:"state"`
+	Balance    uint64              `json:"balance"`
+	Currency   string              `json:"currency"`
+	OpenedAt   time.Time           `json:"opened_at"`
+	UpdatedAt  time.Time           `json:"updated_at"`
+	Bet        *betResponse        `json:"bet,omitempty"`
 	LastResult *settlementResponse `json:"last_result,omitempty"`
 }
 
 type betResponse struct {
 	BetID       string    `json:"bet_id"`
 	Amount      uint64    `json:"amount"`
+	Currency    string    `json:"currency"`
 	PlacedAt    time.Time `json:"placed_at"`
 	MarbleIndex int       `json:"marble_index"`
 }
@@ -92,6 +94,7 @@ type settlementResponse struct {
 	BetID       string    `json:"bet_id"`
 	Won         bool      `json:"won"`
 	Amount      uint64    `json:"amount"`
+	Currency    string    `json:"currency"`
 	PrizeAmount uint64    `json:"prize_amount"`
 	WinnerIndex int       `json:"winner_index"`
 	CreditTxID  string    `json:"credit_tx_id,omitempty"`
@@ -99,7 +102,8 @@ type settlementResponse struct {
 }
 
 type placeBetRequest struct {
-	Amount uint64 `json:"amount"`
+	Amount   uint64 `json:"amount"`
+	Currency string `json:"currency,omitempty"`
 }
 
 type errorResponse struct {
@@ -128,8 +132,9 @@ func (h *HTTPHandler) placeBet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// Currency from body; empty string → manager uses DefaultCurrency.
 	id := r.PathValue("id")
-	if _, err := h.mgr.PlaceBet(id, req.Amount); err != nil {
+	if _, err := h.mgr.PlaceBet(id, req.Amount, req.Currency); err != nil {
 		writeBetError(w, err)
 		return
 	}
@@ -234,16 +239,18 @@ type placeRoundBetRequest struct {
 	PlayerID  string  `json:"player_id"`
 	MarbleIdx int     `json:"marble_idx"`
 	Amount    float64 `json:"amount"`
+	Currency  string  `json:"currency,omitempty"`
 }
 
 // placeRoundBetResponse is the 200 body for a successful bet placement.
 type placeRoundBetResponse struct {
-	BetID                string  `json:"bet_id"`
-	RoundID              uint64  `json:"round_id"`
-	MarbleIdx            int     `json:"marble_idx"`
-	Amount               float64 `json:"amount"`
-	BalanceAfter         float64 `json:"balance_after"`
-	ExpectedPayoutIfWin  float64 `json:"expected_payout_if_win"`
+	BetID               string  `json:"bet_id"`
+	RoundID             uint64  `json:"round_id"`
+	MarbleIdx           int     `json:"marble_idx"`
+	Amount              float64 `json:"amount"`
+	Currency            string  `json:"currency"`
+	BalanceAfter        float64 `json:"balance_after"`
+	ExpectedPayoutIfWin float64 `json:"expected_payout_if_win"`
 }
 
 // roundBetResponse is one element of the GET /v1/rounds/{round_id}/bets list.
@@ -253,6 +260,7 @@ type roundBetResponse struct {
 	RoundID   uint64    `json:"round_id"`
 	MarbleIdx int       `json:"marble_idx"`
 	Amount    float64   `json:"amount"`
+	Currency  string    `json:"currency"`
 	PlacedAt  time.Time `json:"placed_at"`
 }
 
@@ -283,8 +291,12 @@ func (h *HTTPHandler) placeRoundBet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bet, balAfter, err := h.mgr.PlaceBetOnRound(roundID, req.PlayerID, req.MarbleIdx, req.Amount)
+	bet, balAfter, err := h.mgr.PlaceBetOnRound(roundID, req.PlayerID, req.MarbleIdx, req.Amount, req.Currency)
 	if err != nil {
+		if errors.Is(err, ErrUnsupportedCurrency) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		writeRoundBetError(w, err)
 		return
 	}
@@ -294,6 +306,7 @@ func (h *HTTPHandler) placeRoundBet(w http.ResponseWriter, r *http.Request) {
 		RoundID:             bet.RoundID,
 		MarbleIdx:           bet.MarbleIdx,
 		Amount:              bet.Amount,
+		Currency:            bet.Currency,
 		BalanceAfter:        balAfter,
 		ExpectedPayoutIfWin: bet.Amount * PayoutMultiplier,
 	})
@@ -320,12 +333,17 @@ func (h *HTTPHandler) getRoundBets(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]roundBetResponse, len(bets))
 	for i, b := range bets {
+		cur := b.Currency
+		if cur == "" {
+			cur = h.mgr.currency()
+		}
 		resp[i] = roundBetResponse{
 			BetID:     b.BetID,
 			PlayerID:  b.PlayerID,
 			RoundID:   b.RoundID,
 			MarbleIdx: b.MarbleIdx,
 			Amount:    b.Amount,
+			Currency:  cur,
 			PlacedAt:  b.PlacedAt,
 		}
 	}
@@ -350,12 +368,22 @@ func writeRoundBetError(w http.ResponseWriter, err error) {
 	}
 }
 
-// walletBalance handles GET /v1/wallets/{player_id}/balance.
-// Returns the current balance for the given player_id, or 404 if the
-// player is not known to the wallet.
+// walletBalance handles GET /v1/wallets/{player_id}/balance[?currency=EUR].
+// Returns the current balance for the given player_id in the requested
+// currency (defaults to the manager's DefaultCurrency when omitted).
+// Returns 404 if the player is not known to the wallet.
 func (h *HTTPHandler) walletBalance(w http.ResponseWriter, r *http.Request) {
 	playerID := r.PathValue("player_id")
-	bal, err := h.mgr.cfg.Wallet.Balance(playerID)
+	currency := r.URL.Query().Get("currency")
+	cur := NormalizeCurrency(currency)
+	if cur == "" {
+		cur = h.mgr.currency()
+	}
+	if err := ValidateCurrency(cur, h.mgr.cfg.SupportedCurrencies); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	bal, err := h.mgr.cfg.Wallet.Balance(playerID, cur)
 	if err != nil {
 		if errors.Is(err, ErrUnknownPlayer) {
 			writeError(w, http.StatusNotFound, err)
@@ -364,12 +392,15 @@ func (h *HTTPHandler) walletBalance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	scale := float64(UnitsPerWhole(cur))
 	writeJSON(w, http.StatusOK, struct {
 		PlayerID string  `json:"player_id"`
+		Currency string  `json:"currency"`
 		Balance  float64 `json:"balance"`
 	}{
 		PlayerID: playerID,
-		Balance:  float64(bal) / 100.0,
+		Currency: cur,
+		Balance:  float64(bal) / scale,
 	})
 }
 
@@ -394,6 +425,7 @@ func outcomesToResponse(outs []SettlementOutcome) []settlementResponse {
 			BetID:       o.BetID,
 			Won:         o.Won,
 			Amount:      o.Amount,
+			Currency:    o.Currency,
 			PrizeAmount: o.PrizeAmount,
 			WinnerIndex: o.WinnerIndex,
 			CreditTxID:  o.CreditTxID,
@@ -405,29 +437,50 @@ func outcomesToResponse(outs []SettlementOutcome) []settlementResponse {
 
 func writeSessionResponse(w http.ResponseWriter, mgr *Manager, s *Session, code int) {
 	state, bet, last := s.Snapshot()
+	// Determine the currency for this session's balance lookup. Prefer the
+	// active bet's currency (if any), then the last result's currency, then
+	// the manager default. This ensures the balance shown is always in the
+	// same currency as the player's active stake.
+	cur := mgr.currency()
+	if bet != nil && bet.Currency != "" {
+		cur = bet.Currency
+	} else if last != nil && last.Currency != "" {
+		cur = last.Currency
+	}
 	resp := sessionResponse{
 		SessionID: s.ID,
 		PlayerID:  s.PlayerID,
 		State:     state.String(),
+		Currency:  cur,
 		OpenedAt:  s.OpenedAt,
 		UpdatedAt: s.UpdatedAt,
 	}
-	if bal, err := mgr.cfg.Wallet.Balance(s.PlayerID); err == nil {
+	if bal, err := mgr.cfg.Wallet.Balance(s.PlayerID, cur); err == nil {
 		resp.Balance = bal
 	}
 	if bet != nil {
+		betCur := bet.Currency
+		if betCur == "" {
+			betCur = cur
+		}
 		resp.Bet = &betResponse{
 			BetID:       bet.BetID,
 			Amount:      bet.Amount,
+			Currency:    betCur,
 			PlacedAt:    bet.PlacedAt,
 			MarbleIndex: bet.MarbleIndex,
 		}
 	}
 	if last != nil {
+		lastCur := last.Currency
+		if lastCur == "" {
+			lastCur = cur
+		}
 		resp.LastResult = &settlementResponse{
 			BetID:       last.BetID,
 			Won:         last.Won,
 			Amount:      last.Amount,
+			Currency:    lastCur,
 			PrizeAmount: last.PrizeAmount,
 			WinnerIndex: last.WinnerIndex,
 			CreditTxID:  last.CreditTxID,
@@ -443,6 +496,8 @@ func writeBetError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusPaymentRequired, err)
 	case errors.Is(err, ErrUnknownPlayer):
 		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, ErrUnsupportedCurrency):
+		writeError(w, http.StatusBadRequest, err)
 	case errors.Is(err, ErrWrongState), errors.Is(err, ErrBetExists), errors.Is(err, ErrSessionClosed):
 		writeError(w, http.StatusConflict, err)
 	default:

@@ -21,7 +21,7 @@ func TestBet_PlaceSuccess(t *testing.T) {
 		t.Fatalf("GenerateRoundSpec: %v", err)
 	}
 
-	bet, balAfter, err := mgr.PlaceBetOnRound(spec.RoundID, "alice", 3, 10.0)
+	bet, balAfter, err := mgr.PlaceBetOnRound(spec.RoundID, "alice", 3, 10.0, "")
 	if err != nil {
 		t.Fatalf("PlaceBetOnRound: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestBet_PlaceSuccess(t *testing.T) {
 	if balAfter != wantBal {
 		t.Fatalf("balAfter %.2f, want %.2f", balAfter, wantBal)
 	}
-	rawBal, _ := wallet.Balance("alice")
+	rawBal, _ := wallet.Balance("alice", DefaultCurrency)
 	if rawBal != 4000 {
 		t.Fatalf("wallet balance %d, want 4000", rawBal)
 	}
@@ -56,14 +56,14 @@ func TestBet_InsufficientFunds(t *testing.T) {
 
 	spec, _ := mgr.GenerateRoundSpec()
 
-	_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "bob", 0, 10.0)
+	_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "bob", 0, 10.0, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
 	}
-	bal, _ := wallet.Balance("bob")
+	bal, _ := wallet.Balance("bob", DefaultCurrency)
 	if bal != 500 {
 		t.Fatalf("balance changed to %d after rejected bet, want 500", bal)
 	}
@@ -77,7 +77,7 @@ func TestBet_InvalidMarbleIdx(t *testing.T) {
 	spec, _ := mgr.GenerateRoundSpec()
 
 	for _, idx := range []int{-1, 30, 99} {
-		_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "carol", idx, 5.0)
+		_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "carol", idx, 5.0, "")
 		if err == nil {
 			t.Fatalf("marble_idx %d: expected error, got nil", idx)
 		}
@@ -95,7 +95,7 @@ func TestBet_AmountZeroOrNegative(t *testing.T) {
 	spec, _ := mgr.GenerateRoundSpec()
 
 	for _, amt := range []float64{0, -1.0, -100.0} {
-		_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "dave", 0, amt)
+		_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "dave", 0, amt, "")
 		if err == nil {
 			t.Fatalf("amount %.2f: expected error, got nil", amt)
 		}
@@ -111,7 +111,7 @@ func TestBet_UnknownRoundID(t *testing.T) {
 	mgr, wallet, _ := newTestManager(t, 0)
 	wallet.SetBalance("eve", 10000)
 
-	_, _, err := mgr.PlaceBetOnRound(999999999, "eve", 0, 5.0)
+	_, _, err := mgr.PlaceBetOnRound(999999999, "eve", 0, 5.0, "")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -128,7 +128,7 @@ func TestBet_RoundAlreadyRun(t *testing.T) {
 
 	spec, _ := mgr.GenerateRoundSpec()
 	// Place one bet so the round isn't empty.
-	_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "frank", 0, 5.0)
+	_, _, err := mgr.PlaceBetOnRound(spec.RoundID, "frank", 0, 5.0, "")
 	if err != nil {
 		t.Fatalf("first PlaceBetOnRound: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestBet_RoundAlreadyRun(t *testing.T) {
 	}
 
 	// Any subsequent bet on the same round_id should be rejected.
-	_, _, err = mgr.PlaceBetOnRound(spec.RoundID, "frank", 1, 5.0)
+	_, _, err = mgr.PlaceBetOnRound(spec.RoundID, "frank", 1, 5.0, "")
 	if err == nil {
 		t.Fatal("expected error after round ran, got nil")
 	}
@@ -159,19 +159,19 @@ func TestBet_PayoutOnlyWinner(t *testing.T) {
 
 	spec, _ := mgr.GenerateRoundSpec()
 
-	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, "p1", 2, 10.0); err != nil {
+	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, "p1", 2, 10.0, ""); err != nil {
 		t.Fatalf("PlaceBetOnRound p1: %v", err)
 	}
-	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, "p2", winner, 10.0); err != nil {
+	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, "p2", winner, 10.0, ""); err != nil {
 		t.Fatalf("PlaceBetOnRound p2: %v", err)
 	}
-	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, "p3", 15, 10.0); err != nil {
+	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, "p3", 15, 10.0, ""); err != nil {
 		t.Fatalf("PlaceBetOnRound p3: %v", err)
 	}
 
 	// Wallets debited: each down 1000 units (10.00).
 	for _, pid := range []string{"p1", "p2", "p3"} {
-		bal, _ := wallet.Balance(pid)
+		bal, _ := wallet.Balance(pid, DefaultCurrency)
 		if bal != 9000 {
 			t.Fatalf("%s balance after bet: %d, want 9000", pid, bal)
 		}
@@ -183,7 +183,7 @@ func TestBet_PayoutOnlyWinner(t *testing.T) {
 
 	// p1 and p3 lost: balance stays at 9000.
 	for _, pid := range []string{"p1", "p3"} {
-		bal, _ := wallet.Balance(pid)
+		bal, _ := wallet.Balance(pid, DefaultCurrency)
 		if bal != 9000 {
 			t.Fatalf("%s (loser) balance %d, want 9000", pid, bal)
 		}
@@ -195,7 +195,7 @@ func TestBet_PayoutOnlyWinner(t *testing.T) {
 	// balance) + 10.00 × 9× × 100 = 9000 + 9000 = 18000 units.
 	// PayoutMultiplier is now an alias for PodiumPayout1st (= 9.0), so
 	// the wantPayout formula stays valid post-M18.
-	p2bal, _ := wallet.Balance("p2")
+	p2bal, _ := wallet.Balance("p2", DefaultCurrency)
 	want := uint64(9000 + int(10.0*PayoutMultiplier*100))
 	if p2bal != want {
 		t.Fatalf("p2 (winner) balance %d, want %d", p2bal, want)
@@ -209,9 +209,9 @@ func TestBet_BetsForRound(t *testing.T) {
 	wallet.SetBalance("bob", 10000)
 
 	spec, _ := mgr.GenerateRoundSpec()
-	mgr.PlaceBetOnRound(spec.RoundID, "alice", 0, 5.0)
-	mgr.PlaceBetOnRound(spec.RoundID, "alice", 1, 3.0)
-	mgr.PlaceBetOnRound(spec.RoundID, "bob", 2, 7.0)
+	mgr.PlaceBetOnRound(spec.RoundID, "alice", 0, 5.0, "")
+	mgr.PlaceBetOnRound(spec.RoundID, "alice", 1, 3.0, "")
+	mgr.PlaceBetOnRound(spec.RoundID, "bob", 2, 7.0, "")
 
 	// All bets.
 	all, err := mgr.BetsForRound(spec.RoundID, "")

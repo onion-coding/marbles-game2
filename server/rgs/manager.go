@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -49,6 +50,12 @@ type ManagerConfig struct {
 	// When nil (the default), the Manager falls back to its legacy in-memory
 	// map — identical behaviour to before this field existed.
 	SessionStore SessionStorer
+	// DefaultCurrency is the currency applied when a caller omits the
+	// currency parameter. Defaults to rgs.DefaultCurrency ("EUR") when empty.
+	DefaultCurrency string
+	// SupportedCurrencies is the whitelist of accepted currency codes.
+	// Defaults to defaultSupportedCurrencies when nil.
+	SupportedCurrencies []string
 }
 
 // SimRunner is the surface rgs needs from the sim package — small enough
@@ -80,6 +87,7 @@ type RoundBet struct {
 	RoundID   uint64    `json:"round_id"`
 	MarbleIdx int       `json:"marble_idx"`
 	Amount    float64   `json:"amount"`
+	Currency  string    `json:"currency"`
 	PlacedAt  time.Time `json:"placed_at"`
 }
 
@@ -89,8 +97,9 @@ type RoundBetOutcome struct {
 	PlayerID    string  `json:"player_id"`
 	MarbleIdx   int     `json:"marble_idx"`
 	Amount      float64 `json:"amount"`
+	Currency    string  `json:"currency"`
 	Won         bool    `json:"won"`
-	Payout      float64 `json:"payout"`       // amount × PayoutMultiplier, or 0
+	Payout      float64 `json:"payout"`  // amount × multiplier, or 0
 	WinnerIndex int     `json:"winner_index"`
 }
 
@@ -105,6 +114,10 @@ type pendingRound struct {
 	spec *RoundSpec
 	bets []*RoundBet
 }
+
+// ErrManagerPaused is returned by RunNextRound when the Manager has been
+// paused via Pause(). Callers should respond with 503 Service Unavailable.
+var ErrManagerPaused = errors.New("manager paused")
 
 // Manager is the central coordinator. It owns the session table, the
 // "next round" buffer of pending bets, and the wallet client. Methods
@@ -126,6 +139,7 @@ type Manager struct {
 	prevTrack     int                    // last track_id used, threaded for the no-back-to-back selector
 	pendingRounds []*pendingRound        // pre-minted round specs with their round-level bets, FIFO
 	roundBets     map[uint64][]*RoundBet // round_id → all settled+pending bets (for GET queries)
+	paused        bool                   // when true, RunNextRound returns ErrManagerPaused immediately
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
@@ -143,6 +157,14 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}
 	if cfg.SimTimeout == 0 {
 		cfg.SimTimeout = 60 * time.Second
+	}
+	if cfg.DefaultCurrency == "" {
+		cfg.DefaultCurrency = DefaultCurrency
+	} else {
+		cfg.DefaultCurrency = NormalizeCurrency(cfg.DefaultCurrency)
+	}
+	if len(cfg.SupportedCurrencies) == 0 {
+		cfg.SupportedCurrencies = append([]string{}, defaultSupportedCurrencies...)
 	}
 	if len(cfg.TrackPool) == 0 {
 		// Six M11 themed tracks (forest=1, volcano=2, ice=3, cavern=4,
@@ -229,7 +251,14 @@ func (m *Manager) Session(id string) (*Session, bool) {
 // the next round. The bet is held atomically: if the wallet debit fails
 // the session state is untouched. When a durable SessionStorer is
 // configured the updated session is also written through to it.
-func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
+func (m *Manager) PlaceBet(sessionID string, amount uint64, currency string) (*Bet, error) {
+	cur := NormalizeCurrency(currency)
+	if cur == "" {
+		cur = m.currency()
+	}
+	if err := ValidateCurrency(cur, m.cfg.SupportedCurrencies); err != nil {
+		return nil, fmt.Errorf("rgs: PlaceBet: %w", err)
+	}
 	s, ok := m.Session(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("rgs: unknown session %q", sessionID)
@@ -238,12 +267,13 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 		return nil, fmt.Errorf("rgs: bet amount must be > 0")
 	}
 	betID := newID("bet_")
-	if err := m.cfg.Wallet.Debit(s.PlayerID, amount, betID); err != nil {
+	if err := m.cfg.Wallet.Debit(s.PlayerID, amount, cur, betID); err != nil {
 		return nil, fmt.Errorf("rgs: wallet debit: %w", err)
 	}
 	bet := Bet{
 		BetID:    betID,
 		Amount:   amount,
+		Currency: cur,
 		PlayerID: s.PlayerID,
 		PlacedAt: time.Now(),
 	}
@@ -251,7 +281,7 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 		// Undo the debit by crediting back. Idempotent if the operator's
 		// wallet is well-behaved — the credit and the original debit have
 		// independent txIDs so retry is safe.
-		_ = m.cfg.Wallet.Credit(s.PlayerID, amount, betID+":refund")
+		_ = m.cfg.Wallet.Credit(s.PlayerID, amount, cur, betID+":refund")
 		return nil, fmt.Errorf("rgs: session refused bet: %w", err)
 	}
 	// Persist the state change (BET + bet_data) to the durable store.
@@ -260,7 +290,7 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 		// The session goes back to its pre-bet state so the next call
 		// can retry cleanly.
 		_ = s.rollbackBet()
-		_ = m.cfg.Wallet.Credit(s.PlayerID, amount, betID+":refund")
+		_ = m.cfg.Wallet.Credit(s.PlayerID, amount, cur, betID+":refund")
 		return nil, fmt.Errorf("rgs: PlaceBet persist: %w", err)
 	}
 	m.mu.Lock()
@@ -284,6 +314,10 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 // the per-round-bet outcome list (bets placed via POST /v1/rounds/{id}/bets).
 func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []SettlementOutcome, []RoundBetOutcome, error) {
 	m.mu.Lock()
+	if m.paused {
+		m.mu.Unlock()
+		return nil, nil, nil, ErrManagerPaused
+	}
 	pending := m.pending
 	m.pending = nil
 
@@ -419,13 +453,17 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	outcomes := make([]SettlementOutcome, len(pending))
 	for i, s := range pending {
 		bet := s.Bet // captured before Settle clears it
+		betCur := bet.Currency
+		if betCur == "" {
+			betCur = m.currency()
+		}
 		won := bet.MarbleIndex == simRes.WinnerMarbleIndex
 		var prizeAmount uint64
 		var creditTxID string
 		if won {
 			prizeAmount = prize
 			creditTxID = bet.BetID + ":credit"
-			if cerr := m.cfg.Wallet.Credit(s.PlayerID, prizeAmount, creditTxID); cerr != nil {
+			if cerr := m.cfg.Wallet.Credit(s.PlayerID, prizeAmount, betCur, creditTxID); cerr != nil {
 				return nil, nil, nil, fmt.Errorf("rgs: credit winner %q: %w", s.PlayerID, cerr)
 			}
 		}
@@ -433,6 +471,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 			BetID:       bet.BetID,
 			PlayerID:    bet.PlayerID,
 			Amount:      bet.Amount,
+			Currency:    betCur,
 			Won:         won,
 			PrizeAmount: prizeAmount,
 			WinnerIndex: simRes.WinnerMarbleIndex,
@@ -621,12 +660,17 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		var totalBets, totalPayout float64
 		roundBetOutcomes = make([]RoundBetOutcome, len(pr.bets))
 		for i, rb := range pr.bets {
+			rbCur := rb.Currency
+			if rbCur == "" {
+				rbCur = m.currency()
+			}
 			payout := ComputeBetPayoff(rb.MarbleIdx, rb.Amount, outcome)
 			won := payout > 0.0
 			if won {
-				payoutUnits := uint64(payout * 100)
+				scale := float64(UnitsPerWhole(rbCur))
+				payoutUnits := uint64(payout * scale)
 				creditTxID := rb.BetID + ":credit"
-				if cerr := m.cfg.Wallet.Credit(rb.PlayerID, payoutUnits, creditTxID); cerr != nil {
+				if cerr := m.cfg.Wallet.Credit(rb.PlayerID, payoutUnits, rbCur, creditTxID); cerr != nil {
 					// Surface the error rather than silently swallowing — the
 					// caller (handler) must decide whether to retry. Pending
 					// credit recovery is M9.x (see docs/rgs-integration.md).
@@ -640,6 +684,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 				PlayerID:    rb.PlayerID,
 				MarbleIdx:   rb.MarbleIdx,
 				Amount:      rb.Amount,
+				Currency:    rbCur,
 				Won:         won,
 				Payout:      payout,
 				WinnerIndex: simRes.WinnerMarbleIndex,
@@ -719,7 +764,14 @@ func (m *Manager) GenerateRoundSpec() (*RoundSpec, error) {
 //   - ErrInvalidMarbleIdx if marble_idx is outside [0, MaxMarbles).
 //   - ErrInvalidBetAmount if amount <= 0.
 //   - ErrInsufficientFunds / ErrUnknownPlayer propagated from wallet.Debit.
-func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int, amount float64) (*RoundBet, float64, error) {
+func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int, amount float64, currency string) (*RoundBet, float64, error) {
+	cur := NormalizeCurrency(currency)
+	if cur == "" {
+		cur = m.currency()
+	}
+	if err := ValidateCurrency(cur, m.cfg.SupportedCurrencies); err != nil {
+		return nil, 0, fmt.Errorf("rgs: PlaceBetOnRound: %w", err)
+	}
 	if marbleIdx < 0 || marbleIdx >= m.cfg.MaxMarbles {
 		return nil, 0, fmt.Errorf("%w: marble_idx %d, valid range [0,%d)", ErrInvalidMarbleIdx, marbleIdx, m.cfg.MaxMarbles)
 	}
@@ -742,22 +794,23 @@ func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int
 		return nil, 0, ErrUnknownRound
 	}
 
-	// Convert amount to uint64 micro-units for wallet (× 100 to preserve 2
-	// decimal places while staying on the integer wallet interface).
-	amountUnits := uint64(amount * 100)
+	// Convert amount to uint64 sub-units for wallet, using the correct precision
+	// for the currency (100 for fiat, 100_000_000 for crypto).
+	scale := float64(UnitsPerWhole(cur))
+	amountUnits := uint64(amount * scale)
 	if amountUnits == 0 {
-		return nil, 0, fmt.Errorf("%w: amount %v rounds to zero", ErrInvalidBetAmount, amount)
+		return nil, 0, fmt.Errorf("%w: amount %v rounds to zero in %s", ErrInvalidBetAmount, amount, cur)
 	}
 
 	betID := newID("rbet_")
-	if err := m.cfg.Wallet.Debit(playerID, amountUnits, betID); err != nil {
+	if err := m.cfg.Wallet.Debit(playerID, amountUnits, cur, betID); err != nil {
 		return nil, 0, fmt.Errorf("rgs: wallet debit: %w", err)
 	}
 
-	balUnits, balErr := m.cfg.Wallet.Balance(playerID)
+	balUnits, balErr := m.cfg.Wallet.Balance(playerID, cur)
 	var balAfter float64
 	if balErr == nil {
-		balAfter = float64(balUnits) / 100.0
+		balAfter = float64(balUnits) / scale
 	}
 
 	bet := &RoundBet{
@@ -766,6 +819,7 @@ func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int
 		RoundID:   roundID,
 		MarbleIdx: marbleIdx,
 		Amount:    amount,
+		Currency:  cur,
 		PlacedAt:  time.Now(),
 	}
 
@@ -774,7 +828,7 @@ func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int
 	// our unlock and this re-lock. If so, refund and error.
 	if m.findPendingRound(roundID) == nil {
 		m.mu.Unlock()
-		_ = m.cfg.Wallet.Credit(playerID, amountUnits, betID+":refund")
+		_ = m.cfg.Wallet.Credit(playerID, amountUnits, cur, betID+":refund")
 		return nil, 0, ErrRoundAlreadyRun
 	}
 	pr.bets = append(pr.bets, bet)
@@ -861,6 +915,81 @@ func newID(prefix string) string {
 	_, _ = rand.Read(b[:])
 	return prefix + hex.EncodeToString(b[:])
 }
+
+// currency returns the effective default currency for wallet calls. Falls back
+// to the package-level DefaultCurrency constant when the config field is empty.
+func (m *Manager) currency() string {
+	if m.cfg.DefaultCurrency != "" {
+		return m.cfg.DefaultCurrency
+	}
+	return DefaultCurrency
+}
+
+// ── Admin hooks ──────────────────────────────────────────────────────────────
+
+// Pause sets the manager's paused flag. While paused, RunNextRound returns
+// ErrManagerPaused immediately without running any round or consuming any
+// pending bets.
+func (m *Manager) Pause() {
+	m.mu.Lock()
+	m.paused = true
+	m.mu.Unlock()
+}
+
+// Resume clears the paused flag so new rounds can run again.
+func (m *Manager) Resume() {
+	m.mu.Lock()
+	m.paused = false
+	m.mu.Unlock()
+}
+
+// IsPaused returns the current paused state.
+func (m *Manager) IsPaused() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused
+}
+
+// Config returns a snapshot of the Manager's current ManagerConfig. The
+// returned struct is a shallow copy — callers must not mutate it.
+func (m *Manager) Config() ManagerConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg
+}
+
+// UpdateRTP atomically replaces the manager's RTP basis-points value. The
+// new value takes effect from the next call to RunNextRound. No persistence
+// is performed here — callers that need durability (e.g. the admin handler)
+// write to DataPath themselves.
+func (m *Manager) UpdateRTP(rtpBps uint32) {
+	m.mu.Lock()
+	m.cfg.RTPBps = rtpBps
+	m.mu.Unlock()
+}
+
+// AllSessions returns a snapshot copy of every session currently in the
+// in-memory cache.  Used by the admin panel to enumerate players.
+func (m *Manager) AllSessions() []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		out = append(out, s)
+	}
+	return out
+}
+
+// PendingRoundCount returns how many pre-minted rounds are queued.
+func (m *Manager) PendingRoundCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.pendingRounds)
+}
+
+// _ ensures errors is used (it is, by ErrManagerPaused), silencing any
+// linter that might not see the var decl as sufficient.
+var _ = errors.New
 
 // ── inMemorySessionStore ─────────────────────────────────────────────────────
 //

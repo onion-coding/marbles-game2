@@ -1,0 +1,186 @@
+/* admin.css — casino-theme dark panel */
+:root {
+  --bg:       #0d0d0d;
+  --surface:  #1a1a2e;
+  --accent:   #e94560;
+  --accent2:  #0f3460;
+  --text:     #e0e0e0;
+  --muted:    #888;
+  --border:   #2a2a4a;
+  --green:    #27ae60;
+  --red:      #e74c3c;
+  --yellow:   #f39c12;
+  --radius:   6px;
+  --mono:     'Courier New', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ── header ── */
+header {
+  background: var(--surface);
+  border-bottom: 2px solid var(--accent);
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+header h1 { font-size: 18px; color: var(--accent); letter-spacing: 1px; }
+header .actor { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.badge-ok     { background: var(--green);  color: #fff; }
+.badge-paused { background: var(--yellow); color: #000; }
+.badge-err    { background: var(--red);    color: #fff; }
+
+/* ── tabs ── */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0 24px;
+}
+.tab-btn {
+  padding: 10px 20px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  font-size: 14px;
+  transition: color .15s, border-color .15s;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── tab panes ── */
+.pane { display: none; padding: 20px 24px; }
+.pane.active { display: block; }
+
+/* ── cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card h2 { font-size: 14px; color: var(--accent); margin-bottom: 12px; }
+
+/* ── stat row ── */
+.stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 18px;
+  min-width: 120px;
+}
+.stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+.stat .value { font-size: 22px; font-weight: bold; margin-top: 4px; }
+
+/* ── tables ── */
+.tbl-wrap { overflow-x: auto; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th {
+  text-align: left;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: rgba(255,255,255,.03); }
+.mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+/* ── buttons ── */
+.btn {
+  display: inline-block;
+  padding: 7px 16px;
+  border-radius: var(--radius);
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: .85; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-primary { background: var(--accent);  color: #fff; }
+.btn-danger  { background: var(--red);     color: #fff; }
+.btn-success { background: var(--green);   color: #fff; }
+.btn-muted   { background: var(--border);  color: var(--text); }
+
+/* ── forms ── */
+.form-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+input[type=number], input[type=text] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+  width: 140px;
+}
+input:focus { outline: none; border-color: var(--accent); }
+
+/* ── flash messages ── */
+.flash {
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.flash-ok  { background: rgba(39,174,96,.15);  border: 1px solid var(--green); color: var(--green); }
+.flash-err { background: rgba(231,76,60,.15);  border: 1px solid var(--red);   color: var(--red); }
+
+/* ── audit log ── */
+.audit-entry {
+  display: grid;
+  grid-template-columns: 140px 90px 130px 1fr;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.audit-entry .ts  { color: var(--muted); font-family: var(--mono); }
+.audit-entry .actor { color: var(--accent2); }
+.audit-entry .action { color: var(--accent); font-weight: bold; }
+.audit-entry .details { color: var(--text); word-break: break-all; }
+
+.pagination { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+.pagination span { color: var(--muted); font-size: 12px; }
+
+/* ── config key/value ── */
+.cfg-table td:first-child { color: var(--muted); width: 180px; }
+.cfg-table td:last-child  { font-family: var(--mono); }

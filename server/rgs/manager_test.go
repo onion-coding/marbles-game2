@@ -128,11 +128,11 @@ func TestManager_BetWinsCreditsWallet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	bet, err := mgr.PlaceBet(sess.ID, 100)
+	bet, err := mgr.PlaceBet(sess.ID, 100, "")
 	if err != nil {
 		t.Fatalf("PlaceBet: %v", err)
 	}
-	if bal, _ := wallet.Balance("alice"); bal != 900 {
+	if bal, _ := wallet.Balance("alice", DefaultCurrency); bal != 900 {
 		t.Fatalf("after debit: balance %d, want 900", bal)
 	}
 	manifest, outcomes, _, err := mgr.RunNextRound(context.Background())
@@ -150,7 +150,7 @@ func TestManager_BetWinsCreditsWallet(t *testing.T) {
 	}
 	// RTP check: stake = 30*100 = 3000; payout @ 9500bps = 2850; alice
 	// started at 1000, paid 100 (=900), got 2850 prize → 3750.
-	if bal, _ := wallet.Balance("alice"); bal != 3750 {
+	if bal, _ := wallet.Balance("alice", DefaultCurrency); bal != 3750 {
 		t.Fatalf("after credit: balance %d, want 3750", bal)
 	}
 	if outcomes[0].PrizeAmount != 2850 {
@@ -181,13 +181,13 @@ func TestManager_BetLosesNoCreditButDebitStands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	if _, err := mgr.PlaceBet(sess.ID, 50); err != nil {
+	if _, err := mgr.PlaceBet(sess.ID, 50, ""); err != nil {
 		t.Fatalf("PlaceBet: %v", err)
 	}
 	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
-	if bal, _ := wallet.Balance("bob"); bal != 450 {
+	if bal, _ := wallet.Balance("bob", DefaultCurrency); bal != 450 {
 		t.Fatalf("losing balance %d, want 450 (lost the bet)", bal)
 	}
 	state, _, last := sess.Snapshot()
@@ -207,14 +207,14 @@ func TestManager_PlaceBetRejectsOnInsufficientFunds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	_, err = mgr.PlaceBet(sess.ID, 100)
+	_, err = mgr.PlaceBet(sess.ID, 100, "")
 	if err == nil {
 		t.Fatalf("PlaceBet succeeded with insufficient funds")
 	}
 	if !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("expected ErrInsufficientFunds, got %v", err)
 	}
-	if bal, _ := wallet.Balance("carol"); bal != 30 {
+	if bal, _ := wallet.Balance("carol", DefaultCurrency); bal != 30 {
 		t.Fatalf("balance changed after rejected bet: %d, want 30", bal)
 	}
 	state, bet, _ := sess.Snapshot()
@@ -233,10 +233,10 @@ func TestManager_TwoBettorsOneWinsOneLoses(t *testing.T) {
 
 	s1, _ := mgr.OpenSession("p1")
 	s2, _ := mgr.OpenSession("p2")
-	if _, err := mgr.PlaceBet(s1.ID, 100); err != nil {
+	if _, err := mgr.PlaceBet(s1.ID, 100, ""); err != nil {
 		t.Fatalf("PlaceBet p1: %v", err)
 	}
-	if _, err := mgr.PlaceBet(s2.ID, 100); err != nil {
+	if _, err := mgr.PlaceBet(s2.ID, 100, ""); err != nil {
 		t.Fatalf("PlaceBet p2: %v", err)
 	}
 	_, outcomes, _, err := mgr.RunNextRound(context.Background())
@@ -249,10 +249,10 @@ func TestManager_TwoBettorsOneWinsOneLoses(t *testing.T) {
 	if outcomes[0].Won || !outcomes[1].Won {
 		t.Fatalf("expected p1=loss, p2=win, got %+v / %+v", outcomes[0], outcomes[1])
 	}
-	if bal, _ := wallet.Balance("p1"); bal != 100 {
+	if bal, _ := wallet.Balance("p1", DefaultCurrency); bal != 100 {
 		t.Fatalf("p1 balance %d, want 100 (lost 100)", bal)
 	}
-	if bal, _ := wallet.Balance("p2"); bal != 2950 {
+	if bal, _ := wallet.Balance("p2", DefaultCurrency); bal != 2950 {
 		t.Fatalf("p2 balance %d, want 2950 (lost 100, won 2850)", bal)
 	}
 }
@@ -267,13 +267,13 @@ func TestManager_RoundIDCollisionRetries(t *testing.T) {
 	wallet.SetBalance("dave", 1000)
 
 	s, _ := mgr.OpenSession("dave")
-	if _, err := mgr.PlaceBet(s.ID, 100); err != nil {
+	if _, err := mgr.PlaceBet(s.ID, 100, ""); err != nil {
 		t.Fatalf("PlaceBet 1: %v", err)
 	}
 	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound 1: %v", err)
 	}
-	if _, err := mgr.PlaceBet(s.ID, 100); err != nil {
+	if _, err := mgr.PlaceBet(s.ID, 100, ""); err != nil {
 		t.Fatalf("PlaceBet 2: %v", err)
 	}
 	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
@@ -300,7 +300,7 @@ func TestManager_SeedAlignment(t *testing.T) {
 	}
 
 	// Place a bet on that specific round.
-	_, _, err = mgr.PlaceBetOnRound(spec.RoundID, "alice", 3, 10.0)
+	_, _, err = mgr.PlaceBetOnRound(spec.RoundID, "alice", 3, 10.0, "")
 	if err != nil {
 		t.Fatalf("PlaceBetOnRound: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestManager_SeedAlignmentEmptyPending(t *testing.T) {
 	wallet.SetBalance("bob", 1000)
 
 	sess, _ := mgr.OpenSession("bob")
-	if _, err := mgr.PlaceBet(sess.ID, 100); err != nil {
+	if _, err := mgr.PlaceBet(sess.ID, 100, ""); err != nil {
 		t.Fatalf("PlaceBet: %v", err)
 	}
 

@@ -393,7 +393,7 @@ func TestManager_PostgresSessionStore(t *testing.T) {
 	}
 
 	// --- PlaceBet ---
-	bet, err := mgr.PlaceBet(sess.ID, 100)
+	bet, err := mgr.PlaceBet(sess.ID, 100, rgs.DefaultCurrency)
 	if err != nil {
 		t.Fatalf("PlaceBet: %v", err)
 	}

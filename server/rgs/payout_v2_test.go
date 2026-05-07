@@ -92,13 +92,13 @@ func runRoundBet(t *testing.T, mgr *Manager, wallet *MockWallet,
 	if err != nil {
 		t.Fatalf("GenerateRoundSpec: %v", err)
 	}
-	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, playerID, betMarble, stake); err != nil {
+	if _, _, err := mgr.PlaceBetOnRound(spec.RoundID, playerID, betMarble, stake, ""); err != nil {
 		t.Fatalf("PlaceBetOnRound: %v", err)
 	}
 	if _, _, _, err := mgr.RunNextRound(context.Background()); err != nil {
 		t.Fatalf("RunNextRound: %v", err)
 	}
-	bal, _ := wallet.Balance(playerID)
+	bal, _ := wallet.Balance(playerID, DefaultCurrency)
 	return bal
 }
 

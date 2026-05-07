@@ -60,7 +60,7 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	// ── 1. Balance unknown player ─────────────────────────────────────────
 	t.Run("balance_unknown_player_errors", func(t *testing.T) {
 		w, _ := makeWallet()
-		_, err := w.Balance("nobody_xq7")
+		_, err := w.Balance("nobody_xq7", DefaultCurrency)
 		if err == nil {
 			t.Fatal("expected error for unknown player, got nil")
 		}
@@ -73,10 +73,10 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("debit_reduces_balance", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c2_player", 1000)
-		if err := w.Debit("c2_player", 300, "tx_c2_debit"); err != nil {
+		if err := w.Debit("c2_player", 300, DefaultCurrency, "tx_c2_debit"); err != nil {
 			t.Fatalf("Debit: %v", err)
 		}
-		bal, err := w.Balance("c2_player")
+		bal, err := w.Balance("c2_player", DefaultCurrency)
 		if err != nil {
 			t.Fatalf("Balance: %v", err)
 		}
@@ -89,10 +89,10 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("credit_increases_balance", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c3_player", 500)
-		if err := w.Credit("c3_player", 200, "tx_c3_credit"); err != nil {
+		if err := w.Credit("c3_player", 200, DefaultCurrency, "tx_c3_credit"); err != nil {
 			t.Fatalf("Credit: %v", err)
 		}
-		bal, err := w.Balance("c3_player")
+		bal, err := w.Balance("c3_player", DefaultCurrency)
 		if err != nil {
 			t.Fatalf("Balance: %v", err)
 		}
@@ -105,14 +105,14 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("debit_insufficient_funds", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c4_player", 50)
-		err := w.Debit("c4_player", 100, "tx_c4_over")
+		err := w.Debit("c4_player", 100, DefaultCurrency, "tx_c4_over")
 		if err == nil {
 			t.Fatal("expected ErrInsufficientFunds, got nil")
 		}
 		if !errors.Is(err, ErrInsufficientFunds) {
 			t.Fatalf("expected ErrInsufficientFunds, got %v", err)
 		}
-		bal, _ := w.Balance("c4_player")
+		bal, _ := w.Balance("c4_player", DefaultCurrency)
 		if bal != 50 {
 			t.Fatalf("balance changed after rejected debit: got %d, want 50", bal)
 		}
@@ -121,10 +121,10 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	// ── 5. Credit unknown player creates account ──────────────────────────
 	t.Run("credit_unknown_creates_account", func(t *testing.T) {
 		w, _ := makeWallet()
-		if err := w.Credit("c5_new_player", 999, "tx_c5_create"); err != nil {
+		if err := w.Credit("c5_new_player", 999, DefaultCurrency, "tx_c5_create"); err != nil {
 			t.Fatalf("Credit on unknown player: %v", err)
 		}
-		bal, err := w.Balance("c5_new_player")
+		bal, err := w.Balance("c5_new_player", DefaultCurrency)
 		if err != nil {
 			t.Fatalf("Balance after credit-create: %v", err)
 		}
@@ -137,13 +137,13 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("idempotent_debit", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c6_player", 1000)
-		if err := w.Debit("c6_player", 400, "tx_c6_idem"); err != nil {
+		if err := w.Debit("c6_player", 400, DefaultCurrency, "tx_c6_idem"); err != nil {
 			t.Fatalf("first Debit: %v", err)
 		}
-		if err := w.Debit("c6_player", 400, "tx_c6_idem"); err != nil {
+		if err := w.Debit("c6_player", 400, DefaultCurrency, "tx_c6_idem"); err != nil {
 			t.Fatalf("idempotent Debit replay: %v", err)
 		}
-		bal, _ := w.Balance("c6_player")
+		bal, _ := w.Balance("c6_player", DefaultCurrency)
 		if bal != 600 {
 			t.Fatalf("balance after idempotent replay: got %d, want 600", bal)
 		}
@@ -153,13 +153,13 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("idempotent_credit", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c7_player", 100)
-		if err := w.Credit("c7_player", 250, "tx_c7_idem"); err != nil {
+		if err := w.Credit("c7_player", 250, DefaultCurrency, "tx_c7_idem"); err != nil {
 			t.Fatalf("first Credit: %v", err)
 		}
-		if err := w.Credit("c7_player", 250, "tx_c7_idem"); err != nil {
+		if err := w.Credit("c7_player", 250, DefaultCurrency, "tx_c7_idem"); err != nil {
 			t.Fatalf("idempotent Credit replay: %v", err)
 		}
-		bal, _ := w.Balance("c7_player")
+		bal, _ := w.Balance("c7_player", DefaultCurrency)
 		if bal != 350 {
 			t.Fatalf("balance after idempotent replay: got %d, want 350", bal)
 		}
@@ -178,7 +178,7 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				errs[idx] = w.Debit("c8_player", debitAmount, fmt.Sprintf("tx_c8_%02d", idx))
+				errs[idx] = w.Debit("c8_player", debitAmount, DefaultCurrency, fmt.Sprintf("tx_c8_%02d", idx))
 			}(i)
 		}
 		wg.Wait()
@@ -192,7 +192,7 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 		if succeeded != goroutines {
 			t.Fatalf("concurrent debit: %d/%d succeeded (want all)", succeeded, goroutines)
 		}
-		bal, err := w.Balance("c8_player")
+		bal, err := w.Balance("c8_player", DefaultCurrency)
 		if err != nil {
 			t.Fatalf("Balance after concurrent debit: %v", err)
 		}
@@ -204,13 +204,13 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	// ── 9. Empty playerID returns error ──────────────────────────────────
 	t.Run("empty_player_id_errors", func(t *testing.T) {
 		w, _ := makeWallet()
-		if err := w.Debit("", 100, "tx_c9_debit"); err == nil {
+		if err := w.Debit("", 100, DefaultCurrency, "tx_c9_debit"); err == nil {
 			t.Fatal("Debit with empty playerID: expected error, got nil")
 		}
-		if err := w.Credit("", 100, "tx_c9_credit"); err == nil {
+		if err := w.Credit("", 100, DefaultCurrency, "tx_c9_credit"); err == nil {
 			t.Fatal("Credit with empty playerID: expected error, got nil")
 		}
-		if _, err := w.Balance(""); err == nil {
+		if _, err := w.Balance("", DefaultCurrency); err == nil {
 			t.Fatal("Balance with empty playerID: expected error, got nil")
 		}
 	})
@@ -219,10 +219,10 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("zero_amount_errors", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c10_player", 500)
-		if err := w.Debit("c10_player", 0, "tx_c10_debit"); err == nil {
+		if err := w.Debit("c10_player", 0, DefaultCurrency, "tx_c10_debit"); err == nil {
 			t.Fatal("Debit with amount=0: expected error, got nil")
 		}
-		if err := w.Credit("c10_player", 0, "tx_c10_credit"); err == nil {
+		if err := w.Credit("c10_player", 0, DefaultCurrency, "tx_c10_credit"); err == nil {
 			t.Fatal("Credit with amount=0: expected error, got nil")
 		}
 	})
@@ -231,10 +231,10 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("empty_txid_errors", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c11_player", 500)
-		if err := w.Debit("c11_player", 100, ""); err == nil {
+		if err := w.Debit("c11_player", 100, DefaultCurrency, ""); err == nil {
 			t.Fatal("Debit with empty txID: expected error, got nil")
 		}
-		if err := w.Credit("c11_player", 100, ""); err == nil {
+		if err := w.Credit("c11_player", 100, DefaultCurrency, ""); err == nil {
 			t.Fatal("Credit with empty txID: expected error, got nil")
 		}
 	})
@@ -243,17 +243,17 @@ func runWalletContractSuite(t *testing.T, makeWallet func() (Wallet, func(string
 	t.Run("txid_cross_operation_collision_errors", func(t *testing.T) {
 		w, seed := makeWallet()
 		seed("c12_player", 1000)
-		if err := w.Debit("c12_player", 100, "tx_c12_shared"); err != nil {
+		if err := w.Debit("c12_player", 100, DefaultCurrency, "tx_c12_shared"); err != nil {
 			t.Fatalf("initial Debit: %v", err)
 		}
 		// Replaying the same tx_id as Credit must fail (ledger sees a signed
 		// -100 entry but caller is requesting +100 — mismatch).
-		err := w.Credit("c12_player", 100, "tx_c12_shared")
+		err := w.Credit("c12_player", 100, DefaultCurrency, "tx_c12_shared")
 		if err == nil {
 			t.Fatal("Credit with tx_id previously used for Debit: expected error, got nil")
 		}
 		// Balance must reflect only the initial debit.
-		bal, _ := w.Balance("c12_player")
+		bal, _ := w.Balance("c12_player", DefaultCurrency)
 		if bal != 900 {
 			t.Fatalf("balance after cross-op collision: got %d, want 900", bal)
 		}
@@ -320,7 +320,7 @@ func TestHTTPWallet_HMACSigningSetsHeaders(t *testing.T) {
 		MaxRetries: 0,
 	})
 
-	if _, err := w.Balance("hmac_player"); err != nil {
+	if _, err := w.Balance("hmac_player", DefaultCurrency); err != nil {
 		t.Fatalf("Balance: %v", err)
 	}
 	if seenTS == "" {
@@ -357,7 +357,7 @@ func TestHTTPWallet_IdempotencyKeyHeader(t *testing.T) {
 		IdempotencyKeys: true,
 	})
 
-	if err := w.Debit("idem_player", 100, "tx_idem_key"); err != nil {
+	if err := w.Debit("idem_player", 100, DefaultCurrency, "tx_idem_key"); err != nil {
 		t.Fatalf("Debit: %v", err)
 	}
 	if capturedKey != "tx_idem_key" {
@@ -388,7 +388,7 @@ func TestHTTPWallet_RetryOn500(t *testing.T) {
 		MaxRetries: 3,
 	})
 
-	bal, err := w.Balance("retry_player")
+	bal, err := w.Balance("retry_player", DefaultCurrency)
 	if err != nil {
 		t.Fatalf("Balance after retry: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestHTTPWallet_ExhaustedRetriesError(t *testing.T) {
 		MaxRetries: 1,
 	})
 
-	_, err := w.Balance("any_player")
+	_, err := w.Balance("any_player", DefaultCurrency)
 	if err == nil {
 		t.Fatal("expected error after exhausted retries, got nil")
 	}
@@ -432,26 +432,26 @@ func TestMockRemoteWallet_FaultInjection(t *testing.T) {
 	})
 
 	// Normal first.
-	if err := w.Debit("fault_player", 100, "tx_fault_pre"); err != nil {
+	if err := w.Debit("fault_player", 100, DefaultCurrency, "tx_fault_pre"); err != nil {
 		t.Fatalf("pre-fault Debit: %v", err)
 	}
 
 	// 500 fault.
 	remote.SetFault(RemoteFaultServer500)
-	if _, err := w.Balance("fault_player"); err == nil {
+	if _, err := w.Balance("fault_player", DefaultCurrency); err == nil {
 		t.Fatal("expected error during 500 fault, got nil")
 	}
 
 	// Insufficient-funds fault.
 	remote.SetFault(RemoteFaultInsufficientFunds)
-	err := w.Debit("fault_player", 1, "tx_fault_insuf")
+	err := w.Debit("fault_player", 1, DefaultCurrency, "tx_fault_insuf")
 	if !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("expected ErrInsufficientFunds from fault, got %v", err)
 	}
 
 	// Clear fault — normal operation resumes.
 	remote.SetFault(RemoteFaultNone)
-	if _, err := w.Balance("fault_player"); err != nil {
+	if _, err := w.Balance("fault_player", DefaultCurrency); err != nil {
 		t.Fatalf("post-fault Balance: %v", err)
 	}
 }
@@ -475,7 +475,7 @@ func TestHTTPWallet_NoIdempotencyKeyWhenDisabled(t *testing.T) {
 		IdempotencyKeys: false,
 	})
 
-	if err := w.Debit("nokey_player", 50, "tx_nokey"); err != nil {
+	if err := w.Debit("nokey_player", 50, DefaultCurrency, "tx_nokey"); err != nil {
 		t.Fatalf("Debit: %v", err)
 	}
 	if capturedKey != "" {

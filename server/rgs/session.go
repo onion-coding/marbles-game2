@@ -62,6 +62,7 @@ var (
 type Bet struct {
 	BetID       string    // operator-supplied unique id, used as wallet txID
 	Amount      uint64
+	Currency    string    // ISO 4217 or crypto ticker; defaults to DefaultCurrency
 	PlayerID    string
 	PlacedAt    time.Time
 	MarbleIndex int       // -1 until the race starts
@@ -74,6 +75,7 @@ type SettlementOutcome struct {
 	BetID       string
 	PlayerID    string
 	Amount      uint64    // original stake
+	Currency    string    // currency of the bet and prize
 	Won         bool
 	PrizeAmount uint64    // 0 if !Won
 	WinnerIndex int       // marble that won (might or might not be ours)

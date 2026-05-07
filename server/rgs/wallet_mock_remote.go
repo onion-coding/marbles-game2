@@ -34,11 +34,17 @@ const (
 	RemoteFaultInsufficientFunds
 )
 
+// remoteWalletKey is the composite key used by MockRemoteWallet's balance map.
+type remoteWalletKey struct {
+	playerID string
+	currency string
+}
+
 // MockRemoteWallet is the in-memory server side. Start it with NewMockRemoteWallet
 // or attach its Handler to any *httptest.Server you create yourself.
 type MockRemoteWallet struct {
 	mu        sync.Mutex
-	balances  map[string]uint64
+	balances  map[remoteWalletKey]uint64
 	applied   map[string]int64 // txID → signed amount (negative=debit, positive=credit)
 	faultMode RemoteFaultMode
 
@@ -48,16 +54,16 @@ type MockRemoteWallet struct {
 }
 
 // NewMockRemoteWallet creates and starts an httptest.Server backed by a
-// MockRemoteWallet, pre-seeded with the given player balances (pass nil
-// for an empty ledger). Call Close() when done.
+// MockRemoteWallet, pre-seeded with the given player balances in
+// DefaultCurrency (pass nil for an empty ledger). Call Close() when done.
 func NewMockRemoteWallet(initial map[string]uint64) *MockRemoteWallet {
 	m := &MockRemoteWallet{
-		balances: make(map[string]uint64),
+		balances: make(map[remoteWalletKey]uint64),
 		applied:  make(map[string]int64),
 	}
 	if initial != nil {
 		for k, v := range initial {
-			m.balances[k] = v
+			m.balances[remoteWalletKey{k, DefaultCurrency}] = v
 		}
 	}
 	m.Server = httptest.NewServer(m.Handler())
@@ -80,20 +86,31 @@ func (m *MockRemoteWallet) URL() string {
 	return m.Server.URL
 }
 
-// SetBalance sets a player's balance directly (test helper — bypasses
-// debit/credit logic). Creates the player entry if it doesn't exist.
+// SetBalance sets a player's balance in DefaultCurrency directly (test
+// helper — bypasses debit/credit logic). Creates the player entry if it
+// doesn't exist. Mirrors MockWallet.SetBalance for drop-in compatibility.
 func (m *MockRemoteWallet) SetBalance(playerID string, amount uint64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.balances[playerID] = amount
+	m.SetBalanceCurrency(playerID, DefaultCurrency, amount)
 }
 
-// GetBalance returns the raw balance for a player. Returns 0,false if the
-// player doesn't exist.
-func (m *MockRemoteWallet) GetBalance(playerID string) (uint64, bool) {
+// SetBalanceCurrency sets a player's balance in the specified currency.
+func (m *MockRemoteWallet) SetBalanceCurrency(playerID, currency string, amount uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v, ok := m.balances[playerID]
+	m.balances[remoteWalletKey{playerID, NormalizeCurrency(currency)}] = amount
+}
+
+// GetBalance returns the raw balance for a player in DefaultCurrency.
+// Returns 0,false if the player doesn't exist.
+func (m *MockRemoteWallet) GetBalance(playerID string) (uint64, bool) {
+	return m.GetBalanceCurrency(playerID, DefaultCurrency)
+}
+
+// GetBalanceCurrency returns the raw balance for (player, currency).
+func (m *MockRemoteWallet) GetBalanceCurrency(playerID, currency string) (uint64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.balances[remoteWalletKey{playerID, NormalizeCurrency(currency)}]
 	return v, ok
 }
 
@@ -138,6 +155,7 @@ func remoteWriteError(w http.ResponseWriter, status int, msg string) {
 type remoteWalletReq struct {
 	PlayerID string `json:"player_id"`
 	Amount   uint64 `json:"amount"`
+	Currency string `json:"currency"`
 	TxID     string `json:"tx_id"`
 }
 
@@ -146,6 +164,15 @@ func decodeReq(r *http.Request, dst *remoteWalletReq) bool {
 		return false
 	}
 	return true
+}
+
+// effectiveCurrency returns the currency from the request, defaulting to
+// DefaultCurrency when the field is empty.
+func effectiveCurrency(req *remoteWalletReq) string {
+	if req.Currency == "" {
+		return DefaultCurrency
+	}
+	return NormalizeCurrency(req.Currency)
 }
 
 // ─── handlers ─────────────────────────────────────────────────────────────────
@@ -170,11 +197,14 @@ func (m *MockRemoteWallet) handleBalance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	cur := effectiveCurrency(&req)
+	key := remoteWalletKey{req.PlayerID, cur}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	bal, ok := m.balances[req.PlayerID]
+	bal, ok := m.balances[key]
 	if !ok {
-		remoteWriteError(w, http.StatusNotFound, fmt.Sprintf("unknown player %q", req.PlayerID))
+		remoteWriteError(w, http.StatusNotFound, fmt.Sprintf("unknown player %q in %s", req.PlayerID, cur))
 		return
 	}
 	remoteWriteJSON(w, http.StatusOK, map[string]uint64{"balance": bal})
@@ -212,12 +242,15 @@ func (m *MockRemoteWallet) handleDebit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cur := effectiveCurrency(&req)
+	key := remoteWalletKey{req.PlayerID, cur}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	bal, ok := m.balances[req.PlayerID]
+	bal, ok := m.balances[key]
 	if !ok {
-		remoteWriteError(w, http.StatusNotFound, fmt.Sprintf("unknown player %q", req.PlayerID))
+		remoteWriteError(w, http.StatusNotFound, fmt.Sprintf("unknown player %q in %s", req.PlayerID, cur))
 		return
 	}
 
@@ -228,21 +261,20 @@ func (m *MockRemoteWallet) handleDebit(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("tx_id %q reused for different operation", req.TxID))
 			return
 		}
-		// Idempotent replay — return 409 Conflict with current balance so
-		// the caller knows the operation already succeeded.
+		// Idempotent replay — return 409 Conflict with current balance.
 		remoteWriteJSON(w, http.StatusConflict, map[string]uint64{"balance": bal})
 		return
 	}
 
 	if bal < req.Amount {
 		remoteWriteError(w, http.StatusPaymentRequired,
-			fmt.Sprintf("insufficient funds: balance=%d wanted=%d", bal, req.Amount))
+			fmt.Sprintf("insufficient funds: balance=%d wanted=%d currency=%s", bal, req.Amount, cur))
 		return
 	}
 
-	m.balances[req.PlayerID] -= req.Amount
+	m.balances[key] -= req.Amount
 	m.applied[req.TxID] = -int64(req.Amount)
-	remoteWriteJSON(w, http.StatusOK, map[string]uint64{"balance": m.balances[req.PlayerID]})
+	remoteWriteJSON(w, http.StatusOK, map[string]uint64{"balance": m.balances[key]})
 }
 
 func (m *MockRemoteWallet) handleCredit(w http.ResponseWriter, r *http.Request) {
@@ -273,15 +305,15 @@ func (m *MockRemoteWallet) handleCredit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	cur := effectiveCurrency(&req)
+	key := remoteWalletKey{req.PlayerID, cur}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Credit creates the player account if it doesn't exist yet. This
-	// matches the "unknown player gets created on credit" contract case and
-	// mirrors what most operator wallets do (first-time credit = implicit
-	// account open).
-	if _, ok := m.balances[req.PlayerID]; !ok {
-		m.balances[req.PlayerID] = 0
+	// Credit creates the player account in this currency if it doesn't exist.
+	if _, ok := m.balances[key]; !ok {
+		m.balances[key] = 0
 	}
 
 	// Idempotency check.
@@ -292,11 +324,11 @@ func (m *MockRemoteWallet) handleCredit(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		// Idempotent replay.
-		remoteWriteJSON(w, http.StatusConflict, map[string]uint64{"balance": m.balances[req.PlayerID]})
+		remoteWriteJSON(w, http.StatusConflict, map[string]uint64{"balance": m.balances[key]})
 		return
 	}
 
-	m.balances[req.PlayerID] += req.Amount
+	m.balances[key] += req.Amount
 	m.applied[req.TxID] = int64(req.Amount)
-	remoteWriteJSON(w, http.StatusOK, map[string]uint64{"balance": m.balances[req.PlayerID]})
+	remoteWriteJSON(w, http.StatusOK, map[string]uint64{"balance": m.balances[key]})
 }

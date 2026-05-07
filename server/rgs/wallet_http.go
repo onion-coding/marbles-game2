@@ -95,6 +95,7 @@ func NewHTTPWallet(cfg HTTPWalletConfig) *HTTPWallet {
 type walletRequest struct {
 	PlayerID string `json:"player_id"`
 	Amount   uint64 `json:"amount,omitempty"`
+	Currency string `json:"currency,omitempty"`
 	TxID     string `json:"tx_id,omitempty"`
 }
 
@@ -111,11 +112,12 @@ type walletErrorResponse struct {
 }
 
 // Balance implements Wallet.
-func (w *HTTPWallet) Balance(playerID string) (uint64, error) {
+func (w *HTTPWallet) Balance(playerID, currency string) (uint64, error) {
 	if playerID == "" {
 		return 0, ErrUnknownPlayer
 	}
-	resp, err := w.call("POST", "/wallet/balance", "", walletRequest{PlayerID: playerID})
+	cur := NormalizeCurrency(currency)
+	resp, err := w.call("POST", "/wallet/balance", "", walletRequest{PlayerID: playerID, Currency: cur})
 	if err != nil {
 		return 0, err
 	}
@@ -123,7 +125,7 @@ func (w *HTTPWallet) Balance(playerID string) (uint64, error) {
 }
 
 // Debit implements Wallet.
-func (w *HTTPWallet) Debit(playerID string, amount uint64, txID string) error {
+func (w *HTTPWallet) Debit(playerID string, amount uint64, currency, txID string) error {
 	if playerID == "" {
 		return ErrUnknownPlayer
 	}
@@ -136,13 +138,14 @@ func (w *HTTPWallet) Debit(playerID string, amount uint64, txID string) error {
 	_, err := w.call("POST", "/wallet/debit", txID, walletRequest{
 		PlayerID: playerID,
 		Amount:   amount,
+		Currency: NormalizeCurrency(currency),
 		TxID:     txID,
 	})
 	return err
 }
 
 // Credit implements Wallet.
-func (w *HTTPWallet) Credit(playerID string, amount uint64, txID string) error {
+func (w *HTTPWallet) Credit(playerID string, amount uint64, currency, txID string) error {
 	if playerID == "" {
 		return ErrUnknownPlayer
 	}
@@ -155,10 +158,23 @@ func (w *HTTPWallet) Credit(playerID string, amount uint64, txID string) error {
 	_, err := w.call("POST", "/wallet/credit", txID, walletRequest{
 		PlayerID: playerID,
 		Amount:   amount,
+		Currency: NormalizeCurrency(currency),
 		TxID:     txID,
 	})
 	return err
 }
+
+// Snapshot implements Wallet. HTTPWallet is a pass-through client — it has
+// no local ledger to snapshot. Returns an empty map. Callers that need a
+// full ledger snapshot should query the operator wallet service directly.
+func (w *HTTPWallet) Snapshot() map[string]map[string]uint64 {
+	return map[string]map[string]uint64{}
+}
+
+// Restore implements Wallet. HTTPWallet is a pass-through client — it has
+// no local ledger to restore. This is a no-op; callers that need to restore
+// state should seed the operator wallet service directly.
+func (w *HTTPWallet) Restore(_ map[string]map[string]uint64) {}
 
 // call executes a single wallet RPC with retries and HMAC signing. txID is
 // the idempotency key (empty for Balance calls). The returned walletResponse

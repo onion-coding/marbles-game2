@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/onion-coding/marbles-game2/server/admin"
 	"github.com/onion-coding/marbles-game2/server/metrics"
 	"github.com/onion-coding/marbles-game2/server/middleware"
 	"github.com/onion-coding/marbles-game2/server/postgres"
@@ -56,9 +57,13 @@ func main() {
 		walletURL      = flag.String("wallet-url", envOr("RGSD_WALLET_URL", ""), "base URL for HTTP wallet, required when --wallet-mode=http (env: RGSD_WALLET_URL)")
 		walletHMAC     = flag.String("wallet-hmac-secret-hex", envOr("RGSD_WALLET_HMAC_SECRET", ""), "hex HMAC key for outbound wallet requests; empty = unsigned (env: RGSD_WALLET_HMAC_SECRET)")
 		walletRetries  = flag.Int("wallet-retries", envIntOr("RGSD_WALLET_RETRIES", 3), "max retries on transient wallet errors (env: RGSD_WALLET_RETRIES)")
-		walletIdemKeys = flag.Bool("wallet-idempotency-keys", true, "send Idempotency-Key header on debit/credit requests")
-		postgresDSN     = flag.String("postgres-dsn", envOr("RGSD_POSTGRES_DSN", ""), "Postgres DSN for durable session storage; empty = in-memory (env: RGSD_POSTGRES_DSN)")
-		postgresMigrate = flag.Bool("postgres-migrate", false, "run Postgres migrations then exit")
+		walletIdemKeys      = flag.Bool("wallet-idempotency-keys", true, "send Idempotency-Key header on debit/credit requests")
+		postgresDSN         = flag.String("postgres-dsn", envOr("RGSD_POSTGRES_DSN", ""), "Postgres DSN for durable session storage; empty = in-memory (env: RGSD_POSTGRES_DSN)")
+		postgresMigrate     = flag.Bool("postgres-migrate", false, "run Postgres migrations then exit")
+		defaultCurrency     = flag.String("default-currency", envOr("RGSD_DEFAULT_CURRENCY", rgs.DefaultCurrency), "default currency code used when none is specified (env: RGSD_DEFAULT_CURRENCY)")
+		supportedCurrencies = flag.String("supported-currencies", envOr("RGSD_SUPPORTED_CURRENCIES", "EUR,USD,GBP,BTC,ETH,USDT"), "comma-separated whitelist of accepted currency codes (env: RGSD_SUPPORTED_CURRENCIES)")
+		adminAddr       = flag.String("admin-addr", envOr("RGSD_ADMIN_ADDR", ":8091"), "admin panel listen address (env: RGSD_ADMIN_ADDR); separate from /v1/* so it can be firewalled")
+		adminHMAC       = flag.String("admin-hmac-secret-hex", envOr("RGSD_ADMIN_HMAC_SECRET", ""), "hex HMAC key for admin panel auth; empty = no auth (dev only, env: RGSD_ADMIN_HMAC_SECRET)")
 	)
 	flag.Parse()
 
@@ -150,17 +155,19 @@ func main() {
 		[]float64{1, 2, 5, 10, 20, 30, 60, 120})
 
 	mgr, err := rgs.NewManager(rgs.ManagerConfig{
-		Wallet:       &countingWallet{Wallet: walletImpl, accepted: betsTotal, rejected: betErrors},
-		Store:        store,
-		Sim:          instrumentedSim(sim.Run, roundsTotal, roundDuration),
-		GodotBin:     *godotBin,
-		ProjectPath:  *projectPath,
-		WorkRoot:     filepath.Join(*replayRoot, ".work"),
-		BuyIn:        *buyIn,
-		RTPBps:       uint32(*rtpBps),
-		MaxMarbles:   *marbles,
-		SimTimeout:   *simTimeout,
-		SessionStore: sessionStore,
+		Wallet:              &countingWallet{Wallet: walletImpl, accepted: betsTotal, rejected: betErrors},
+		Store:               store,
+		Sim:                 instrumentedSim(sim.Run, roundsTotal, roundDuration),
+		GodotBin:            *godotBin,
+		ProjectPath:         *projectPath,
+		WorkRoot:            filepath.Join(*replayRoot, ".work"),
+		BuyIn:               *buyIn,
+		RTPBps:              uint32(*rtpBps),
+		MaxMarbles:          *marbles,
+		SimTimeout:          *simTimeout,
+		SessionStore:        sessionStore,
+		DefaultCurrency:     *defaultCurrency,
+		SupportedCurrencies: strings.Split(*supportedCurrencies, ","),
 	})
 	if err != nil {
 		logger.Error("NewManager", "err", err)
@@ -201,6 +208,47 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// ── Admin panel — separate listener so it can be firewalled independently.
+	var adminAuthFunc admin.AuthFunc
+	if *adminHMAC != "" {
+		secret, err := hex.DecodeString(*adminHMAC)
+		if err != nil {
+			logger.Error("invalid admin-hmac-secret-hex", "err", err)
+			os.Exit(2)
+		}
+		adminAuthFunc = admin.HMACAuthFunc(secret)
+		logger.Info("rgsd: admin HMAC auth enabled")
+	} else {
+		logger.Warn("rgsd: admin HMAC auth disabled (no --admin-hmac-secret-hex). Bind to 127.0.0.1 in production.")
+	}
+	auditDataDir := filepath.Join(*replayRoot, "admin")
+	auditLog, err := admin.NewAuditLog(auditDataDir)
+	if err != nil {
+		logger.Error("admin: audit log init", "err", err)
+		os.Exit(1)
+	}
+	adminHandler, err := admin.NewHandler(admin.Config{
+		Manager:  mgr,
+		Wallet:   walletImpl,
+		Auth:     adminAuthFunc,
+		AuditLog: auditLog,
+	})
+	if err != nil {
+		logger.Error("admin: NewHandler", "err", err)
+		os.Exit(1)
+	}
+	adminSrv := &http.Server{
+		Addr:              *adminAddr,
+		Handler:           adminHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		logger.Info("rgsd: admin panel listening", "addr", *adminAddr)
+		if err := adminSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("rgsd: admin serve", "err", err)
+		}
+	}()
+
 	// Graceful shutdown: wait for SIGINT/SIGTERM, then give in-flight
 	// requests up to 20s to drain.
 	shutdownCh := make(chan os.Signal, 1)
@@ -211,6 +259,8 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
+		_ = adminSrv.Shutdown(ctx)
+		_ = auditLog.Close()
 	}()
 
 	logger.Info("rgsd: listening", "addr", *addr, "auth", *hmacSecret != "")
@@ -229,8 +279,8 @@ type countingWallet struct {
 	rejected *metrics.Counter
 }
 
-func (c *countingWallet) Debit(playerID string, amount uint64, txID string) error {
-	if err := c.Wallet.Debit(playerID, amount, txID); err != nil {
+func (c *countingWallet) Debit(playerID string, amount uint64, currency, txID string) error {
+	if err := c.Wallet.Debit(playerID, amount, currency, txID); err != nil {
 		c.rejected.Inc()
 		return err
 	}
