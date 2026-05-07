@@ -44,3 +44,4 @@ ops/data/
 
 # Per-host Godot install path overrides
 .makerc
+scripts/stress/stress-test.exe
