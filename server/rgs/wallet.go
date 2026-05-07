@@ -95,6 +95,15 @@ func (w *MockWallet) SetBalance(playerID string, amount uint64) {
 func (w *MockWallet) Debit(playerID string, amount uint64, txID string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if playerID == "" {
+		return fmt.Errorf("%w: empty playerID", ErrUnknownPlayer)
+	}
+	if amount == 0 {
+		return fmt.Errorf("rgs: MockWallet.Debit: amount must be > 0")
+	}
+	if txID == "" {
+		return fmt.Errorf("rgs: MockWallet.Debit: txID must be non-empty")
+	}
 	if _, ok := w.balances[playerID]; !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownPlayer, playerID)
 	}
@@ -117,8 +126,19 @@ func (w *MockWallet) Debit(playerID string, amount uint64, txID string) error {
 func (w *MockWallet) Credit(playerID string, amount uint64, txID string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if playerID == "" {
+		return fmt.Errorf("%w: empty playerID", ErrUnknownPlayer)
+	}
+	if amount == 0 {
+		return fmt.Errorf("rgs: MockWallet.Credit: amount must be > 0")
+	}
+	if txID == "" {
+		return fmt.Errorf("rgs: MockWallet.Credit: txID must be non-empty")
+	}
+	// Auto-create account on first credit — mirrors what operator wallets do
+	// (a credit that arrives before any debit opens the account implicitly).
 	if _, ok := w.balances[playerID]; !ok {
-		return fmt.Errorf("%w: %q", ErrUnknownPlayer, playerID)
+		w.balances[playerID] = 0
 	}
 	if prev, ok := w.applied[txID]; ok {
 		if prev != int64(amount) {
@@ -134,6 +154,9 @@ func (w *MockWallet) Credit(playerID string, amount uint64, txID string) error {
 func (w *MockWallet) Balance(playerID string) (uint64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if playerID == "" {
+		return 0, fmt.Errorf("%w: empty playerID", ErrUnknownPlayer)
+	}
 	bal, ok := w.balances[playerID]
 	if !ok {
 		return 0, fmt.Errorf("%w: %q", ErrUnknownPlayer, playerID)

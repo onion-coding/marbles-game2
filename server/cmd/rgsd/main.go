@@ -41,16 +41,21 @@ import (
 
 func main() {
 	var (
-		godotBin    = flag.String("godot-bin", envOr("RGSD_GODOT_BIN", ""), "absolute path to Godot executable (env: RGSD_GODOT_BIN)")
-		projectPath = flag.String("project-path", envOr("RGSD_PROJECT_PATH", ""), "absolute path to game/ project dir (env: RGSD_PROJECT_PATH)")
-		replayRoot  = flag.String("replay-root", envOr("RGSD_REPLAY_ROOT", ""), "where to persist per-round audit entries (env: RGSD_REPLAY_ROOT)")
-		addr        = flag.String("addr", envOr("RGSD_ADDR", ":8090"), "HTTP listen address (env: RGSD_ADDR)")
-		rtpBps      = flag.Uint("rtp-bps", uint(envIntOr("RGSD_RTP_BPS", 9500)), "configured return-to-player in basis points")
-		buyIn       = flag.Uint64("buy-in", uint64(envIntOr("RGSD_BUY_IN", 100)), "stake per filled seat")
-		marbles     = flag.Int("marbles", envIntOr("RGSD_MARBLES", 30), "marbles per round")
-		simTimeout  = flag.Duration("sim-timeout", 60*time.Second, "hard cap per Godot subprocess")
-		seedAlice   = flag.Uint64("seed-alice", 0, "if set, seed an in-memory wallet for player 'alice' for demo runs")
-		hmacSecret  = flag.String("hmac-secret-hex", envOr("RGSD_HMAC_SECRET", ""), "hex-encoded HMAC key for /v1/* request signing; empty = auth disabled (dev only)")
+		godotBin       = flag.String("godot-bin", envOr("RGSD_GODOT_BIN", ""), "absolute path to Godot executable (env: RGSD_GODOT_BIN)")
+		projectPath    = flag.String("project-path", envOr("RGSD_PROJECT_PATH", ""), "absolute path to game/ project dir (env: RGSD_PROJECT_PATH)")
+		replayRoot     = flag.String("replay-root", envOr("RGSD_REPLAY_ROOT", ""), "where to persist per-round audit entries (env: RGSD_REPLAY_ROOT)")
+		addr           = flag.String("addr", envOr("RGSD_ADDR", ":8090"), "HTTP listen address (env: RGSD_ADDR)")
+		rtpBps         = flag.Uint("rtp-bps", uint(envIntOr("RGSD_RTP_BPS", 9500)), "configured return-to-player in basis points")
+		buyIn          = flag.Uint64("buy-in", uint64(envIntOr("RGSD_BUY_IN", 100)), "stake per filled seat")
+		marbles        = flag.Int("marbles", envIntOr("RGSD_MARBLES", 30), "marbles per round")
+		simTimeout     = flag.Duration("sim-timeout", 60*time.Second, "hard cap per Godot subprocess")
+		seedAlice      = flag.Uint64("seed-alice", 0, "if set, seed an in-memory wallet for player 'alice' for demo runs")
+		hmacSecret     = flag.String("hmac-secret-hex", envOr("RGSD_HMAC_SECRET", ""), "hex-encoded HMAC key for /v1/* request signing; empty = auth disabled (dev only)")
+		walletMode     = flag.String("wallet-mode", envOr("RGSD_WALLET_MODE", "mock"), "wallet backend: mock (default) or http (env: RGSD_WALLET_MODE)")
+		walletURL      = flag.String("wallet-url", envOr("RGSD_WALLET_URL", ""), "base URL for HTTP wallet, required when --wallet-mode=http (env: RGSD_WALLET_URL)")
+		walletHMAC     = flag.String("wallet-hmac-secret-hex", envOr("RGSD_WALLET_HMAC_SECRET", ""), "hex HMAC key for outbound wallet requests; empty = unsigned (env: RGSD_WALLET_HMAC_SECRET)")
+		walletRetries  = flag.Int("wallet-retries", envIntOr("RGSD_WALLET_RETRIES", 3), "max retries on transient wallet errors (env: RGSD_WALLET_RETRIES)")
+		walletIdemKeys = flag.Bool("wallet-idempotency-keys", true, "send Idempotency-Key header on debit/credit requests")
 	)
 	flag.Parse()
 
@@ -67,10 +72,41 @@ func main() {
 		logger.Error("replay.New", "err", err)
 		os.Exit(1)
 	}
-	wallet := rgs.NewMockWallet()
-	if *seedAlice > 0 {
-		wallet.SetBalance("alice", *seedAlice)
-		logger.Info("rgsd: seeded MockWallet", "player", "alice", "balance", *seedAlice)
+	// Build the wallet client. Default is the in-process MockWallet (demo /
+	// dev). Pass --wallet-mode=http + --wallet-url=<base> for a real operator
+	// wallet that speaks the generic REST protocol (see docs/rgs-integration.md
+	// §Wallet integration).
+	var walletImpl rgs.Wallet
+	switch *walletMode {
+	case "http":
+		if *walletURL == "" {
+			logger.Error("rgsd: --wallet-url is required when --wallet-mode=http")
+			os.Exit(2)
+		}
+		var hmacKey []byte
+		if *walletHMAC != "" {
+			var err error
+			hmacKey, err = hex.DecodeString(*walletHMAC)
+			if err != nil {
+				logger.Error("rgsd: invalid --wallet-hmac-secret-hex", "err", err)
+				os.Exit(2)
+			}
+		}
+		walletImpl = rgs.NewHTTPWallet(rgs.HTTPWalletConfig{
+			BaseURL:         *walletURL,
+			HMACSecret:      hmacKey,
+			MaxRetries:      *walletRetries,
+			IdempotencyKeys: *walletIdemKeys,
+		})
+		logger.Info("rgsd: wallet mode http", "url", *walletURL,
+			"retries", *walletRetries, "idempotency_keys", *walletIdemKeys)
+	default: // "mock"
+		mock := rgs.NewMockWallet()
+		if *seedAlice > 0 {
+			mock.SetBalance("alice", *seedAlice)
+			logger.Info("rgsd: seeded MockWallet", "player", "alice", "balance", *seedAlice)
+		}
+		walletImpl = mock
 	}
 
 	roundsTotal := metrics.NewCounter("rgsd_rounds_total", "rounds run by this rgsd")
@@ -81,7 +117,7 @@ func main() {
 		[]float64{1, 2, 5, 10, 20, 30, 60, 120})
 
 	mgr, err := rgs.NewManager(rgs.ManagerConfig{
-		Wallet:      &countingWallet{Wallet: wallet, accepted: betsTotal, rejected: betErrors},
+		Wallet:      &countingWallet{Wallet: walletImpl, accepted: betsTotal, rejected: betErrors},
 		Store:       store,
 		Sim:         instrumentedSim(sim.Run, roundsTotal, roundDuration),
 		GodotBin:    *godotBin,

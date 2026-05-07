@@ -286,7 +286,9 @@ The player ID is a UUID v4 persisted to `user://player_id.txt` on first
 run and reused across sessions, so the same wallet balance follows the
 player across restarts and auto-restart loops alike.
 
-## Wallet contract
+## Wallet integration
+
+### Go interface
 
 The [Wallet](../server/rgs/wallet.go) interface is what `rgsd` calls into
 the operator. Three methods:
@@ -298,6 +300,108 @@ type Wallet interface {
     Balance(playerID string) (uint64, error)
 }
 ```
+
+### Generic REST protocol
+
+`HTTPWallet` (`server/rgs/wallet_http.go`) implements the interface by
+speaking a simple REST protocol. Any operator wallet service that exposes
+these three endpoints is a drop-in replacement:
+
+| Method | Path              | Request body                          | Success body        |
+|--------|-------------------|---------------------------------------|---------------------|
+| POST   | `/wallet/balance` | `{"player_id":"<id>"}`                | `{"balance":<uint>}`|
+| POST   | `/wallet/debit`   | `{"player_id":"<id>","amount":<uint>,"tx_id":"<id>"}` | `{"balance":<uint>}`|
+| POST   | `/wallet/credit`  | `{"player_id":"<id>","amount":<uint>,"tx_id":"<id>"}` | `{"balance":<uint>}`|
+
+Error responses must be JSON `{"error":"<message>"}` with the appropriate
+HTTP status:
+
+| Status | Meaning                                    |
+|--------|--------------------------------------------|
+| 200    | Success                                    |
+| 402    | Insufficient funds (maps to `ErrInsufficientFunds`) |
+| 404    | Unknown player (maps to `ErrUnknownPlayer`) |
+| 409    | Idempotent replay acknowledged — treated as success |
+| 5xx    | Transient error — retried with exponential backoff |
+
+### HMAC request signing
+
+When `--wallet-hmac-secret-hex` is provided, every outbound request
+carries two headers:
+
+```
+X-Timestamp: <unix seconds, decimal>
+X-Signature: hex(HMAC-SHA256(method + "\n" + path + "\n" + timestamp + "\n" + body))
+```
+
+This is identical to the server-side middleware in `server/middleware/`
+so operator services that already verify incoming rgsd requests can reuse
+the same verification logic for wallet callbacks without any adaptor code.
+
+### Idempotency contract
+
+`tx_id` is provided by `rgs.Manager` for every Debit and Credit call.
+Wallet implementations must:
+
+- On a duplicate `tx_id` carrying the **same amount and direction**:
+  return 200 or 409 without modifying the balance.
+- On a duplicate `tx_id` with a **different amount or direction**: return
+  4xx — this signals a programming error, not a retry.
+
+When `--wallet-idempotency-keys` is enabled (default true), `HTTPWallet`
+also sends `Idempotency-Key: <tx_id>` so HTTP-layer deduplication at the
+operator's load balancer fires before the wallet logic is even reached.
+
+### Retry policy
+
+`HTTPWallet` retries on 5xx and network errors with exponential backoff:
+100 ms, 200 ms, 400 ms, … up to `--wallet-retries` additional attempts
+(default 3, so 4 total). 4xx errors are never retried — they signal a
+client-side mistake that won't resolve on retry.
+
+### Configuring rgsd for a real wallet
+
+```sh
+rgsd \
+  --wallet-mode=http \
+  --wallet-url=https://wallet.operator.example.com \
+  --wallet-hmac-secret-hex=<64 hex chars> \
+  --wallet-retries=3 \
+  --wallet-idempotency-keys=true \
+  ...
+```
+
+Environment variable equivalents: `RGSD_WALLET_MODE`, `RGSD_WALLET_URL`,
+`RGSD_WALLET_HMAC_SECRET`, `RGSD_WALLET_RETRIES`.
+
+### How to integrate with operator X (template)
+
+Replace the fields below with provider-specific values once the
+operator's wallet spec is confirmed:
+
+**SoftSwiss / BGaming**
+- Wallet base URL: provided by SoftSwiss technical integration docs.
+- Auth: SoftSwiss uses MD5-based request signing — implement a custom
+  `Wallet` struct rather than using `HTTPWallet` directly; the generic
+  REST shape above may not match their envelope. Use `runWalletContractSuite`
+  from `wallet_http_test.go` to validate your implementation.
+
+**EveryMatrix / CasinoEngine**
+- Wallet base URL: per-operator subdomain from EveryMatrix integration guide.
+- Auth: HMAC-SHA256 with a shared secret — compatible with `HTTPWallet`'s
+  HMAC mode if the message format aligns; verify with their sandbox.
+
+**Spike Aggregator / GAMP**
+- Integration is aggregator-mediated; the aggregator exposes a normalised
+  wallet API. Confirm endpoint shape with the aggregator's technical team,
+  then verify with `runWalletContractSuite`.
+
+In all cases the contract test suite in `server/rgs/wallet_http_test.go`
+provides the definitive conformance checklist — any Wallet implementation
+that passes `runWalletContractSuite` is drop-in compatible with
+`rgs.Manager`.
+
+### Wallet contract (behaviour guarantees)
 
 Key behaviour:
 
@@ -312,12 +416,15 @@ Key behaviour:
   code; the operator labels the units in their own UI.
 - **Concurrency.** Implementations must be safe for concurrent calls
   (Manager may settle N bets in parallel after a round completes).
+- **Credit auto-creates.** `Credit` on an unknown player creates the
+  account implicitly (balance = credited amount). This mirrors standard
+  operator wallet behaviour and is required by the contract suite.
 
-Errors classified as transient by Manager (anything not `ErrInsufficient
-Funds` or `ErrUnknownPlayer`) cause the bet to stay in `pending` state
-so the operator can retry by calling the wallet directly. (Pending-state
-recovery is M9.x work — currently the manager surfaces the error and
-the bet outcome is lost; deployment-blocker, not MVP-blocker.)
+Errors classified as transient by Manager (anything not `ErrInsufficientFunds`
+or `ErrUnknownPlayer`) cause the bet to stay in `pending` state so the
+operator can retry by calling the wallet directly. (Pending-state recovery
+is M9.x work — currently the manager surfaces the error and the bet
+outcome is lost; deployment-blocker, not MVP-blocker.)
 
 ## Round-vs-bet semantics
 
@@ -366,6 +473,10 @@ side to verify a round's wallet flow against the audit trail.
 
 ## Open items
 
+- **Real wallet client (done — M23).** `HTTPWallet` in
+  `server/rgs/wallet_http.go` provides the generic REST client.
+  Provider-specific envelope adapters (SoftSwiss, EveryMatrix) are still
+  needed; see "How to integrate with operator X" above.
 - **Pending-state recovery.** Wallet errors on credit currently bubble
   up; the bet result is lost. Add a `pending_credits` table in the
   manager so the operator can call `/v1/sessions/{id}/reconcile` to
@@ -374,8 +485,6 @@ side to verify a round's wallet flow against the audit trail.
   needs N rounds in flight (one per "lobby" / table) with isolated
   per-round state. Manager already takes a context.Context for this;
   the next step is a per-round goroutine pool.
-- **Auth.** No request signing yet. Add HMAC + timestamp-based replay
-  protection before exposing rgsd publicly.
 - **WebSocket round events.** Operators want push notifications when a
   round starts / settles instead of polling `/v1/sessions/{id}`. Reuse
   the existing live-stream WS infra in `server/stream/`.
