@@ -182,3 +182,51 @@ func (s *Session) Snapshot() (state SessionState, bet *Bet, last *SettlementOutc
 	}
 	return
 }
+
+// NewSessionRaw constructs a Session with explicit field values. It is
+// intended for use by storage back-ends (e.g. the postgres package) that
+// need to reconstruct a Session from persisted data without going through
+// the normal state-machine transitions. Regular callers should use
+// Manager.OpenSession instead.
+//
+// The returned session's bet and LastResult are both nil; call
+// AttachBetRaw after construction if the stored row has an active bet.
+func NewSessionRaw(id, playerID string, state SessionState, openedAt, updatedAt time.Time) *Session {
+	return &Session{
+		ID:        id,
+		PlayerID:  playerID,
+		State:     state,
+		OpenedAt:  openedAt,
+		UpdatedAt: updatedAt,
+	}
+}
+
+// AttachBetRaw directly sets the Bet field on a session. It is the companion
+// to NewSessionRaw for storage back-ends: after reconstructing a session from
+// a database row, call this to restore an in-progress bet without triggering
+// state-machine validation. The session must not be shared across goroutines
+// while this is called (i.e. call it before handing the session to the
+// Manager's in-memory map or Postgres store).
+func AttachBetRaw(s *Session, bet Bet) {
+	s.Bet = &bet
+}
+
+// rollbackBet undoes a PlaceBet call that succeeded in-memory but whose
+// subsequent persist to the durable store failed. It resets the session
+// back to OPEN/SETTLED (whichever is appropriate given the cleared bet),
+// mirroring the inverse of PlaceBet's state transition. It is intentionally
+// unexported — only Manager.PlaceBet should call it.
+func (s *Session) rollbackBet() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// After PlaceBet the state is BET. Revert to OPEN; if LastResult is
+	// populated the session had previously settled, so use SETTLED instead.
+	s.Bet = nil
+	if s.LastResult != nil {
+		s.State = SessionSettled
+	} else {
+		s.State = SessionOpen
+	}
+	s.UpdatedAt = time.Now()
+	return nil
+}

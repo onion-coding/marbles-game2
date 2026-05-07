@@ -18,20 +18,37 @@ import (
 	"github.com/onion-coding/marbles-game2/server/sim"
 )
 
+// SessionStorer is the interface the Manager uses to persist sessions. It is
+// satisfied by *postgres.SessionStore (durable) and by the in-memory map
+// adapter (inMemorySessionStore, below) so the Manager never imports the
+// postgres package directly — callers wire the concrete implementation.
+type SessionStorer interface {
+	Create(ctx context.Context, sess *Session) error
+	Get(ctx context.Context, id string) (*Session, error)
+	Update(ctx context.Context, sess *Session) error
+	Delete(ctx context.Context, id string) error
+	ListByPlayer(ctx context.Context, playerID string) ([]*Session, error)
+}
+
 // ManagerConfig captures the wiring needed to actually run rounds. All
 // fields are mandatory unless noted.
 type ManagerConfig struct {
-	Wallet      Wallet         // operator wallet client
-	Store       *replay.Store  // audit-trail destination for completed rounds
-	Sim         SimRunner      // headless Godot invoker (or a fake in tests)
-	GodotBin    string         // injected into sim.Request — empty if Sim closure handles it
-	ProjectPath string         // injected into sim.Request — empty if Sim closure handles it
-	WorkRoot    string         // scratch dir for per-round spec / status files
-	BuyIn       uint64         // mock per-marble stake when filling unbet seats
-	RTPBps      uint32         // configured RTP basis points (e.g. 9500)
-	MaxMarbles  int            // marbles per round (typ. 30)
-	SimTimeout  time.Duration  // hard cap per Godot subprocess
-	TrackPool   []uint8        // selectable track IDs; mirror Godot's TrackRegistry.SELECTABLE
+	Wallet       Wallet         // operator wallet client
+	Store        *replay.Store  // audit-trail destination for completed rounds
+	Sim          SimRunner      // headless Godot invoker (or a fake in tests)
+	GodotBin     string         // injected into sim.Request — empty if Sim closure handles it
+	ProjectPath  string         // injected into sim.Request — empty if Sim closure handles it
+	WorkRoot     string         // scratch dir for per-round spec / status files
+	BuyIn        uint64         // mock per-marble stake when filling unbet seats
+	RTPBps       uint32         // configured RTP basis points (e.g. 9500)
+	MaxMarbles   int            // marbles per round (typ. 30)
+	SimTimeout   time.Duration  // hard cap per Godot subprocess
+	TrackPool    []uint8        // selectable track IDs; mirror Godot's TrackRegistry.SELECTABLE
+	// SessionStore is optional. When non-nil, sessions are persisted to the
+	// provided store (e.g. *postgres.SessionStore) so they survive restarts.
+	// When nil (the default), the Manager falls back to its legacy in-memory
+	// map — identical behaviour to before this field existed.
+	SessionStore SessionStorer
 }
 
 // SimRunner is the surface rgs needs from the sim package — small enough
@@ -103,10 +120,11 @@ type Manager struct {
 	cfg ManagerConfig
 
 	mu            sync.Mutex
-	sessions      map[string]*Session
-	pending       []*Session    // sessions whose Bet is queued for the next round, in placement order
-	prevTrack     int           // last track_id used, threaded for the no-back-to-back selector
-	pendingRounds []*pendingRound // pre-minted round specs with their round-level bets, FIFO
+	sessions      map[string]*Session    // in-memory cache; also the canonical store when cfg.SessionStore == nil
+	sessionStore  SessionStorer          // durable back-end; nil = legacy in-memory only
+	pending       []*Session             // sessions whose Bet is queued for the next round, in placement order
+	prevTrack     int                    // last track_id used, threaded for the no-back-to-back selector
+	pendingRounds []*pendingRound        // pre-minted round specs with their round-level bets, FIFO
 	roundBets     map[uint64][]*RoundBet // round_id → all settled+pending bets (for GET queries)
 }
 
@@ -133,19 +151,31 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		// game/tracks/track_registry.gd.
 		cfg.TrackPool = []uint8{1, 2, 3, 4, 5, 6}
 	}
+	// m.sessions is always the live-pointer cache (used by RunNextRound to
+	// hold *Session pointers across the race). When no external SessionStore
+	// is configured, the inMemorySessionStore wraps the same map so we have
+	// exactly one authoritative copy of each session.
+	cache := map[string]*Session{}
+	var store SessionStorer
+	if cfg.SessionStore != nil {
+		store = cfg.SessionStore
+	} else {
+		store = &inMemorySessionStore{m: cache}
+	}
 	return &Manager{
-		cfg:       cfg,
-		sessions:  map[string]*Session{},
-		prevTrack: -1,
-		roundBets: map[uint64][]*RoundBet{},
+		cfg:          cfg,
+		sessions:     cache,
+		sessionStore: store,
+		prevTrack:    -1,
+		roundBets:    map[uint64][]*RoundBet{},
 	}, nil
 }
 
 // OpenSession creates a session for `playerID`. Does NOT touch the wallet
 // — opening a session is free; the player only pays when they place a bet.
+// When a durable SessionStorer is configured, the new session is also
+// persisted there so it survives a restart.
 func (m *Manager) OpenSession(playerID string) (*Session, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if playerID == "" {
 		return nil, fmt.Errorf("rgs: empty playerID")
 	}
@@ -158,25 +188,49 @@ func (m *Manager) OpenSession(playerID string) (*Session, error) {
 		OpenedAt:  now,
 		UpdatedAt: now,
 	}
+	// Persist to the durable store first (if configured) so we never have
+	// a session in memory that failed to land in Postgres.
+	if err := m.sessionStore.Create(context.Background(), s); err != nil {
+		return nil, fmt.Errorf("rgs: OpenSession persist: %w", err)
+	}
+	m.mu.Lock()
 	m.sessions[id] = s
+	m.mu.Unlock()
 	return s, nil
 }
 
-// Session looks up a session by id.
+// Session looks up a session by id. The in-memory map is checked first
+// (always populated for sessions opened in this process lifetime). If the
+// session is absent from the in-memory cache AND a durable store is
+// configured, the store is queried — this covers the restart-recovery case
+// where a Postgres-backed session was created before the last restart.
 func (m *Manager) Session(id string) (*Session, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
-	return s, ok
+	m.mu.Unlock()
+	if ok {
+		return s, true
+	}
+	// Cache miss: try the durable store.
+	fetched, err := m.sessionStore.Get(context.Background(), id)
+	if err != nil {
+		// ErrNotFound or any Postgres error — treat as "not found" so the
+		// caller gets the same bool=false semantics as before.
+		return nil, false
+	}
+	// Re-populate the in-memory cache so subsequent lookups are fast.
+	m.mu.Lock()
+	m.sessions[id] = fetched
+	m.mu.Unlock()
+	return fetched, true
 }
 
 // PlaceBet debits the player's wallet, then queues the session's bet for
 // the next round. The bet is held atomically: if the wallet debit fails
-// the session state is untouched.
+// the session state is untouched. When a durable SessionStorer is
+// configured the updated session is also written through to it.
 func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
-	m.mu.Lock()
-	s, ok := m.sessions[sessionID]
-	m.mu.Unlock()
+	s, ok := m.Session(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("rgs: unknown session %q", sessionID)
 	}
@@ -199,6 +253,15 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64) (*Bet, error) {
 		// independent txIDs so retry is safe.
 		_ = m.cfg.Wallet.Credit(s.PlayerID, amount, betID+":refund")
 		return nil, fmt.Errorf("rgs: session refused bet: %w", err)
+	}
+	// Persist the state change (BET + bet_data) to the durable store.
+	if err := m.sessionStore.Update(context.Background(), s); err != nil {
+		// Roll back the in-memory state change and refund the wallet.
+		// The session goes back to its pre-bet state so the next call
+		// can retry cleanly.
+		_ = s.rollbackBet()
+		_ = m.cfg.Wallet.Credit(s.PlayerID, amount, betID+":refund")
+		return nil, fmt.Errorf("rgs: PlaceBet persist: %w", err)
 	}
 	m.mu.Lock()
 	m.pending = append(m.pending, s)
@@ -758,14 +821,19 @@ func (m *Manager) findPendingRound(roundID uint64) *pendingRound {
 
 // CloseSession marks a session terminal. Reject when there's an unsettled
 // bet — the caller must wait for the next RunNextRound to settle it.
+// When a durable SessionStorer is configured the closed state is persisted.
 func (m *Manager) CloseSession(sessionID string) error {
-	m.mu.Lock()
-	s, ok := m.sessions[sessionID]
-	m.mu.Unlock()
+	s, ok := m.Session(sessionID)
 	if !ok {
 		return fmt.Errorf("rgs: unknown session %q", sessionID)
 	}
-	return s.Close()
+	if err := s.Close(); err != nil {
+		return err
+	}
+	if err := m.sessionStore.Update(context.Background(), s); err != nil {
+		return fmt.Errorf("rgs: CloseSession persist: %w", err)
+	}
+	return nil
 }
 
 // selectTrack mirrors cmd/roundd/main.go's policy. Kept identical so a
@@ -792,4 +860,67 @@ func newID(prefix string) string {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	return prefix + hex.EncodeToString(b[:])
+}
+
+// ── inMemorySessionStore ─────────────────────────────────────────────────────
+//
+// inMemorySessionStore is the SessionStorer used when no Postgres DSN is
+// provided. It keeps sessions in a map[string]*Session guarded by a mutex.
+// It satisfies the same interface as *postgres.SessionStore so the Manager
+// never needs to know which backend is active.
+type inMemorySessionStore struct {
+	mu sync.RWMutex
+	m  map[string]*Session
+}
+
+func (s *inMemorySessionStore) Create(_ context.Context, sess *Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.m[sess.ID]; exists {
+		return fmt.Errorf("rgs: inMemorySessionStore: session %q already exists", sess.ID)
+	}
+	s.m[sess.ID] = sess
+	return nil
+}
+
+func (s *inMemorySessionStore) Get(_ context.Context, id string) (*Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sess, ok := s.m[id]
+	if !ok {
+		return nil, fmt.Errorf("rgs: inMemorySessionStore: session %q not found", id)
+	}
+	return sess, nil
+}
+
+func (s *inMemorySessionStore) Update(_ context.Context, sess *Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.m[sess.ID]; !ok {
+		return fmt.Errorf("rgs: inMemorySessionStore: session %q not found", sess.ID)
+	}
+	s.m[sess.ID] = sess
+	return nil
+}
+
+func (s *inMemorySessionStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, id)
+	return nil
+}
+
+func (s *inMemorySessionStore) ListByPlayer(_ context.Context, playerID string) ([]*Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Session
+	for _, sess := range s.m {
+		if sess.PlayerID == playerID {
+			out = append(out, sess)
+		}
+	}
+	if out == nil {
+		out = []*Session{}
+	}
+	return out, nil
 }

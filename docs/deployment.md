@@ -37,6 +37,8 @@ work without a flag soup at startup:
 | `--sim-timeout`     | —                     | `60s`   | hard cap per Godot subprocess                       |
 | `--hmac-secret-hex` | `RGSD_HMAC_SECRET`    | —       | hex-encoded HMAC key; **empty = auth off (dev)**    |
 | `--seed-alice`      | —                     | `0`     | seed MockWallet's `alice` for demo runs             |
+| `--postgres-dsn`    | `RGSD_POSTGRES_DSN`   | —       | Postgres DSN for durable session storage; empty = in-memory |
+| `--postgres-migrate`| —                     | `false` | apply DB migrations then exit (run before first start) |
 
 A startup with auth disabled emits a `WARN` log line every boot — that's
 intentional, so a broken deploy doesn't quietly run with no auth.
@@ -131,6 +133,71 @@ credited. M10.x work to fix:
   + retry the round on startup.
 - Move replay storage off the filesystem (see below).
 
+## Postgres setup
+
+Session state is persisted to Postgres when `--postgres-dsn` (or
+`RGSD_POSTGRES_DSN`) is set. Without it `rgsd` falls back to the
+legacy in-memory map — identical behaviour to before, suitable for
+demos and CI runs that don't have a DB available.
+
+### Schema
+
+The schema lives in `server/postgres/migrations/` and is embedded in
+the binary. Apply it once before (or on) first startup:
+
+```bash
+# Option A: dedicated migrate-and-exit run
+rgsd --postgres-dsn "$DSN" --postgres-migrate
+
+# Option B: docker-compose init container or entrypoint script
+docker run --rm marbles-game/rgsd:dev \
+  --postgres-dsn "postgres://rgsd:rgsd@postgres/rgsd?sslmode=disable" \
+  --postgres-migrate
+```
+
+`RunMigrations` is idempotent — every statement uses `CREATE … IF NOT
+EXISTS` — so re-running on an already-migrated database is a no-op.
+
+### Local development
+
+```bash
+# 1. Start Postgres (use the compose stack or a one-liner):
+docker run --rm -p 5432:5432 \
+  -e POSTGRES_USER=rgsd -e POSTGRES_PASSWORD=rgsd -e POSTGRES_DB=rgsd \
+  postgres:16-alpine
+
+# 2. Apply migrations:
+cd server
+go run ./cmd/rgsd \
+  --postgres-dsn "postgres://rgsd:rgsd@localhost:5432/rgsd?sslmode=disable" \
+  --postgres-migrate
+
+# 3. Start rgsd with Postgres session storage:
+go run ./cmd/rgsd \
+  --postgres-dsn "postgres://rgsd:rgsd@localhost:5432/rgsd?sslmode=disable" \
+  --godot-bin /path/to/godot --project-path /path/to/game \
+  --replay-root /tmp/replays
+```
+
+### Running the Postgres integration tests
+
+```bash
+export POSTGRES_TEST_DSN="postgres://rgsd:rgsd@localhost:5432/rgsd?sslmode=disable"
+go test ./server/postgres/... -v -race
+```
+
+If `POSTGRES_TEST_DSN` is not set the tests skip automatically so
+`go test ./...` stays green in CI without a database.
+
+### docker-compose
+
+The `postgres:16-alpine` service is already present in
+`ops/docker-compose.yaml`. The `rgsd` service now receives
+`RGSD_POSTGRES_DSN` automatically. The default credentials are
+`rgsd / rgsd / rgsd` (user / password / database); override via
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` env vars in a
+`.env` file at the repo root.
+
 ## Open operational items
 
 The MVP gets you to "could be deployed for an internal dogfood / closed
@@ -147,8 +214,10 @@ beta". To take real money these still need work:
 3. **Multi-round concurrency.** `Manager.RunNextRound` is serial. A real
    deployment runs lobbies in parallel — one Goroutine per active
    round_id with isolated state.
-4. **Postgres for sessions / bets.** Currently in-memory; a process
-   restart loses session state and any pending bets get orphaned.
+4. **Postgres for sessions (done — M24).** `--postgres-dsn` wires a
+   durable `SessionStore`; sessions survive restarts. Round-bet
+   persistence (`pendingRounds` / `roundBets`) is still in-memory and
+   remains an open item.
 5. **Round scheduler.** `/v1/rounds/run` is currently the only way to
    advance a round — fine for demos, useless for a 24/7 lobby. Add a
    ticker that runs rounds at a fixed cadence + opens new sessions

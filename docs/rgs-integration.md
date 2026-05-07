@@ -488,6 +488,12 @@ side to verify a round's wallet flow against the audit trail.
 - **WebSocket round events.** Operators want push notifications when a
   round starts / settles instead of polling `/v1/sessions/{id}`. Reuse
   the existing live-stream WS infra in `server/stream/`.
+- **Session persistence (done — M24).** `Manager.sessions` is now
+  backed by `server/postgres` when `--postgres-dsn` is set.
+  `OpenSession` / `PlaceBet` / `CloseSession` write through to Postgres;
+  `Session()` falls back to a DB read on cache-miss so sessions survive
+  restarts. See `docs/deployment.md` §"Postgres setup" for the DSN flag
+  and migration instructions.
 - **Round-bet persistence.** `pendingRounds` and `roundBets` in
   `Manager` are in-memory only. A server restart loses all queued bets
   and round-id registrations. Needs a Postgres-backed store (M9.x).

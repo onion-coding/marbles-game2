@@ -34,6 +34,7 @@ import (
 
 	"github.com/onion-coding/marbles-game2/server/metrics"
 	"github.com/onion-coding/marbles-game2/server/middleware"
+	"github.com/onion-coding/marbles-game2/server/postgres"
 	"github.com/onion-coding/marbles-game2/server/replay"
 	"github.com/onion-coding/marbles-game2/server/rgs"
 	"github.com/onion-coding/marbles-game2/server/sim"
@@ -56,11 +57,28 @@ func main() {
 		walletHMAC     = flag.String("wallet-hmac-secret-hex", envOr("RGSD_WALLET_HMAC_SECRET", ""), "hex HMAC key for outbound wallet requests; empty = unsigned (env: RGSD_WALLET_HMAC_SECRET)")
 		walletRetries  = flag.Int("wallet-retries", envIntOr("RGSD_WALLET_RETRIES", 3), "max retries on transient wallet errors (env: RGSD_WALLET_RETRIES)")
 		walletIdemKeys = flag.Bool("wallet-idempotency-keys", true, "send Idempotency-Key header on debit/credit requests")
+		postgresDSN     = flag.String("postgres-dsn", envOr("RGSD_POSTGRES_DSN", ""), "Postgres DSN for durable session storage; empty = in-memory (env: RGSD_POSTGRES_DSN)")
+		postgresMigrate = flag.Bool("postgres-migrate", false, "run Postgres migrations then exit")
 	)
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// --postgres-migrate: apply schema migrations then exit. Does not require
+	// --godot-bin / --project-path so ops can run it as an init container.
+	if *postgresMigrate {
+		if *postgresDSN == "" {
+			logger.Error("rgsd: --postgres-migrate requires --postgres-dsn")
+			os.Exit(2)
+		}
+		if err := postgres.RunMigrations(context.Background(), *postgresDSN); err != nil {
+			logger.Error("rgsd: migrations failed", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("rgsd: migrations applied successfully")
+		os.Exit(0)
+	}
 
 	if *godotBin == "" || *projectPath == "" || *replayRoot == "" {
 		logger.Error("rgsd: required flags missing", "godot-bin", *godotBin, "project-path", *projectPath, "replay-root", *replayRoot)
@@ -109,6 +127,21 @@ func main() {
 		walletImpl = mock
 	}
 
+	// Optional Postgres session store. Nil = legacy in-memory behaviour.
+	var sessionStore rgs.SessionStorer
+	if *postgresDSN != "" {
+		pgStore, err := postgres.NewSessionStore(context.Background(), *postgresDSN)
+		if err != nil {
+			logger.Error("rgsd: postgres session store", "err", err)
+			os.Exit(1)
+		}
+		defer pgStore.Close()
+		sessionStore = pgStore
+		logger.Info("rgsd: session store = postgres")
+	} else {
+		logger.Info("rgsd: session store = in-memory (no --postgres-dsn)")
+	}
+
 	roundsTotal := metrics.NewCounter("rgsd_rounds_total", "rounds run by this rgsd")
 	betsTotal := metrics.NewCounter("rgsd_bets_total", "bets placed and accepted")
 	betErrors := metrics.NewCounter("rgsd_bet_errors_total", "bets rejected (any reason)")
@@ -117,16 +150,17 @@ func main() {
 		[]float64{1, 2, 5, 10, 20, 30, 60, 120})
 
 	mgr, err := rgs.NewManager(rgs.ManagerConfig{
-		Wallet:      &countingWallet{Wallet: walletImpl, accepted: betsTotal, rejected: betErrors},
-		Store:       store,
-		Sim:         instrumentedSim(sim.Run, roundsTotal, roundDuration),
-		GodotBin:    *godotBin,
-		ProjectPath: *projectPath,
-		WorkRoot:    filepath.Join(*replayRoot, ".work"),
-		BuyIn:       *buyIn,
-		RTPBps:      uint32(*rtpBps),
-		MaxMarbles:  *marbles,
-		SimTimeout:  *simTimeout,
+		Wallet:       &countingWallet{Wallet: walletImpl, accepted: betsTotal, rejected: betErrors},
+		Store:        store,
+		Sim:          instrumentedSim(sim.Run, roundsTotal, roundDuration),
+		GodotBin:     *godotBin,
+		ProjectPath:  *projectPath,
+		WorkRoot:     filepath.Join(*replayRoot, ".work"),
+		BuyIn:        *buyIn,
+		RTPBps:       uint32(*rtpBps),
+		MaxMarbles:   *marbles,
+		SimTimeout:   *simTimeout,
+		SessionStore: sessionStore,
 	})
 	if err != nil {
 		logger.Error("NewManager", "err", err)
