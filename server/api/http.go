@@ -13,12 +13,14 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"strconv"
+	"time"
 
 	"github.com/onion-coding/marbles-game2/server/replay"
 )
@@ -81,7 +83,7 @@ func (s *Server) getManifest(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad_round_id", err.Error())
 		return
 	}
-	m, _, err := s.store.Load(id)
+	m, rc, err := s.store.Load(id)
 	if err != nil {
 		if errors.Is(err, replay.ErrRoundMissing) {
 			writeJSONError(w, http.StatusNotFound, "round_missing", err.Error())
@@ -89,6 +91,12 @@ func (s *Server) getManifest(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSONError(w, http.StatusInternalServerError, "load_failed", err.Error())
 		return
+	}
+	// Backend returns an open handle to replay.bin; we don't need the bytes
+	// here, but we MUST close the handle or it leaks (and on Windows
+	// blocks TempDir cleanup in tests).
+	if rc != nil {
+		_ = rc.Close()
 	}
 	writeJSON(w, http.StatusOK, m)
 }
@@ -99,7 +107,7 @@ func (s *Server) getReplay(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad_round_id", err.Error())
 		return
 	}
-	m, path, err := s.store.Load(id)
+	m, rc, err := s.store.Load(id)
 	if err != nil {
 		if errors.Is(err, replay.ErrRoundMissing) {
 			writeJSONError(w, http.StatusNotFound, "round_missing", err.Error())
@@ -108,26 +116,28 @@ func (s *Server) getReplay(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "load_failed", err.Error())
 		return
 	}
-	f, err := os.Open(path)
+	defer rc.Close()
+	// Read into memory so we can both serve via ServeContent (which needs
+	// an io.ReadSeeker) and report Content-Length. Replays are tens of MB
+	// at most so the buffer is acceptable for the audit-API path; high-rate
+	// playback should use the S3 pre-signed URL pattern instead.
+	body, err := io.ReadAll(rc)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "replay_open_failed", err.Error())
-		return
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "replay_stat_failed", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "replay_read_failed", err.Error())
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	// Clients that trust this server can skip re-downloading unchanged replays.
 	// Manifest SHA acts as an ETag; archives are immutable so Cache-Control is long-lived.
 	w.Header().Set("ETag", `"`+m.ReplaySHA256Hex+`"`)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	// ServeContent handles Range requests cleanly — lets clients resume or skip.
-	http.ServeContent(w, r, "replay.bin", info.ModTime(), f)
+	// Backend doesn't expose mtime through the new io.ReadCloser API, so we
+	// pass the request time as the "modified" hint; the ETag is the real
+	// cache-key here anyway.
+	http.ServeContent(w, r, "replay.bin", time.Now(), bytes.NewReader(body))
 }
 
 func parseRoundID(s string) (uint64, error) {

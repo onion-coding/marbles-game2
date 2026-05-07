@@ -2,13 +2,18 @@ package replay
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func sampleManifest() *Manifest {
@@ -45,10 +50,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal("Save did not set CreatedAt")
 	}
 
-	loaded, replayPath, err := s.Load(42)
+	loaded, rc, err := s.Load(42)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	defer rc.Close()
+
 	if loaded.RoundID != 42 {
 		t.Errorf("RoundID: got %d want 42", loaded.RoundID)
 	}
@@ -59,7 +66,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("participants not preserved: %+v", loaded.Participants)
 	}
 
-	readBack, err := os.ReadFile(replayPath)
+	readBack, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatalf("read replay: %v", err)
 	}
@@ -81,8 +88,9 @@ func TestSaveRefusesOverwrite(t *testing.T) {
 	}
 
 	// Original bytes must still be there.
-	_, replayPath, _ := s.Load(42)
-	b, _ := os.ReadFile(replayPath)
+	_, rc, _ := s.Load(42)
+	defer rc.Close()
+	b, _ := io.ReadAll(rc)
 	if string(b) != "first" {
 		t.Errorf("store overwrote on duplicate Save: got %q", string(b))
 	}
@@ -137,8 +145,10 @@ func TestVerifyDetectsReplayTampering(t *testing.T) {
 		t.Fatalf("Verify clean store: %v", err)
 	}
 
-	// Edit replay.bin out from under the manifest.
-	_, replayPath, _ := s.Load(42)
+	// Edit replay.bin out from under the manifest — reach through the
+	// FilesystemBackend to get the on-disk path.
+	fsb := s.backend.(*FilesystemBackend)
+	replayPath := filepath.Join(fsb.roundDir(42), "replay.bin")
 	if err := os.WriteFile(replayPath, []byte("tampered"), 0o644); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
@@ -260,10 +270,11 @@ func TestManifest_V4Roundtrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded, _, err := s.Load(m.RoundID)
+	loaded, rc, err := s.Load(m.RoundID)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	rc.Close()
 
 	// Core identity.
 	if loaded.ProtocolVersion != ProtocolVersion4 {
@@ -315,7 +326,8 @@ func TestManifest_V4Roundtrip(t *testing.T) {
 // without error and returns zero values for the new fields — as a certified
 // auditor would see when re-reading legacy archive data.
 func TestManifest_V3Backward(t *testing.T) {
-	s, _ := New(t.TempDir())
+	root := t.TempDir()
+	s, _ := New(root)
 
 	// Build a v3-style manifest: ProtocolVersion=3, none of the v4 fields set.
 	v3 := &Manifest{
@@ -336,10 +348,11 @@ func TestManifest_V3Backward(t *testing.T) {
 		t.Fatalf("Save v3-style manifest: %v", err)
 	}
 
-	loaded, _, err := s.Load(99)
+	loaded, rc, err := s.Load(99)
 	if err != nil {
 		t.Fatalf("Load v3-style manifest: %v", err)
 	}
+	rc.Close()
 
 	// v3 fields must be intact.
 	if loaded.ProtocolVersion != 3 {
@@ -368,8 +381,8 @@ func TestManifest_V3Backward(t *testing.T) {
 
 	// Also verify that reading the raw JSON of the stored file does NOT
 	// contain any v4 keys (omitempty must have suppressed them).
-	dir := s.roundDir(99)
-	raw, _ := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	fsb := s.backend.(*FilesystemBackend)
+	raw, _ := os.ReadFile(filepath.Join(fsb.roundDir(99), "manifest.json"))
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		t.Fatalf("probe unmarshal: %v", err)
@@ -483,4 +496,266 @@ func TestManifest_JackpotConsistency_NoJackpot(t *testing.T) {
 	if err := ValidateJackpotConsistency(m); err != nil {
 		t.Errorf("no-jackpot manifest: unexpected error: %v", err)
 	}
+}
+
+// ── Backend abstraction tests ──────────────────────────────────────────────
+
+// backendSuite is a table of operations that every Backend implementation
+// must pass. Wire it with a fresh Store backed by the implementation under
+// test.
+func backendSuite(t *testing.T, s *Store) {
+	t.Helper()
+
+	// ── Save + Load round-trip ────────────────────────────────────────────
+	t.Run("save_load_roundtrip", func(t *testing.T) {
+		payload := bytes.Repeat([]byte("tick-"), 256)
+		m := sampleManifest()
+		if err := s.Save(m, bytes.NewReader(payload)); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if m.ReplaySHA256Hex == "" {
+			t.Fatal("SHA256 not populated")
+		}
+		if m.CreatedAt.IsZero() {
+			t.Fatal("CreatedAt not set")
+		}
+
+		loaded, rc, err := s.Load(m.RoundID)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		defer rc.Close()
+
+		if loaded.RoundID != m.RoundID {
+			t.Errorf("RoundID: got %d want %d", loaded.RoundID, m.RoundID)
+		}
+		if loaded.ReplaySHA256Hex != m.ReplaySHA256Hex {
+			t.Errorf("SHA256 mismatch: %s vs %s", loaded.ReplaySHA256Hex, m.ReplaySHA256Hex)
+		}
+		body, _ := io.ReadAll(rc)
+		if !bytes.Equal(body, payload) {
+			t.Errorf("replay bytes differ: got %d want %d bytes", len(body), len(payload))
+		}
+	})
+
+	// ── Write-once: duplicate Save → ErrRoundExists ───────────────────────
+	t.Run("save_refuses_overwrite", func(t *testing.T) {
+		m := sampleManifest()
+		m.RoundID = 10001
+		if err := s.Save(m, bytes.NewReader([]byte("v1"))); err != nil {
+			t.Fatalf("first Save: %v", err)
+		}
+		m2 := sampleManifest()
+		m2.RoundID = 10001
+		if err := s.Save(m2, bytes.NewReader([]byte("v2"))); !errors.Is(err, ErrRoundExists) {
+			t.Fatalf("duplicate Save: got %v want ErrRoundExists", err)
+		}
+	})
+
+	// ── Load missing → ErrRoundMissing ───────────────────────────────────
+	t.Run("load_missing", func(t *testing.T) {
+		if _, _, err := s.Load(999999999); !errors.Is(err, ErrRoundMissing) {
+			t.Fatalf("Load missing: got %v want ErrRoundMissing", err)
+		}
+	})
+
+	// ── List ──────────────────────────────────────────────────────────────
+	t.Run("list_ascending", func(t *testing.T) {
+		// Use IDs in the 20000 range so they don't collide with other sub-tests.
+		for _, id := range []uint64{20003, 20001, 20002} {
+			m := sampleManifest()
+			m.RoundID = id
+			if err := s.Save(m, bytes.NewReader([]byte("x"))); err != nil {
+				t.Fatalf("Save %d: %v", id, err)
+			}
+		}
+		ids, err := s.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		// Collect just the ones from this sub-test range.
+		var got []uint64
+		for _, id := range ids {
+			if id >= 20001 && id <= 20003 {
+				got = append(got, id)
+			}
+		}
+		want := []uint64{20001, 20002, 20003}
+		if len(got) != len(want) {
+			t.Fatalf("List subset: got %v want %v", got, want)
+		}
+		for i, id := range want {
+			if got[i] != id {
+				t.Errorf("List[%d]: got %d want %d", i, got[i], id)
+			}
+		}
+	})
+
+	// ── Delete ────────────────────────────────────────────────────────────
+	t.Run("delete", func(t *testing.T) {
+		m := sampleManifest()
+		m.RoundID = 30001
+		if err := s.Save(m, bytes.NewReader([]byte("del"))); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		// Delete missing round — must be ErrRoundMissing before actual delete.
+		if err := s.backend.Delete(nil, 999999998); !errors.Is(err, ErrRoundMissing) { //nolint:staticcheck
+			t.Errorf("Delete missing: got %v want ErrRoundMissing", err)
+		}
+
+		if err := s.backend.Delete(nil, 30001); err != nil { //nolint:staticcheck
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, _, err := s.Load(30001); !errors.Is(err, ErrRoundMissing) {
+			t.Fatalf("Load after delete: got %v want ErrRoundMissing", err)
+		}
+	})
+
+	// ── Verify ────────────────────────────────────────────────────────────
+	t.Run("verify", func(t *testing.T) {
+		m := sampleManifest()
+		m.RoundID = 40001
+		if err := s.Save(m, bytes.NewReader([]byte("canonical"))); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if err := s.Verify(40001); err != nil {
+			t.Fatalf("Verify clean: %v", err)
+		}
+	})
+}
+
+// TestFilesystemBackend_RoundTrip runs the full backend suite against a fresh
+// FilesystemBackend so filesystem-specific behaviour (rename atomicity, etc.)
+// is verified in isolation.
+func TestFilesystemBackend_RoundTrip(t *testing.T) {
+	s, err := NewFilesystemStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFilesystemStore: %v", err)
+	}
+	backendSuite(t, s)
+}
+
+// TestStore_BackendAgnostic runs the shared suite against the in-process
+// fakeBackend to confirm the Store wrapper itself (validation, List mapping,
+// etc.) works independently of any real storage layer.
+func TestStore_BackendAgnostic(t *testing.T) {
+	s := NewStore(newFakeBackend())
+	backendSuite(t, s)
+}
+
+// ── fakeBackend: in-memory Backend for unit testing ───────────────────────
+
+type fakeEntry struct {
+	manifest *Manifest
+	replay   []byte
+}
+
+type fakeBackend struct {
+	rounds map[uint64]*fakeEntry
+}
+
+func newFakeBackend() *fakeBackend {
+	return &fakeBackend{rounds: make(map[uint64]*fakeEntry)}
+}
+
+func (f *fakeBackend) Save(_ context.Context, m *Manifest, replay io.Reader) error {
+	if _, exists := f.rounds[m.RoundID]; exists {
+		return fmt.Errorf("%w: round_id=%d", ErrRoundExists, m.RoundID)
+	}
+	b, err := io.ReadAll(replay)
+	if err != nil {
+		return err
+	}
+	// Inline SHA-256 so the fakeBackend has no external dependencies.
+	h := sha256.New()
+	h.Write(b)
+	m.ReplaySHA256Hex = hex.EncodeToString(h.Sum(nil))
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = time.Now().UTC()
+	}
+	mc := *m
+	f.rounds[m.RoundID] = &fakeEntry{manifest: &mc, replay: b}
+	return nil
+}
+
+func (f *fakeBackend) Load(_ context.Context, roundID uint64) (*Manifest, io.ReadCloser, error) {
+	e, ok := f.rounds[roundID]
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: round_id=%d", ErrRoundMissing, roundID)
+	}
+	mc := *e.manifest
+	return &mc, io.NopCloser(bytes.NewReader(e.replay)), nil
+}
+
+func (f *fakeBackend) List(_ context.Context, opts ListOpts) ([]*Manifest, error) {
+	ms := make([]*Manifest, 0, len(f.rounds))
+	for _, e := range f.rounds {
+		if opts.After > 0 && e.manifest.RoundID <= opts.After {
+			continue
+		}
+		mc := *e.manifest
+		ms = append(ms, &mc)
+	}
+	sortManifests(ms)
+	if opts.Limit > 0 && len(ms) > opts.Limit {
+		ms = ms[:opts.Limit]
+	}
+	return ms, nil
+}
+
+func (f *fakeBackend) Delete(_ context.Context, roundID uint64) error {
+	if _, ok := f.rounds[roundID]; !ok {
+		return fmt.Errorf("%w: round_id=%d", ErrRoundMissing, roundID)
+	}
+	delete(f.rounds, roundID)
+	return nil
+}
+
+// ── S3 backend tests ───────────────────────────────────────────────────────
+
+// TestS3Backend_RoundTrip connects to a real S3-compatible endpoint and runs
+// the full backend suite. It is skipped unless the S3_TEST_ENDPOINT env var
+// is set (e.g. "localhost:9000" for a local MinIO instance).
+//
+// To run locally:
+//
+//	docker run -p 9000:9000 -p 9001:9001 \
+//	  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+//	  quay.io/minio/minio server /data --console-address ":9001"
+//
+//	S3_TEST_ENDPOINT=localhost:9000 \
+//	S3_TEST_BUCKET=replay-test \
+//	S3_TEST_ACCESS_KEY=minioadmin \
+//	S3_TEST_SECRET_KEY=minioadmin \
+//	  go test ./replay/... -run TestS3Backend_RoundTrip -v
+func TestS3Backend_RoundTrip(t *testing.T) {
+	endpoint := os.Getenv("S3_TEST_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("S3_TEST_ENDPOINT not set — skipping S3 integration test")
+	}
+	bucket := os.Getenv("S3_TEST_BUCKET")
+	if bucket == "" {
+		bucket = "replay-test"
+	}
+	accessKey := os.Getenv("S3_TEST_ACCESS_KEY")
+	secretKey := os.Getenv("S3_TEST_SECRET_KEY")
+	prefix := os.Getenv("S3_TEST_PREFIX")
+	if prefix == "" {
+		// Use a unique prefix per test run so parallel runs don't collide.
+		prefix = "test-run/"
+	}
+
+	s, err := NewS3Store(S3Config{
+		Endpoint:   endpoint,
+		Bucket:     bucket,
+		AccessKey:  accessKey,
+		SecretKey:  secretKey,
+		PathPrefix: prefix,
+		UseSSL:     false,
+	})
+	if err != nil {
+		t.Fatalf("NewS3Store: %v", err)
+	}
+	backendSuite(t, s)
 }
