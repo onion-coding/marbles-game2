@@ -1,946 +1,128 @@
-# Handoff — sessione 2026-05-02
+# Handoff — sessione 2026-05-08 (VS Code → Claude Code)
 
-Documento per il Claude della prossima sessione (su Visual Studio Code, con accesso GitHub) che farà commit + push. Contiene cosa è stato fatto, i file toccati, i commit suggeriti, e cosa resta da fare.
+Documento per la prossima sessione Claude Code che riprende da qui.
 
 ## TL;DR
 
-Sessione lunga in modalità auto (utente: "non ti fermi finché tutto non è perfetto"). Due blocchi di lavoro:
+Il branch `dev` su origin ora contiene **tutto** il lavoro: M9-M22, Spiral Drop, leaderboard transplant onion, refactor HUD, replay v4 cert-ready, HUD v2 nuovo + Plinko 4-tube di onion. Worktree allineato a dev. Niente uncommitted. Smoke + 105 test Go verdi.
 
-1. **Phase 0 ops scaffolding** — LICENSE, NOTICE, CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, Makefile, .env.example, .github/workflows/ci.yaml + dependabot.yaml, ops/ (Dockerfile.rgsd, Dockerfile.replayd, docker-compose, prometheus + grafana provisioning, helm/ + terraform/ stub README).
-
-2. **M11 track redesign** — sei tracce ricostruite da zero come drop-cascade con gravità reale 9.8 m/s² (niente più SLOW_GRAVITY hack). TrackBlocks library, TrackPalette themes, marble glass shader, fix bug HUD pre-esistente. Smoke 6/6 passa, fairness verifier OK, vectors regression 4/4.
-
-Tutto è non-committato sul branch `claude/compassionate-hellman-4f7e39` (worktree).
-
-## Stato attuale del worktree
+## Stato repo
 
 ```
-Branch:  claude/compassionate-hellman-4f7e39
-Origin:  https://github.com/onion-coding/marbles-game2.git
-Path:    D:\Documents\GitHub\marbles-game2\.claude\worktrees\compassionate-hellman-4f7e39
+origin/main  (599b254) ← stabile, NON usare per dev work
+origin/dev   (df46472) ← TRUNK ATTIVO ★ — riparti da qui
+local:
+  dev (= origin/dev)
+  main
+  claude/compassionate-hellman-4f7e39 (worktree, allineato a dev)
+worktree:
+  D:/Documents/GitHub/marbles-game2 (main repo on dev)
+  .claude/worktrees/compassionate-hellman-4f7e39 (claude branch = dev tip)
 ```
 
-## File modificati (M già fatti)
+**Una sola fonte di verità: `dev`**. Quando inizi una sessione Claude Code:
+1. `cd .claude/worktrees/compassionate-hellman-4f7e39`
+2. `git pull origin dev` (o `git merge --ff-only dev` dal main repo)
+3. Lavora, lascia uncommitted, lascia HANDOFF.md aggiornato
+4. La sessione VS Code (questa) committa + pusha
 
-```
-M .gitignore                                 # phase 0 — added .env, ops/data/, .makerc
-M PROGRESS.md                                # M11 milestone added
-M game/main.gd                               # auto-quit 3s in headless + --track=stadium wired
-M game/playback/playback_player.gd           # use glass marble shader
-M game/sim/marble_spawner.gd                 # make_glass_material(color, swirl_seed) helper
-M game/tracks/craps_track.gd                 # rebuilt as Volcano Run theme
-M game/tracks/plinko_track.gd                # rebuilt as Sky Run theme
-M game/tracks/poker_track.gd                 # rebuilt as Ice Run theme
-M game/tracks/roulette_track.gd              # rebuilt as Forest Run theme
-M game/tracks/slots_track.gd                 # rebuilt as Cavern Run theme
-M game/tracks/track_registry.gd              # added STADIUM = 6
-M game/ui/hud.gd                             # fix placeholder_text bug
-```
+## Cosa è stato fatto questa sessione (VS Code, 2026-05-08)
 
-## File nuovi (untracked)
+1. **Cleanup repo completo**:
+   - Phase A: 4 branch stale eliminati locale (operator-mode, player-stats-history, rgs-auto-restart, claude/exciting-jemison-f60a90), stash droppato, rgsd.exe rimosso
+   - Phase B: 4 branch eliminati origin (operator-mode, player-stats-history, rgs-auto-restart, feature/m12-broadcast)
+   - Phase C: consolidamento — tutto M11-M22 + Spiral + leaderboard onion fuso in dev (force-push autorizzato)
 
-### Phase 0 (ops / repo metadata)
+2. **Step 5 — Replay format v4** (commit `febb8bc`):
+   - Manifest porta marble_count + podium_payouts + pickup_per_marble_tier + finish_order
+   - ProtocolVersion4 + ValidateJackpotConsistency() helper
+   - 100 → 105 test Go
+   - Backward-compat con v3 (omitempty)
+   - **Spec source**: `docs/math-model.md §4.3`
 
-```
-?? .env.example
-?? .github/workflows/ci.yaml
-?? .github/dependabot.yaml
-?? CHANGELOG.md
-?? CODE_OF_CONDUCT.md
-?? CONTRIBUTING.md
-?? LICENSE                                   # proprietary, contact licensing@onion-coding.example
-?? Makefile
-?? NOTICE                                    # third-party attributions (Godot, Jolt, Go, websocket)
-?? ops/Dockerfile.rgsd                       # multi-stage, bundles Godot 4.6.2
-?? ops/Dockerfile.replayd                    # distroless static
-?? ops/docker-compose.yaml                   # rgsd + replayd + postgres + prometheus + grafana
-?? ops/prometheus.yaml
-?? ops/grafana/provisioning/datasources/prometheus.yaml
-?? ops/helm/README.md                        # stub with chart values shape
-?? ops/terraform/README.md                   # stub with AWS/GCP module sketch
-?? ops/README.md                             # quickstart + production notes
-```
+3. **Step 4 — HUD refactor** (commit `7901282`):
+   - hud.gd 1971 LOC → 615 LOC (-69%)
+   - Split in `hud_layout.gd` (1047) + `hud_runtime.gd` (892) + esistenti `hud_theme.gd` (433) + `hud_i18n.gd` (298)
+   - Pattern: HudLayout = static helpers, HudRuntime = Object con back-ref
+   - **Persistenza session stats ripristinata** (era stata droppata in v1 del refactor — fixata)
+   - API pubblica preservata 100%
 
-### M11 (track redesign)
+4. **Onion ha aggiunto** (mentre la sessione era a metà — ora tutto in dev):
+   - `de64d16` Plinko Casino Drop rebuild
+   - `fe1bcf7` HUD post-finish settle window 15s + FinishersList top-right panel
+   - `df46472` HUD v2 (game/ui/v2/) con balance/round-timer/bet/position cards + Plinko 4-tube intrecciati
 
-```
-?? game/tracks/stadium_track.gd              # new STADIUM = 6 track
-?? game/tracks/stadium_track.gd.uid          # auto-generated by Godot
-?? game/tracks/track_blocks.gd               # geometry primitives library (~250 LOC)
-?? game/tracks/track_blocks.gd.uid
-?? game/tracks/track_palette.gd              # 6 theme dictionaries (~150 LOC)
-?? game/tracks/track_palette.gd.uid
-?? game/visuals/marble_glass.gdshader        # Voronoi swirl + fresnel rim shader
-?? game/visuals/marble_glass.gdshader.uid
-?? game/net/rgs_client.gd.uid                # uid stub (Godot regenerated it during smoke)
-?? HANDOFF.md                                # this file
+## Validazione corrente
+
+```bash
+# Headless smoke Plinko: PASS
+WINNER: Marble_00 at tick 1655
+RECORDER: captured 1715 frames, 20 marbles/frame
+ROUNDTRIP: OK
+
+# Go tests: 8 packages tutti verdi (~105 test)
+ok  server/replay   server/rgs   server/middleware   ...
 ```
 
-## Commit suggeriti (2 commit separati)
+## Open items per la prossima sessione
 
-### Commit 1: Phase 0 ops scaffolding
+In ordine di priorità (mio audit precedente):
 
-```
-git add LICENSE NOTICE CHANGELOG.md CONTRIBUTING.md CODE_OF_CONDUCT.md \
-        Makefile .env.example .gitignore \
-        .github/ ops/
-
-git commit -m "$(cat <<'EOF'
-Ops: phase 0 scaffolding (license, CI, Docker, IaC stubs)
-
-Adds the foundational repo metadata + ops files needed before any
-operator integration sprint:
-
-- LICENSE (proprietary, dual-license path), NOTICE (third-party attrib),
-  CHANGELOG (semver + /v1 stability promise), CONTRIBUTING + COC.
-- Makefile with build/test/lint/godot-verify/docker-up targets and
-  auto-generated `make help`.
-- .env.example documenting all RGSD_* env vars + postgres/prometheus
-  config used by the docker-compose stack.
-- .github/workflows/ci.yaml: go vet+test+race, staticcheck/gosec/
-  govulncheck, godot headless verify_main + test_vectors_main, plus a
-  python-vectors drift check on docs/fairness-vectors.json.
-- .github/dependabot.yaml: weekly Go modules + monthly actions/Docker.
-- ops/Dockerfile.rgsd: multi-stage with Godot 4.6.2 bundled (4 stages:
-  godot-fetch, go-builder, godot-import, runtime debian-slim non-root +
-  tini). HEALTHCHECK on /v1/health.
-- ops/Dockerfile.replayd: distroless static, ~10MB.
-- ops/docker-compose.yaml: rgsd + replayd + postgres + prometheus +
-  grafana wired together with named volumes.
-- ops/prometheus.yaml + grafana provisioning so a fresh stack already
-  has rgsd metrics queryable.
-- ops/helm/README.md, ops/terraform/README.md: stubs documenting the
-  expected chart values shape and the AWS/GCP module surfaces. Real
-  templates land in phase 1 of the casino-vending roadmap.
-
-EOF
-)"
-```
-
-### Commit 2: M11 track redesign
-
-```
-git add game/tracks/ game/visuals/marble_glass.gdshader \
-        game/visuals/marble_glass.gdshader.uid \
-        game/sim/marble_spawner.gd \
-        game/playback/playback_player.gd \
-        game/main.gd \
-        game/ui/hud.gd \
-        game/net/rgs_client.gd.uid \
-        PROGRESS.md \
-        HANDOFF.md
-
-git commit -m "$(cat <<'EOF'
-Tracks: M11 — drop-cascade design + themed palettes (real gravity)
-
-Rebuild all six tracks under a single design philosophy in response to
-user feedback "le mappe sono brutte, poca dinamica, palline non hanno
-dinamicità, tutto da restauro, non assomiglia a Marble on Stream".
-
-The five M6 casino tracks compensated for poor flow with SLOW_GRAVITY
-zones (0.21–5.0 m/s², down from real 9.8) — that's the symptom of
-geometry that can't fill 40s with genuine dynamics. M11 rebuilds with:
-
-- Real 9.8 m/s² gravity in every track. No SlowGravityZone anywhere.
-- Drop-cascade geometry: 6 vertical floors (V-funnel → 3 directed
-  ramps → peg forest → 20-lane gate), each with a directed gap that
-  marbles roll toward and fall through.
-- Field 40m wide, 5m deep, ~46m tall. Spawn at y=40, finish at y=0.
-- Race times 27.3-32.6s consistent across all six tracks; variance
-  comes from peg-bounce luck, not from RNG hacks.
-
-Six themed tracks (class names + track_id stable, content rebuilt):
-  1=Forest Run (was Roulette), 2=Volcano Run (was Craps),
-  3=Ice Run (was Poker), 4=Cavern Run (was Slots),
-  5=Sky Run (was Plinko), 6=Stadium Run (new STADIUM track).
-
-New shared infrastructure:
-- game/tracks/track_blocks.gd — geometry primitives library
-  (add_box, add_cylinder, std_mat[_emit], build_v_funnel,
-  build_directed_ramp, build_peg_forest, build_lane_gate,
-  build_outer_frame, build_catchment).
-- game/tracks/track_palette.gd — six theme dicts (floor/peg/gate/wall/
-  accent + env overrides) keyed by track_id.
-- game/visuals/marble_glass.gdshader — Voronoi-noise internal swirl +
-  fresnel rim + emission halo, anchored to the marble's local space so
-  the swirl rotates with the sphere. Replaces the StandardMaterial3D
-  plastic look from M7. Sim and playback both use it through
-  MarbleSpawner.make_glass_material(color, swirl_seed).
-
-Headless smoke tooling fixes:
-- main.gd auto-quits 3s after race finishes when running headless, so
-  batch smoke scripts don't have to rely on Godot's --quit-after
-  (which counts FRAMES, not seconds — a common foot-gun).
-- hud.gd: removed _marble_selector.placeholder_text — that property
-  exists on LineEdit, not OptionButton. The line silently broke any
-  interactive-mode headless test once the bet-placement panel landed.
-
-Validation:
-- Smoke 6/6 passes; replay roundtrip OK on every track.
-- verify_main passes on Plinko/Sky replay (commit/slots/colors/positions).
-- test_vectors_main 4/4 pass — fairness chain unchanged.
-
-Pending for next session (HUD redesign, broadcast cameras, decoration
-props, environment-builder polish, audio assets) — see HANDOFF.md.
-
-EOF
-)"
-```
-
-### Commit 3: M12 HUD broadcast redesign
-
-```
-git add game/ui/hud.gd game/ui/hud_theme.gd
-# Forest unique geometry was added in this session too — bundle with the HUD commit
-# OR split it into its own commit if you prefer (it touches game/tracks/roulette_track.gd
-# and game/tracks/track_blocks.gd).
-
-git commit -m "$(cat <<'EOF'
-HUD: M12 broadcast redesign + Forest unique geometry
-
-HUD rewrite under a single design language: F1/ESPN-inspired broadcast
-overlay replacing the M9 Godot-default Controls layout.
-
-New: game/ui/hud_theme.gd — single source for palette (16 semantic
-colors), font sizes (8 levels), StyleBoxFlat factories (panel/card/
-pill/top_bar/row/button/chip/toast/phase), LabelSettings factories
-(caption/caps/title/metric/timer/hero), and format helpers
-(format_money with thousand separators, format_race_time broadcast
-M:SS.MS precision, format_signed_money). Changing the entire
-aesthetic now means editing one file.
-
-Rewritten: game/ui/hud.gd (861 → 770 lines). Same public API contract
-preserved so main.gd / live_main.gd / web_main.gd / playback_main.gd
-keep working without changes:
-  - signals: marble_selected(int), bet_requested(int, float)
-  - methods: setup, set_track_name, update_tick, update_standings,
-    reveal_winner, enable_rgs_mode, start_bet_countdown,
-    start_next_round_countdown, update_balance, apply_settlement,
-    on_bet_confirmed, show_error_toast, set_following, reset
-  - constants: PHASE_WAITING/RACING/FINISHED, MOCK_BALANCE
-
-Visual changes:
-  - Top broadcast bar full-width 64px: brand mark + track name +
-    phase pill (cyan/green/gold) + animated LIVE dot + round indicator
-    + balance card with thousand-separator amount + USD caption.
-  - Timing tower right-side: rows are absolute-positioned via
-    offset_top/offset_bottom (no anchor warnings), tween-animated rank
-    changes (cubic ease-out 0.32s), leader gold-tinted with border,
-    top-3 highlighted, follow-marker as cyan left border.
-  - Timer hero center-bottom: card with shadow + rounded corners 14px,
-    caption "RACE TIME" caps + monospace 48pt timer with outline,
-    "BETS LOCKED" amber pill below when applicable.
-  - Bet panel sportsbook-style: header + countdown (amber→red pulse
-    final 3s), marble color chip strip, preset chips (5/10/25/50/100),
-    quick-adjust ±1/±10, monospace stake amount, POTENTIAL WIN
-    live-calc label, premium gold CTA full-width.
-  - Winner modal theatrical: dark scrim, gold-bordered hero card
-    with color swatch + 56pt name + big payout (green/red), entrance
-    animation (scale 0.92→1.0 + alpha 0→1 cubic 0.28s), divider,
-    next-round countdown.
-  - Toast pill bottom-center: type-coded border (green/red/amber/cyan),
-    pop-in tween, auto-fade.
-
-Track-name pretty-print: RouletteTrack/CrapsTrack/etc → Forest Run /
-Volcano Run / Ice Run / Cavern Run / Sky Run / Stadium Run, matching
-the M11 themes.
-
-Forest unique mechanic (game/tracks/roulette_track.gd): three
-horizontal rotating logs (AnimatableBody3D, kinematic) above F2/F3/F4
-ramps. Angular velocities derived from _hash_with_tag("forest_log_<i>")
-so each round shows different log behaviour while staying replay-stable.
-Log radius 0.6m, length 4m, ω in [-1.6, +1.6] rad/s. Clearance 1.0m
-above slab top so marbles pass under but bouncing ones get nudged.
-
-CLI alias fix (game/main.gd, game/tracks/track_registry.gd,
-server/cmd/roundd/main.go, server/rgs/manager.go,
-server/rgs/manager_test.go):
-  --track=forest|volcano|ice|cavern|sky|stadium  — M11 theme names
-  --track=roulette|craps|poker|slots|plinko       — technical aliases
-                                                    (same map as theme)
-  --track=ramp                                     — legacy id 0
-  no flag                                          — random pick of
-                                                    the 6 themed tracks
-                                                    (ramp excluded)
-SELECTABLE = [1,2,3,4,5,6] (no ramp). is_valid_id still accepts ramp
-for old replay decode. Server-side TrackPool default aligned.
-
-Headless smoke convenience (game/main.gd): auto-quit 3s after race
-finish when DisplayServer is "headless" so batch scripts don't depend
-on --quit-after frame counts (frames, not seconds — common foot-gun).
-
-Validation:
-  - 6/6 track smoke pass with the new HUD wired in.
-  - verify_main passes on Forest replay (commit/slots/colors/positions).
-  - test_vectors_main 4/4 pass (Python regression invariant).
-  - go test ./... 12/12 pass on the server side.
-  - Zero parse errors / warnings on hud.gd in headless smoke.
-
-Pending for next session: mobile portrait layout (BREAKPOINT_MOBILE
-constant placed but switch logic not wired), operator branding hooks
-runtime (HudTheme centralised; URL param theme load not wired),
-i18n (all strings still hardcoded English), lap progress bar under
-timer (needs race-progress 0-100% expose), top-3 podium ribbon in
-top bar.
-
-EOF
-)"
-```
-
-### Commit 4: M13 — unique geometry per track (Cavern / Volcano / Ice / Sky / Stadium)
-
-```
-git add game/tracks/
-
-git commit -m "$(cat <<'EOF'
-Tracks: M13 — unique geometric mechanic per track
-
-Closes the "all six tracks share the same skeleton" debt from M11. Each
-track now has a distinguishing static or kinematic feature on top of
-the shared drop-cascade backbone, so the six themes finally play
-differently and not just look differently.
-
-Forest (RouletteTrack) — shipped earlier:
-  - Three rotating wooden logs (AnimatableBody3D, kinematic) above
-    F2/F3/F4 ramps. Angular velocities derived from
-    _hash_with_tag("forest_log_<i>"). Smoke ~32s.
-
-Cavern (SlotsTrack):
-  - Stalactites (5 hanging crystal cylinders from the F5 ceiling) +
-    stalagmites (4 rising crystal cylinders from the F5 floor),
-    hex-staggered with alternating Z offsets. Marbles must zigzag
-    through. Static, fairness unaffected. Smoke ~29s.
-
-Volcano (CrapsTrack):
-  - Four kinematic vertical lava-geyser cylinders inside the F5 zone,
-    each oscillating between y=5.5 and y=11 at 1.2 rad/s. Phases
-    derived from _hash_with_tag("volcano_geyser_<i>") so every round
-    shows different emergence timing. Marbles getting clipped by a
-    rising column get launched upward. Smoke ~31s.
-
-Ice (PokerTrack):
-  - Replaced the F5 cylinder peg field with a 5×7 hex grid of vertical
-    ice shards (thin tall slabs, 0.4×2.5×0.5m). Flat-faced collisions
-    deflect at sharper angles than rounded peg bounces. Smoke ~28s.
-
-Sky (PlinkoTrack):
-  - Replaced the dense cylinder peg field with 12 horizontal cloud
-    platforms scattered across 4 y-levels. Marbles bounce down a
-    stepping-stone path. Each platform tilted ±3° around Z so marbles
-    don't park on top. Smoke ~26s.
-
-Stadium (StadiumTrack):
-  - Spinning windmill paddle at the centre of F5 (y=9, x=0). Single
-    AnimatableBody3D with two crossing 6m-long blades + central hub,
-    rotating around world Y at a seed-derived ω in ±1.4 rad/s. Smoke
-    ~31s.
-
-Library extension:
-  - TrackBlocks.add_animatable_cylinder added in M11 (Forest); reused
-    by Cavern, Volcano. Stadium uses raw AnimatableBody3D directly to
-    build a multi-shape windmill body.
-
-Validation:
-  - 6/6 tracks finish in 26-31s on smoke (real gravity 9.8 m/s²,
-    no SLOW_GRAVITY).
-  - verify_main passes on Stadium replay (commit/slots/colors/positions).
-  - test_vectors_main 4/4 pass — fairness chain unaffected.
-  - Each kinematic obstacle's animation parameter is derived from
-    _hash_with_tag(<unique tag>) so replay determinism holds across
-    rounds with different seeds.
-
-The six themes are now genuinely different geometries, not palette
-swaps.
-
-EOF
-)"
-```
-
-### Commit 5: M14 — Phase 1.5 HUD broadcast completion (podium / lap progress / mobile / branding / i18n)
-
-```
-git add game/ui/hud.gd game/ui/hud_theme.gd \
-        game/ui/hud_i18n.gd game/ui/hud_i18n.gd.uid
-
-git commit -m "$(cat <<'EOF'
-HUD: M14 — Phase 1.5 broadcast completion
-
-Closes the open items left at the end of M12 broadcast HUD redesign:
-top-3 podium ribbon, lap progress bar, mobile responsive switch,
-operator branding hooks runtime, and i18n scaffold (en/it/es/de/pt).
-
-Public API additions (all backward-compatible — main / live / web /
-playback paths keep working unchanged):
-  - HUD.apply_operator_theme(config: Dictionary) — accepts any subset
-    of {accent_color, brand_text, brand_logo, lang}; re-styles brand
-    mark, CTA button, standings header, progress bar fill, and
-    winner caption. Re-localises all tagged labels on the same call.
-  - HUD.set_lang(lang: String) — language-only switch.
-  - HUD.update_progress(percent: float) — optional 0..1 progress
-    setter; if main.gd doesn't call it, the bar drives itself from
-    the leader_dist/initial_max_dist captured inside update_standings.
-
-New file: game/ui/hud_i18n.gd — string table for the HUD with five
-languages (en, it, es, de, pt). HudI18n.t(key) returns the localised
-string with English fallback; missing-key fallback to the key itself
-(no crash). Default language en, settable via set_lang(). Walks via
-node metadata "i18n_key" so labels can be re-localised at runtime
-without rebuilding the layout.
-
-Extension: game/ui/hud_theme.gd
-  - HudTheme.apply_operator_overrides(config) stores accent_color /
-    brand_text / brand_logo overrides. Sentinel-based (zero-alpha,
-    empty string, null) so unset overrides fall back to defaults.
-  - HudTheme.accent() / brand_text() / brand_logo() — helpers used
-    instead of the bare C_GOLD / "MARBLES" constants in widgets that
-    operators may want to skin.
-
-Visual additions to HUD layout:
-  - Top-3 podium ribbon (3 chips after the round indicator): rank
-    "1°/2°/3°" tinted gold/silver/bronze + color chip + marble id.
-    Hidden in WAITING phase, visible once standings tick. Hidden in
-    mobile portrait to save space.
-  - Race progress bar (slim 4px) under the timer, accent-coloured.
-    Driven by leader_distance / initial_max_distance computed in
-    update_standings; main.gd doesn't need changes.
-  - Brand mark holds an optional TextureRect alongside the "M"
-    glyph. apply_operator_theme({brand_logo: tex}) flips visibility.
-  - Mobile portrait switch: viewport.x < BREAKPOINT_MOBILE (768)
-    triggers _apply_mobile_layout() — collapsed brand subtitle,
-    hidden podium ribbon, narrow timing tower (200px right-docked),
-    full-width bottom-sheet bet panel, smaller timer card. Switch
-    only fires on breakpoint crossing (no per-frame layout thrash).
-
-i18n migration:
-  - All hardcoded HUD strings replaced with HudI18n.t() calls:
-    BALANCE / WAITING / RACING / FINISHED / STANDINGS / RACE TIME /
-    BETS LOCKED / PLACE YOUR BET / PICK A MARBLE / STAKE / POTENTIAL
-    WIN / PLACE BET / YOUR BETS / Insufficient balance / WINNER /
-    NEXT ROUND IN / STARTING NEXT ROUND.
-  - Dynamic-format strings (countdown, payout) use t("key") with
-    %.1f / %s placeholders embedded in the translation values.
-  - Track display names (Forest Run / Volcano Run / etc.) localised
-    via hud.track.* keys; set_track_name() stores the i18n_key in
-    Label meta so set_lang() can re-render later.
-
-Validation:
-  - Smoke headless on Forest: WINNER tick 1777 (29.6s), replay
-    roundtrip OK, zero errors, zero warnings.
-  - verify_main passes on the new replay (commit/slots/colors/
-    positions integri).
-  - test_vectors_main 4/4 pass — fairness chain unchanged.
-  - HUD public API contract preserved → main.gd / live_main.gd /
-    web_main.gd / playback_main.gd unmodified.
-
-EOF
-)"
-```
-
-### Commit 6: M15 — Payout v2 spec + multiplier module (math model + Go module, no integration yet)
-
-```
-git add docs/math-model.md \
-        server/rgs/multiplier.go \
-        server/rgs/multiplier_test.go
-
-git commit -m "$(cat <<'EOF'
-Payout: M15 — v2 model spec (30 marbles, podium 9/4.5/3, pickup
-multipliers, jackpot 100x rule B2)
-
-Replaces the M9 single-multiplier model (20 marbles, flat 19x payout)
-with a richer payout structure agreed with the user 2026-05-02:
-
-  - 30 marbles per round (was 20).
-  - Top-3 podium pays 9x / 4.5x / 3x of stake.
-  - Pickup multipliers via geometric zones (deterministic-by-physics):
-      Tier 1 (2x): max 4 marbles per round (hard cap from user brief).
-      Tier 2 (3x): max 1 marble per round, activated probabilistically
-                   per round (~41.7% under canonical 95% RTP) so the
-                   server can scale RTP between 92-99% by tuning the
-                   activation probability via Tier2ProbForRTP().
-  - Stack rule: payoff = base_podium x pickup (multiplicative). Multiple
-    pickup zone traversals take MAX, not product.
-  - Pickup wins even without podium: a marble that picked up 2x but
-    finished 15th still pays 2x to a bettor on it.
-  - Jackpot rule B2: when 1° marble has Tier 2 (3x) pickup, payoff is
-    100x outright (overrides podium x pickup). Frequency ~1 per 72
-    rounds under canonical config — "session-level" jackpot moments.
-
-New file: docs/math-model.md (~370 lines). Canonical math spec for the
-v2 model, formatted for handoff to a certification lab (iTech / GLI /
-BMM). Includes:
-  - §1-3: bet model, RoundOutcome states, EV per marble, RTP scenarios.
-  - §3.4 corrected: EV[3x pickup] = 6.78 (NOT 4.35) because jackpot
-    overrides podium x pickup. Solving for RTP=95% gives p=0.417.
-  - §4: cross-map audit pipeline (1000-round smoke + RTP simulation
-    + chi-square distribution check) — every new map must pass before
-    entering SELECTABLE.
-  - §5: per-map payout structure proposals (pickup zone placement for
-    Stadium Sprint / Spiral Skies / Volcano Chaos / Forest Maze / Ice
-    Slide / Cavern Drop) plus casino-themed alternatives (Roulette
-    wheel, Plinko bins, Darts board).
-  - §6: 3 design decisions captured for production (RTP target, jackpot
-    rule, casino-themed flavour).
-  - §7: regression-test scaffold for CI.
-
-New file: server/rgs/multiplier.go (~330 lines). Pure Go module
-implementing the v2 math:
-  - RoundOutcome struct with podium + pickups + jackpot fields.
-  - ComputeBetPayoff(marbleIdx, stake, outcome) — canonical payoff calc.
-  - DeriveTier2Active(seed, round_id) — SHA-256 based deterministic
-    Tier 2 activation, mirrors Godot _hash_with_tag pattern so cross-
-    language verification is byte-stable.
-  - Tier2ProbForRTP(rtp) — inverse formula for RTP→p tuning, used by
-    the server when operator configures non-default RGSD_RTP_BPS.
-  - ValidatePickupCounts() — caps enforcement (max 4 Tier 1, max 1
-    Tier 2). Defensive against Godot-side bugs that would distort RTP.
-  - MapPayoutModel interface + implementations:
-      DefaultPayoutModel — canonical podium x pickup.
-      RoulettePayoutModel — 37-slot wheel with jackpot on green 0.
-      PlinkoPayoutModel  — 13-bin pyramid with edge-bin 50x.
-      DartsPayoutModel   — 4-zone target (bullseye 50x, miss 0x).
-    Per-map override plumbed for casino-themed alt finishes.
-
-New file: server/rgs/multiplier_test.go (~340 lines). 8 test groups,
-all passing:
-  - TestComputeBetPayoff_Podium      — 5 podium-only cases.
-  - TestComputeBetPayoff_PickupOnly  — pickup-without-podium rule.
-  - TestComputeBetPayoff_Stack       — base x pickup multiplicative.
-  - TestJackpotRule_B2               — 4 trigger/no-trigger scenarios.
-  - TestDeriveTier2Active_Determinism — 100 rounds x 5 trials, no drift.
-  - TestDeriveTier2Active_Distribution — empirical 41.7% +/- 3% on
-    10000 trials.
-  - TestTier2ProbForRTP — RTP→p inverse for 6 representative RTPs.
-  - TestValidatePickupCounts — cap enforcement.
-  - TestRTPSimulation — 50000 rounds Monte-Carlo, empirical RTP 95% +/- 2%.
-  - TestCasinoModels — Roulette / Plinko / Darts smoke.
-
-What this commit does NOT do (deferred to next session):
-  - manager.go integration: replacing PayoutMultiplier=19.0 with
-    ComputeBetPayoff requires the Godot sim to return podium top-3
-    (currently returns only first winner) + pickup tracking. Server-
-    side sim invocation + replay format v4 (additive manifest fields)
-    are needed first.
-  - Replay format v4: additive marble_count / podium_payouts /
-    pickup_per_marble / jackpot_triggered / jackpot_marble_index
-    fields. Spec'd in math-model §4.3 but not coded yet.
-  - Godot pickup zone scene scripts (game/sim/pickup_zone.gd etc.).
-    Phase 6 territory — depends on per-map geometric design.
-  - HUD update: pickup multiplier badges, payoff calc preview with
-    new math.
-
-Validation:
-  - go test ./... — 12/12 packages pass (multiplier_test added 8
-    test groups, all green).
-  - Math model documented thoroughly enough that a certification lab
-    auditor can replicate the RTP calculation independently.
-
-EOF
-)"
-```
-
-### Commit 7: M16 — Podium top-3 plumbing (sim → status → manifest v4 additive)
-
-```
-git add game/sim/finish_line.gd game/main.gd \
-        server/sim/invoker.go \
-        server/replay/store.go \
-        server/rgs/manager.go
-
-git commit -m "$(cat <<'EOF'
-Sim: M16 — podium top-3 plumbing for payout v2 integration
-
-First integration step toward the M15 payout v2 model: extend the sim
-pipeline (Godot finish line → status JSON → Go sim.Result → replay
-manifest) to capture the top-3 marbles instead of just the single first
-crosser. No payout logic changes yet — that needs the per-map pickup-zone
-geometry first (math-model §2). This commit lays the data plumbing.
-
-Godot side:
-  - game/sim/finish_line.gd — added get_podium(n) returning the first
-    `n` marbles to cross sorted by tick ascending. The existing _crossed
-    Dictionary already tracks every crossing during the recorder's 1s
-    tail, so the podium "fills in" naturally as 2nd/3rd cross after 1°.
-  - game/main.gd _on_finalized() — extended status JSON with
-    podium_marble_indices [3]int + podium_finish_ticks [3]int +
-    protocol_version: 4. Legacy winner_marble_index/finish_tick fields
-    kept untouched for backward compat with the M9 server.
-
-Server side:
-  - server/sim/invoker.go — sim.Result + statusFile gain
-    PodiumMarbleIndices [3]int + PodiumFinishTicks [3]int +
-    ProtocolVersion. Defaults: -1 / -1 / 3 when reading a pre-M16
-    status file. WinnerMarbleIndex falls back to PodiumMarbleIndices[0]
-    when only the v4 podium is set (forward-compat for sims that drop
-    the legacy field eventually).
-  - server/replay/store.go — Manifest gains Podium [3]PodiumEntry +
-    PickupPerMarble []float64 + JackpotTriggered bool +
-    JackpotMarbleIdx int (all `omitempty`, additive — v3 manifests
-    decode unchanged, v4 manifests add the data without breaking older
-    consumers).
-  - server/rgs/manager.go — settleRound() builds the Podium array from
-    sim.Result and bumps ProtocolVersion to 4 when the sim reports v4.
-    Legacy v3 sims still produce v3 manifests with podium[0] backfilled
-    from the single-winner field for forward-compat decode.
-
-Validation:
-  - go test ./... — 12/12 packages pass.
-  - server/sim TestRunEndToEnd integration test (gated on
-    MARBLES_GODOT_BIN + MARBLES_PROJECT_PATH env vars) passes in 15.6s
-    end-to-end: real Godot subprocess → status JSON v4 → sim.Result
-    → replay.Manifest v4.
-  - Headless smoke (Forest track) finishes 30.4s with zero errors,
-    zero warnings, replay roundtrip OK.
-
-What this commit does NOT do (deferred to future M17+):
-  - Pickup zones in Godot — game/sim/pickup_zone.gd, per-map zone
-    placement. Requires per-map geometric design (Phase 6 territory).
-    Until pickup zones land, manifest.PickupPerMarble stays empty,
-    manifest.JackpotTriggered stays false, and ComputeBetPayoff with a
-    pickup-aware RoundOutcome treats every marble as no-pickup.
-  - manager.go payoff replacement — the M9 PayoutMultiplier=19.0 path
-    is still active. Switching to ComputeBetPayoff requires the full
-    podium-aware RoundOutcome to be populated (waiting on pickup
-    integration). The plumbing is ready — just the wiring isn't.
-  - Marble count bump 20 → 30 — the M15 math model targets 30 marbles
-    but the existing geometry, fairness vectors, and SpawnRail
-    SLOT_COUNT=24 are sized for 20. Bumping needs coordinated update
-    across spawn_rail.gd, all 6 track spawn_points(), and
-    docs/fairness-vectors.json regen.
-
-EOF
-)"
-```
-
-### Commit 8: M17 — Pickup zones (Area3D + tracker + Forest demo + manifest v4 pickup fields)
-
-```
-git add game/sim/pickup_zone.gd game/sim/pickup_zone.gd.uid \
-        game/tracks/track_blocks.gd \
-        game/tracks/roulette_track.gd \
-        game/main.gd \
-        server/sim/invoker.go \
-        server/replay/store.go \
-        server/rgs/manager.go
-
-git commit -m "$(cat <<'EOF'
-Sim: M17 — pickup zones (Area3D class + main aggregator + Forest demo)
-
-Lays the groundwork for the M15 payout v2 model's pickup-multiplier
-mechanic. Marbles passing through geometric pickup zones during a race
-collect a multiplier (Tier 1 = 2x, Tier 2 = 3x) that stacks
-multiplicatively with the podium payoff at settle time.
-
-Godot side:
-  - game/sim/pickup_zone.gd (NEW) — Area3D class with `tier` field.
-    Self-caps at MAX_TIER_1=4 / MAX_TIER_2=1 distinct marbles per zone
-    (first-N by tick, deterministic from physics). body_entered handler
-    rejects non-marble bodies and silently saturates after the cap.
-  - game/tracks/track_blocks.gd — add_pickup_zone() helper that builds
-    Area3D + CollisionShape3D + optional MeshInstance3D for visual hint.
-    Track classes call it from _ready() to drop zones at audit-tested
-    positions.
-  - game/main.gd _on_finalized() — _aggregate_pickups() walks the track
-    tree, collects PickupZone children, sorts marbles by entry tick, and
-    enforces the AGGREGATE caps (4 Tier 1 / 1 Tier 2 across all zones).
-    Status JSON gains pickup_tier_1_marbles []int and
-    pickup_tier_2_marble int (-1 sentinel for "none collected").
-  - game/tracks/roulette_track.gd (Forest) — first map to ship pickup
-    zones as a demo:
-      4 Tier-1 zones at (x=-12, -4, 4, 12) y=9 size 3x1.5x4.6m, mossy
-        green semi-transparent visual.
-      1 Tier-2 zone at (x=0, y=6.5) size 1.4x1.5x4.6m, warm-gold
-        semi-transparent visual.
-    Math-model audit (1000-round smoke): expected ~3.5 Tier-1 collected
-    per round, Tier-2 hit rate ~70% — within the math-model §4.1 caps.
-
-Server side:
-  - server/sim/invoker.go — Result + statusFile gain PickupTier1Marbles
-    []int and PickupTier2Marble *int (pointer for omitempty support
-    when no pickup occurred). Default values: nil and -1 respectively.
-  - server/replay/store.go — Manifest gains:
-      PickupTier1Marbles []int      // raw physics outcome
-      PickupTier2Marble  int        // raw physics outcome, -1 if none
-      Tier2Active        bool       // server-derived Tier 2 active flag
-      PickupPerMarble    []float64  // derived convenience array for
-                                    // ComputeBetPayoff
-      JackpotTriggered   bool
-      JackpotMarbleIdx   int        // -1 if not triggered
-    All `omitempty` so v3 manifests decode unchanged.
-  - server/rgs/manager.go settleRound() — populates the manifest:
-    1. DeriveTier2Active(seed, round_id) flags whether Tier 2 was live.
-    2. Builds PickupPerMarble[] from raw arrays, applying the Tier 2
-       gate (Tier 2 marble only counts if active).
-    3. NewRoundOutcome() applies jackpot rule B2 (1° + Tier 2 → 100x);
-       JackpotTriggered + JackpotMarbleIdx land in the manifest.
-    The manager's PayoutMultiplier=19.0 settle path is still untouched
-    — the manifest carries v2 data, but bets are paid by the legacy
-    flat 19x rule until the per-bet payoff switches to ComputeBetPayoff
-    (M18).
-
-Validation:
-  - go test ./... — 12/12 packages pass.
-  - server/sim TestRunEndToEnd integration — PASS in 15.4s, status JSON
-    v4 → manifest v4 round-trip ok (Ramp track, no pickup zones, so
-    PickupTier1Marbles is empty and PickupTier2Marble is -1; both round-
-    trip cleanly).
-  - Headless smoke Forest with pickup zones — race 31.7s, zero errors,
-    zero warnings, replay roundtrip OK. The 4+1 zones spawn at
-    _ready(), mark + sniff body_entered correctly, and the aggregator
-    survives a 30-marble traversal.
-
-What this commit does NOT do (deferred to M18+):
-  - manager.go switch from PayoutMultiplier=19.0 to ComputeBetPayoff:
-    requires the bet flow to construct a full RoundOutcome from the
-    manifest at settle time. The manifest now carries everything
-    needed; the wiring is one focused change.
-  - Pickup zones for the other 5 maps (Volcano, Ice, Cavern, Sky,
-    Stadium): Forest is the proof-of-concept. Each map needs its own
-    audit-tested zone placement (math-model §5).
-  - Marble count bump 20 → 30: math model targets 30 marbles. The
-    pickup zone caps (4 Tier 1, 1 Tier 2) are written for 30; with 20
-    marbles, expected pickup rate is slightly higher per marble.
-    Tuning needed when the count bump lands.
-  - HUD pickup badges (+2x / +3x next to color chip in standings) and
-    payout preview update. The HUD gets stale data until it reads the
-    new manifest fields.
-
-Compatibility: replay v3 manifests decode unchanged (all v4 fields are
-`omitempty`). Pre-M16 Godot status files stay readable (PickupTier1Marbles
-defaults to nil, PickupTier2Marble to -1).
-
-EOF
-)"
-```
-
-### Commit 9: M18 — Switch payoff to ComputeBetPayoff (v2 model live in settle path)
-
-```
-git add server/rgs/manager.go \
-        server/rgs/manager_test.go \
-        server/rgs/round_bet_test.go \
-        server/rgs/payout_v2_test.go
-
-git commit -m "$(cat <<'EOF'
-RGS: M18 — wire payoff v2 into settle (ComputeBetPayoff replaces flat 19×)
-
-Final wire-up of the payout v2 model into the live bet flow. Settled
-round-bets now go through ComputeBetPayoff(marble, stake, outcome) —
-the same RoundOutcome the manifest is built from — so podium ranks,
-pickup multipliers, and the jackpot rule (B2) all apply.
-
-What changed:
-
-server/rgs/manager.go settleRound():
-  - Loop over pr.bets now calls ComputeBetPayoff() with the same
-    `outcome` already constructed for the manifest. Won/lost is
-    derived from `payout > 0` (a bet wins via either podium or pickup,
-    not just first-place).
-  - Stale-data fix: legacy v3 sims (incl. fakeSim in tests) used to
-    have podium[0].MarbleIndex default to 0 (zero-value of int) — the
-    backfill condition `podium[0].MarbleIndex < 0` never fired, so
-    podium silently became [0, 0, 0] with all three slots awarded to
-    marble 0. Replaced with `if pv >= 4 { trust array } else
-    { backfill slot 0 from WinnerMarbleIndex; -1/-1 in slots 1, 2 }`.
-  - PayoutMultiplier const retained as alias for PodiumPayout1st (=
-    9.0) — used by ExpectedPayoutIfWin in the bet-placement HTTP
-    response as a "if you win 1st place without pickup" hint shown in
-    the UI before the player clicks PLACE BET. The actual settle
-    payout no longer uses this constant directly.
-  - Settle log line now reports v2 totals + jackpot trigger flag for
-    operator observability.
-
-server/rgs/manager_test.go fakeSim:
-  - Explicit ProtocolVersion: 3 + PickupTier1Marbles: nil +
-    PickupTier2Marble: -1 so test fixtures don't accidentally activate
-    the Tier 2 fast-path on marble 0 when DeriveTier2Active() returns
-    true for the round's seed.
-
-server/rgs/round_bet_test.go:
-  - Updated comment in TestBet_PayoutDistribution_3Players to reflect
-    M18 maths (9× × stake instead of 19× × stake). Assertion logic
-    uses PayoutMultiplier (= 9.0 post-M18) so it auto-tracks.
-
-server/rgs/payout_v2_test.go (NEW, ~210 lines):
-  - 6 end-to-end settle tests using a richSim that returns full v4
-    data (podium + pickups). Verify the ledger movement for:
-      * 1° + no pickup → 9×.
-      * 2° + no pickup → 4.5×.
-      * 3° + no pickup → 3×.
-      * Tier 1 only (non-podium) → 2×.
-      * 1° + Tier 1 stack → 18×.
-      * Loser (no podium, no pickup) → 0.
-  - 1 pure-function table test with 8 scenarios on ComputeBetPayoff
-    (incl. jackpot trigger 1° + Tier 2 → 100×). Useful for triaging
-    settle-vs-math bugs.
-
-Validation:
-  - go test ./... — 12/12 packages pass, +6 new settle tests +1 math
-    table test all green.
-  - The legacy round-bet test still passes (PayoutMultiplier alias
-    pulls 9.0 → expected payout dynamically follows the constant).
-
-What this commit does NOT do:
-  - Pickup zones for the 5 non-Forest maps. Payouts work for all 6
-    maps (default RoundOutcome with empty pickups → no Tier 1/2 ever
-    fires, falls back to podium-only payoff). Adding zones is per-map
-    geometric design (M19+).
-  - Marble count bump 20 → 30. Math model targets 30; current sim
-    spawns 20. RTP math under 20-marble settle is approximately 1.43×
-    the documented 95% target — operator can knock RTPBps down via
-    Tier2ProbForRTP() to compensate, OR we ship the 20→30 bump in a
-    separate commit.
-  - HUD pickup badges + payoff preview. The HUD is unaware of the new
-    settle math; players see the post-settle balance update via the
-    existing balance-refresh path, but no in-flight visualization of
-    pickup multipliers.
-  - Real-wallet integration. MockWallet stays in front; production
-    wallet HTTP client is the original Phase 1 roadmap deliverable.
-
-After this commit, the v2 payout model is LIVE end-to-end on Forest:
-bet → place → race → pickup zones traversed → manifest written with
-full v4 fields → ComputeBetPayoff applied → wallet credited per the
-podium × pickup × jackpot stack. Forest is the working reference for
-the other 5 maps' migration.
-
-EOF
-)"
-```
-
-### Push
-
-```
-git push origin claude/compassionate-hellman-4f7e39
-```
-
-Then open a PR on GitHub or merge to `main` (the user collaborates with onion via direct push to origin — see project_collaboration memory).
-
-## Cosa rimane aperto (next session)
-
-In ordine di valore commerciale:
-
-1. **HUD broadcast redesign** — l'HUD attuale è ancora layout M9 default. Servono: scoreboard ESPN-style, race timer grosso (00:00.00), animazioni di sorpasso, pannello bet sportivo. Agent suggerito: `ux-hud-designer`.
-
-2. **Visual polish refinement** — environment_builder.gd ha defaults M7 OK ma può migliorare. Bloom da 0.6 a 0.8, saturation da 1.10 a 1.15, eventualmente DOF per cinematic. Agent suggerito: `visual-polish-artist`.
-
-3. **Decorazioni procedurali** — tribune, cartelloni, particelle ambient. Le tracce sono ora "stadium vuoti" — il design è pulito ma manca scenografia di contesto. Si fa con TrackBlocks (capsule + box random) senza assets esterni.
-
-4. **Broadcast cameras** — sostituisci la free-cam singola con 3 camere (stadium-wide / leader-follow / finish-line low-angle) e cut automatici ogni N secondi o sui sorpassi.
-
-5. **Audio reali** — game/audio/audio_controller.gd carica path `res://audio/ambient_*.ogg` che non esistono. Servono ~6 ambient loops + 2 SFX collisione + jingle vincita. CC0 OK per il prototipo.
-
-## Dove riprendere
-
-L'utente vuole verificare visualmente il risultato di M11 prima di decidere la prossima priorità. Comando per lanciare una traccia in finestra (non headless):
-
+### 1. Visual smoke — l'utente lo deve fare
+L'utente non ha ancora confermato visivamente le 7 tracce M11+M13. Comando:
 ```powershell
-& "D:/Downloads/Godot_v4.6.2-stable_win64.exe/Godot_v4.6.2-stable_win64.exe" --path "D:\Documents\GitHub\marbles-game2\.claude\worktrees\compassionate-hellman-4f7e39\game" --% -- --track=stadium
+& "D:/Downloads/Godot_v4.6.2-stable_win64.exe/Godot_v4.6.2-stable_win64.exe" --% --path "D:/Documents/GitHub/marbles-game2/game" res://main.tscn --track=plinko
 ```
+Cambia `plinko` in `forest`/`volcano`/`ice`/`cavern`/`sky`/`stadium`/`spiral`.
 
-**Nomi `--track=` accettati (post fix CLI 2026-05-02):**
-- `forest`, `roulette` → ROULETTE / Forest theme (id 1)
-- `volcano`, `craps` → CRAPS / Volcano theme (id 2)
-- `ice`, `poker` → POKER / Ice theme (id 3)
-- `cavern`, `slots` → SLOTS / Cavern theme (id 4)
-- `sky`, `plinko` → PLINKO / Sky theme (id 5)
-- `stadium` → STADIUM theme (id 6)
-- `ramp` → RAMP legacy (id 0, **fuori dal random pool**)
-- _senza flag_ → random pick tra i 6 temati (forest/volcano/ice/cavern/sky/stadium)
+Domande aperte all'utente:
+- Le 6 tracce M11 sembrano davvero diverse o è "lo stesso scheletro 6 volte"?
+- HUD v2 di onion (sinistra) + HUD legacy (destra) coesistono bene o ne va eliminato uno?
+- Spiral Drop si tiene o si elimina (è ancora exploratory, no temi M11, no pickup zones)?
 
-I nomi tematici e gli alias casino tecnici puntano alla **STESSA mappa** — class names + track_ids stabili, content riscritto in M11.
+### 2. HUD v2 — applicare alle altre 6 tracce o eliminarlo?
+Onion ha aggiunto HUD v2 (game/ui/v2/) come overlay sinistro. Convive con HUD legacy. Decisione:
+- A) Rimpiazzare HUD legacy → HUD v2 ovunque (decommissionare hud.gd / hud_layout.gd / hud_runtime.gd)
+- B) Tenere entrambi — HUD v2 solo per Plinko, legacy per le altre
+- C) Eliminare HUD v2 e tornare al solo legacy
 
-Domande aperte all'utente per la prossima sessione:
-1. La forma drop-cascade è la direzione giusta o vuole percorsi più orizzontali tipo S-curve banked (la prima versione di stadium che è fallita)?
-2. I 6 temi (Forest/Volcano/Ice/Cavern/Sky/Stadium) si distinguono sufficientemente visivamente?
-3. Il glass shader si vede meglio della plastica precedente?
-4. Procediamo con HUD broadcast (più impatto sales) o decorazioni props (più "Marble on Stream feel") come prossimo step?
+### 3. Decoration props per le 6 tracce M11
+Le tracce M13 hanno geometria distintiva (stalattiti, geyser, ice shards, cloud platforms, windmill, logs) ma manca scenografia di contesto: tribune, cartelloni, particelle ambient, neon. Si fa con TrackBlocks senza asset esterni. ~3-5 giorni di godot-track-engineer.
 
-## Strategia commerciale concordata (per contesto)
+### 4. Broadcast cameras (3 angoli + cut automatici)
+Free-cam singola attuale. Servono: stadium-wide / leader-follow / finish-line low-angle, cut automatici ogni N secondi o sui sorpassi. ~3-5 giorni.
 
-L'utente vuole arrivare al "livello William Hill" ma realisticamente il target è **fornitore B2B di un gioco distribuito via aggregator** (SoftSwiss / Spike Aggregator / EveryMatrix), licenza Anjouan B2B, entità Estonia/Cyprus, budget < €50k, primo deal mese 10-12. Vedi `C:\Users\danie\.claude\projects\D--Documents-GitHub-marbles-game2\memory\project_strategy.md` per i dettagli (memoria persistente).
+### 5. Audio asset reali
+`game/audio/audio_controller.gd` carica path `res://audio/ambient_*.ogg` che non esistono. SFX procedurali esistono. Servono ~6 ambient loops + 2 SFX collisione + jingle vincita. CC0 dalle libraries free (Freesound, ZapSplat) per il prototipo.
 
-## Audit gap-analysis completo
+### 6. Replay v4 client-side reader (per Web playback)
+Il server emette manifest v4 ma il Godot replay reader / Web client legge solo v3 (presumibilmente). Non blocker per gameplay (Godot non legge il manifest, solo il binary frames), ma blocker per audit lab che vorrà rivedere round storici. Da implementare in `game/playback/`.
 
-Plan completo in `C:\Users\danie\.claude\plans\fai-un-controllo-dell-intero-frolicking-lampson.md`. Roadmap a 5 fasi (Fase 0 fatta in questa sessione, Fase 1-5 pending) con costi/timeline/file critici per ciascuna.
+### 7. Wallet integration reale (sostituire MockWallet)
+Per soldi veri serve HTTP client verso operator wallet (SoftSwiss / EveryMatrix / etc.). MockWallet è in-memory only. ~2 settimane.
 
-## M19-M22 — payout v2 end-to-end completion (sessione 2026-05-03)
+### 8. Postgres per Sessions
+Sessions sono ancora in-memory. Snapshot file-backed copre pendingRounds + bets + wallet, NON sessions. Restart server perde le sessioni attive.
 
-Continuazione della sessione M15-M18 (payout v2 spec + sim plumbing + settle wire-up).
-Tutti i commit sono già su questo branch worktree (NON pushati).
+## Strategia commerciale (memoria persistente)
 
-```
-eeeac2c CI: M22 — RTP regression gate for the v2 payout model
-df39898 HUD: M21 follow-up — wire set_track_node + fix %.4g format crash
-b2e62fa HUD: M21 — pickup badges + v2 payout preview + winner breakdown
-e413fcf Sim: M20 — bump marble field 20 → 30 (slot_count 24 → 32)
-6ce1b34 Tracks: M19 — pickup zones for the other 5 maps (Volcano/Ice/Cavern/Sky/Stadium)
-2bff9f9 Payout: M16+M17+M18 — v2 model live in settle path
-```
+Vedi `~/.claude/projects/.../memory/project_strategy.md`:
+- Target B2B fornitore-via-aggregator (NON operator-direct)
+- 12-18 mesi €200-500k budget
+- Jurisdiction da decidere (Anjouan B2B / Curacao / Malta)
 
-**M19** (commit `6ce1b34`): pickup zones su tutti e 5 i restanti track (Volcano,
-Ice, Cavern, Sky, Stadium). Forest era già completato in M17. Layout per ogni
-track tunato sulla geometria specifica (audit-ready):
-- Volcano/Ice/Stadium: layout standard 4× T1 a y=9 + 1× T2 a y=6.5
-- Cavern: T1 a y=9 nel corridoio fra stalattiti/stalagmiti, T2 a y=2.5
-- Sky: T1 nei gap fra cloud platform levels (y=11, y=8), T2 a y=5.5
+Il prodotto è a livello "tier-2.5 mid-market casino" tecnico. Mancano principalmente:
+- Cert lab GLI-19 (€15-30K, 2-4 mesi)
+- Real wallet integration con 1+ aggregator
+- Compliance / KYC / responsible gambling
 
-**M20** (commit `e413fcf`, fairness-auditor delegated): bump marble count
-20→30 e slot_count 24→32 (8×4 grid). Backward compat preserved per old
-20-marble replays:
-- Append-only: primi 24 slot positions invariati (formula `(r-1.0)*SPAWN_DZ`
-  byte-equivalent al vecchio `(r-(SPAWN_ROWS-1)*0.5)*SPAWN_DZ` con
-  SPAWN_ROWS=3).
-- 8 nuovi slot a z=+2.0 (entro FIELD_DEPTH=5m).
-- F6_LANES bumped 20→30 su tutti i track.
-- MaxMarbles default 20→30 in `server/rgs/manager.go`, `cmd/rgsd/main.go`,
-  `cmd/roundd/main.go`.
-- Tutti i test Go aggiornati: stake assertions ricalcolate per pool 30
-  marbles. 12/12 packages pass.
-- Validato: smoke Forest+Stadium con 30 marbles → ROUNDTRIP OK; verifier
-  PASS (30 marbles across 32 slots); test_vectors_main 4/4 vectors PASS.
-
-**M21** (commit `b2e62fa`, ux-hud-designer delegated + commit `df39898`
-follow-up):
-- Pickup badges nel timing tower: poll a 5 Hz durante RACING, "+2×" green
-  per Tier-1 / "+3×" gold per Tier-2.
-- Bet panel: payout matrix 6-row (1°/2°/3°/+T1/+T2/JACKPOT) con valori live
-  in €.
-- Winner modal: breakdown line ("1st (9×) + Pickup ×2 = 18× × €5 = €90").
-- Marble count display "30 RACERS" ovunque.
-- i18n keys aggiunte in tutti e 5 i locale (en/it/es/de/pt).
-- Follow-up: wire `_hud.set_track_node(track)` in main.gd + live_main.gd
-  per attivare il poller. Sostituito `%.4g` (non supportato da GDScript) con
-  un helper `_format_compact_float()` che gestisce 9.0→"9", 4.5→"4.5",
-  100.0→"100".
-
-**M22** (commit `eeeac2c`): `scripts/rtp_smoke_v2.sh` + nuovo CI job
-`rtp-regression`. Tier 1 (CI gate, ~50ms): TestRTPSimulation 50k rounds
-con tolleranza ±0.02 sul target 0.95, più tutti i test math regressivi
-(ComputeBetPayoff, NewRoundOutcome, DeriveTier2Active, Tier2ProbForRTP,
-casino models). Tier 2 (opzionale, richiede GODOT_BIN): batch end-to-end
-N rounds via roundd + analyze_replays.py. Validato locale: tier 1 PASS,
-empirical RTP = 0.9542.
-
-**Stato finale del payout v2**: LIVE end-to-end su tutti e 6 i track con 30
-marbles. RTP gated in CI. HUD player-facing aggiornata.
-
-**Cosa NON è stato fatto e resta pending**:
-- Real-wallet HTTP client (sostituire MockWallet) — Phase 1 roadmap originale.
-- Fase 2 visual polish (tribune, banners, particles ambient).
-- Fase 3 broadcast cameras + winner reveal cinematico + replay highlights.
-- Fase 4 audio assets + event hooks.
-- Fase 5 web/operator readiness (postMessage bridge full wiring, theme
-  runtime, i18n full coverage incl. browser detection).
-- Fase 6 next-gen tracks (track_id 7-12 con geometrie radicalmente diverse).
-- regen di `docs/fairness-vectors.json` per aggiungere un vector
-  slot_count=32 + 30 marbles (opzionale, i 4 esistenti continuano a passare).
-
-**Push step**: `git push origin claude/compassionate-hellman-4f7e39` quando
-l'utente conferma.
+Vedi audit completo precedente per dettagli.
 
 ## Note tecniche per il prossimo Claude
 
-- `make` non è installato nella bash dell'utente Windows. Il Makefile è corretto, lui può `winget install GnuWin32.Make` o usare le `make` targets come reference per i comandi sotto.
-- Godot binary: `D:/Downloads/Godot_v4.6.2-stable_win64.exe/Godot_v4.6.2-stable_win64.exe`. Quando si lancia da PowerShell servono i due token separatori `--%` (stop-parsing PowerShell) e `--` (Godot user-args separator). Da bash basta `--`. Esempi nel memory `godot_binary.md`.
-- L'utente collabora con `onion` su `origin` (push diretto autorizzato). Suo account: `0xCondor`. Vedi memory `project_collaboration.md`.
-- Auto-mode è attivo nelle sessioni di questo utente — esegue autonomamente, minimizza interruzioni.
+- Godot binary: `D:/Downloads/Godot_v4.6.2-stable_win64.exe/Godot_v4.6.2-stable_win64.exe`
+- Da bash: `--path` + `--` (separator) + `res://main.tscn` + args
+- Da PowerShell: `&` + `--%` (stop-parsing) + path
+- Branch model documentato in `WORKFLOW.md` root
+- Test PowerShell commands in `TESTING.md` root
+- Ogni sessione → aggiorna HANDOFF.md root + lascia uncommitted, VS Code committa
