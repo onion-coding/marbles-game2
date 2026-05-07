@@ -39,6 +39,7 @@ var _replay_path: String = ""
 var _hud: HUD = null
 var _hud_v2: HudV2 = null    # new spec-based HUD; populated only in interactive mode
 var _freecam: FreeCamera = null
+var _director: BroadcastDirector = null  # broadcast director (replaces bare FreeCamera in interactive mode)
 var _live_marbles: Array = []
 var _live_marble_colors: Array = []
 var _live_finish_pos: Vector3 = Vector3.ZERO
@@ -373,9 +374,16 @@ func _start_race(spec: Dictionary) -> void:
 		cam.track = track
 		add_child(cam)
 	else:
-		_freecam = FreeCamera.new()
-		_freecam.track = track
-		add_child(_freecam)
+		# Broadcast director manages all cameras (WIDE / LEADER / FINISH /
+		# FREE). FreeCamera lives inside the director and is exposed via
+		# director.freecam for the marble-follow signal connection below.
+		_director = BroadcastDirector.new()
+		add_child(_director)
+		_director.setup(track, marbles, track.finish_area_transform().origin)
+
+		# Keep _freecam pointing at the embedded instance so legacy code that
+		# checks _freecam (e.g. _cleanup_round) still works.
+		_freecam = _director.freecam
 
 		_live_racing = true
 		_live_tick = 0
@@ -403,8 +411,18 @@ func _start_race(spec: Dictionary) -> void:
 		_hud.setup(hud_header)
 		_hud.set_track_name(TrackRegistry.name_of(track_id))
 		_hud.set_track_node(track)
-		_hud.marble_selected.connect(_freecam.follow_marble_index)
-		_freecam.following_changed.connect(_hud.set_following)
+		# Connect marble-follow through the director's embedded freecam.
+		if _freecam != null:
+			_hud.marble_selected.connect(_freecam.follow_marble_index)
+			_freecam.following_changed.connect(_hud.set_following)
+		# Wire HUD camera mode requests into the director.
+		if _hud.camera_mode_requested.is_connected(_director.set_mode):
+			pass  # already connected (RGS multi-round)
+		else:
+			_hud.camera_mode_requested.connect(_director.set_mode)
+
+		# Start auto-cut scheduling once everything is wired.
+		_director.start_directing()
 
 		# v2 overlay (interactive mode): kick off LIVE phase, hand it the
 		# round id + field size + player marble.
@@ -435,6 +453,11 @@ func _start_race(spec: Dictionary) -> void:
 			_live_racing = false
 			_winner_idx_at_finish = winner_idx
 			_race_visually_finished = true
+
+			# Freeze the broadcast director on its current camera (normally
+			# FINISH_LINE_LOWANGLE at this point).
+			if _director != null:
+				_director.notify_race_finished()
 
 			# Legacy HUD: 15-s settle window before the winner modal — keeps
 			# spectators on the live finishers list while the rest of the
@@ -491,9 +514,13 @@ func _cleanup_round() -> void:
 		_live_track.queue_free()
 	_live_track = null
 
-	# Free FreeCamera (recreated each round; HUD is kept).
-	if is_instance_valid(_freecam):
-		_freecam.queue_free()
+	# Free the broadcast director (owns FreeCamera internally).
+	# In spec/server mode _director is null; guard before freeing.
+	if is_instance_valid(_director):
+		_director.queue_free()
+	_director = null
+	# _freecam is either null (spec mode) or a child of _director (already freed above).
+	# Clear the pointer so callers don't access a stale reference.
 	_freecam = null
 
 	# Reset per-round state.
