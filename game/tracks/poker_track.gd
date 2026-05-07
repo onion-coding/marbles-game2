@@ -73,6 +73,7 @@ func _ready() -> void:
 	_build_catchment()
 	_build_pickup_zones()
 	_build_mood_lights()
+	_build_decorations()
 
 # M19 — Ice pickup zones. Same standardized layout as Forest, ice-themed
 # colors. The shard rows are at y≈[12.3, 10.7, 9.0, 7.3, 5.7]; T1 zones at
@@ -270,3 +271,63 @@ func camera_pose() -> Dictionary:
 
 func environment_overrides() -> Dictionary:
 	return _theme["env"]
+
+# ─── Decoration props (visual-only, NO collision) ───────────────────────────
+# Ice theme: frost-white bleachers, "ICE RUN" cyan neon banners,
+# falling snowflake particles, cold-blue accent lights.
+func _build_decorations() -> void:
+	var deco := Node3D.new()
+	deco.name = "Decorations"
+	add_child(deco)
+
+	# --- Spectator stands: icy whites and cool blues
+	var ice_bodies: Array = [
+		Color(0.80, 0.90, 1.00), Color(0.55, 0.78, 0.92),
+		Color(0.92, 0.95, 1.00), Color(0.30, 0.55, 0.78),
+		Color(0.65, 0.80, 0.95), Color(0.45, 0.70, 0.90),
+	]
+	var head_col := Color(0.95, 0.95, 1.00)
+	var mid_y: float = (SPAWN_Y + F6_Y) * 0.5
+	for side in [-1, 1]:
+		var z_near: float = float(side) * 8.5
+		var z_far: float  = float(side) * 11.0
+		TrackBlocks.build_spectator_row(deco, "IceStand_S%d_R0" % side,
+			Vector3(0.0, mid_y - 6.0, z_near), 20, 2.0, ice_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "IceStand_S%d_R1" % side,
+			Vector3(0.0, mid_y - 4.5, z_far), 20, 2.0, ice_bodies, head_col)
+
+	# --- Billboards: crystal-cyan + ice-blue panels
+	var sign_cols: Array = [
+		Color(0.30, 0.90, 1.00),   # cyan neon
+		Color(0.55, 0.95, 1.00),   # bright ice
+		Color(0.20, 0.75, 1.00),   # deep cyan
+		Color(0.75, 0.92, 1.00),   # pale frost
+	]
+	var board_positions: Array = [-15.0, -5.0, 5.0, 15.0]
+	for i in range(board_positions.size()):
+		var bx: float = float(board_positions[i])
+		TrackBlocks.build_billboard(deco, "IceSign_%d" % i,
+			Transform3D(Basis.IDENTITY,
+				Vector3(bx, SPAWN_Y + 2.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(7.0, 2.5, 0.18), sign_cols[i % sign_cols.size()], 3.2)
+
+	# --- Neon accent lights: cool blue-cyan
+	var neon_cols: Array = [
+		Color(0.30, 0.85, 1.00),
+		Color(0.55, 0.95, 1.00),
+		Color(0.30, 0.85, 1.00),
+	]
+	TrackBlocks.build_neon_array(deco, "IceNeon_Pos",
+		mid_y, 10.0, [-15.0, 0.0, 15.0], neon_cols, 2.0, 24.0)
+	TrackBlocks.build_neon_array(deco, "IceNeon_Neg",
+		mid_y, -10.0, [-15.0, 0.0, 15.0], neon_cols, 2.0, 24.0)
+
+	# --- Ambient particles: snowflakes drifting gently downward
+	TrackBlocks.build_ambient_particles(deco, "IceSnow",
+		Vector3(0.0, SPAWN_Y - 2.0, 0.0),
+		90, 12.0,
+		Color(0.90, 0.95, 1.00, 0.80),
+		Vector3(0.0, -0.6, 0.0),          # slow fall
+		20.0, 5.0, 2.0,
+		0.05, 0.30,
+		0.03, 0.10)

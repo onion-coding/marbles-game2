@@ -75,6 +75,7 @@ func _ready() -> void:
 	_build_catchment()
 	_build_pickup_zones()
 	_build_mood_lights()
+	_build_decorations()
 
 # M19 — Cavern pickup zones. Stalactites occupy y=10..14, stalagmites
 # y=4..8 — the marble-traffic corridor sits at y=8..10. T1 zones at y=9
@@ -305,3 +306,73 @@ func camera_pose() -> Dictionary:
 
 func environment_overrides() -> Dictionary:
 	return _theme["env"]
+
+# ─── Decoration props (visual-only, NO collision) ───────────────────────────
+# Cavern theme: crystal-purple crowd deep in the cave, magenta "CAVERN RUN"
+# banners, bioluminescent dust-mote particles, teal + magenta neon torches.
+func _build_decorations() -> void:
+	var deco := Node3D.new()
+	deco.name = "Decorations"
+	add_child(deco)
+
+	# --- Spectator stands: deep cavern purples and teals
+	var cavern_bodies: Array = [
+		Color(0.18, 0.10, 0.30), Color(0.08, 0.20, 0.30),
+		Color(0.25, 0.08, 0.40), Color(0.10, 0.15, 0.20),
+		Color(0.35, 0.12, 0.50), Color(0.12, 0.25, 0.35),
+	]
+	var head_col := Color(0.60, 0.40, 0.80)
+	var mid_y: float = (SPAWN_Y + F6_Y) * 0.5
+	for side in [-1, 1]:
+		var z_near: float = float(side) * 8.5
+		var z_far: float  = float(side) * 11.0
+		TrackBlocks.build_spectator_row(deco, "CavernStand_S%d_R0" % side,
+			Vector3(0.0, mid_y - 6.0, z_near), 20, 2.0, cavern_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "CavernStand_S%d_R1" % side,
+			Vector3(0.0, mid_y - 4.5, z_far), 20, 2.0, cavern_bodies, head_col)
+
+	# --- Billboards: crystal-magenta + teal panels
+	var sign_cols: Array = [
+		Color(0.85, 0.30, 0.95),   # crystal magenta
+		Color(0.50, 0.95, 0.90),   # bioluminescent teal
+		Color(0.70, 0.20, 0.85),   # deep magenta
+		Color(0.35, 0.80, 0.80),   # muted teal
+	]
+	var board_positions: Array = [-15.0, -5.0, 5.0, 15.0]
+	for i in range(board_positions.size()):
+		var bx: float = float(board_positions[i])
+		TrackBlocks.build_billboard(deco, "CavernSign_%d" % i,
+			Transform3D(Basis.IDENTITY,
+				Vector3(bx, SPAWN_Y + 2.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(7.0, 2.5, 0.18), sign_cols[i % sign_cols.size()], 3.5)
+
+	# --- Neon accent lights: alternating teal + magenta
+	var neon_cols: Array = [
+		Color(0.50, 0.95, 0.90),
+		Color(0.85, 0.30, 0.95),
+		Color(0.50, 0.95, 0.90),
+	]
+	TrackBlocks.build_neon_array(deco, "CavernNeon_Pos",
+		mid_y, 10.0, [-15.0, 0.0, 15.0], neon_cols, 2.5, 24.0)
+	TrackBlocks.build_neon_array(deco, "CavernNeon_Neg",
+		mid_y, -10.0, [-15.0, 0.0, 15.0], neon_cols, 2.5, 24.0)
+
+	# --- Ambient particles: bioluminescent dust motes drifting lazily
+	TrackBlocks.build_ambient_particles(deco, "CavernDust",
+		Vector3(0.0, mid_y, 0.0),
+		70, 14.0,
+		Color(0.55, 0.95, 0.90, 0.70),
+		Vector3(0.05, 0.15, 0.0),         # very slow drift
+		20.0, 14.0, 2.0,
+		0.02, 0.15,
+		0.04, 0.11)
+
+	# Crystal magenta sparkles near gate
+	TrackBlocks.build_ambient_particles(deco, "CavernSparkles",
+		Vector3(0.0, F6_Y + 5.0, 0.0),
+		30, 6.0,
+		Color(1.00, 0.50, 1.00, 0.85),
+		Vector3(0.0, 0.8, 0.0),
+		15.0, 4.0, 2.0,
+		0.1, 0.6,
+		0.03, 0.08)

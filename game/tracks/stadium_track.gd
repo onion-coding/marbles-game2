@@ -148,6 +148,7 @@ func _ready() -> void:
 	_build_catchment_floor()
 	_build_pickup_zones()
 	_build_mood_lights()
+	_build_decorations()
 
 # M19 — Stadium pickup zones (broadcast-gold theme). The windmill at
 # y=WINDMILL_Y=9 sweeps blades in a horizontal disc with span 6m radius.
@@ -596,3 +597,76 @@ func environment_overrides() -> Dictionary:
 		"sun_color":      Color(1.0, 0.85, 0.60),
 		"sun_energy":     1.6,
 	}
+
+# ─── Decoration props (visual-only, NO collision) ───────────────────────────
+# Stadium theme: velvet-red + gold bleacher crowd, broadcast banners,
+# confetti streamers, warm golden spotlights.
+func _build_decorations() -> void:
+	var deco := Node3D.new()
+	deco.name = "Decorations"
+	add_child(deco)
+
+	# --- Spectator stands: stadium red/gold/white classic broadcast palette
+	var stadium_bodies: Array = [
+		Color(0.75, 0.10, 0.10),   # red velvet
+		Color(0.85, 0.72, 0.20),   # gold
+		Color(0.95, 0.95, 0.97),   # white
+		Color(0.20, 0.45, 0.85),   # blue
+		Color(0.60, 0.08, 0.08),   # dark red
+		Color(0.70, 0.60, 0.15),   # warm gold
+	]
+	var head_col := Color(0.85, 0.75, 0.60)
+	var mid_y: float = (SPAWN_Y + FLOOR_BASE_Y) * 0.5
+	for side in [-1, 1]:
+		var z_near: float = float(side) * 8.5
+		var z_far: float  = float(side) * 11.0
+		TrackBlocks.build_spectator_row(deco, "StadiumStand_S%d_R0" % side,
+			Vector3(0.0, mid_y - 6.0, z_near), 20, 2.0, stadium_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "StadiumStand_S%d_R1" % side,
+			Vector3(0.0, mid_y - 4.5, z_far),  20, 2.0, stadium_bodies, head_col)
+
+	# --- Billboards: broadcast gold + velvet red panels
+	var sign_cols: Array = [
+		Color(1.00, 0.85, 0.30),   # broadcast gold
+		Color(0.80, 0.10, 0.10),   # stadium red
+		Color(1.00, 0.70, 0.20),   # amber
+		Color(0.20, 0.45, 0.85),   # blue
+	]
+	var board_positions: Array = [-15.0, -5.0, 5.0, 15.0]
+	for i in range(board_positions.size()):
+		var bx: float = float(board_positions[i])
+		TrackBlocks.build_billboard(deco, "StadiumSign_%d" % i,
+			Transform3D(Basis.IDENTITY,
+				Vector3(bx, SPAWN_Y + 2.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(7.0, 2.5, 0.18), sign_cols[i % sign_cols.size()], 3.2)
+
+	# --- Neon accent lights: broadcast gold + magenta alternating
+	var neon_cols: Array = [
+		Color(1.00, 0.85, 0.30),
+		Color(1.00, 0.05, 0.85),
+		Color(1.00, 0.85, 0.30),
+	]
+	TrackBlocks.build_neon_array(deco, "StadiumNeon_Pos",
+		mid_y, 10.0, [-15.0, 0.0, 15.0], neon_cols, 2.5, 26.0)
+	TrackBlocks.build_neon_array(deco, "StadiumNeon_Neg",
+		mid_y, -10.0, [-15.0, 0.0, 15.0], neon_cols, 2.5, 26.0)
+
+	# --- Ambient particles: confetti streaks bursting around the finish area
+	TrackBlocks.build_ambient_particles(deco, "StadiumConfetti",
+		Vector3(0.0, F6_Y + 4.0, 0.0),
+		100, 7.0,
+		Color(1.00, 0.85, 0.20, 0.90),
+		Vector3(0.0, 2.0, 0.0),           # burst upward
+		18.0, 3.0, 2.0,
+		0.5, 3.0,
+		0.04, 0.14)
+
+	# Slower floating sparks throughout mid-track
+	TrackBlocks.build_ambient_particles(deco, "StadiumSpotBeams",
+		Vector3(0.0, mid_y + 5.0, 0.0),
+		35, 10.0,
+		Color(1.00, 0.90, 0.50, 0.80),
+		Vector3(0.0, -0.4, 0.0),
+		16.0, 8.0, 2.0,
+		0.02, 0.20,
+		0.05, 0.12)

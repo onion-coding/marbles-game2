@@ -115,6 +115,7 @@ func _ready() -> void:
 	_build_rolling_logs()
 	_build_pickup_zones()
 	_build_mood_lights()
+	_build_decorations()
 
 # Forest demo of the M17 pickup-zone system. Lays out 4 Tier-1 (2×) zones
 # and 1 Tier-2 (3×) zone inside the F5 peg-forest area. Geometry is sized so
@@ -374,3 +375,68 @@ func camera_pose() -> Dictionary:
 
 func environment_overrides() -> Dictionary:
 	return _theme["env"]
+
+# ─── Decoration props (visual-only, NO collision) ───────────────────────────
+# Forest theme: canopy tribune bleachers, "FOREST RUN" banners, firefly
+# particles drifting upward, and neon-green accent lights washing the stands.
+func _build_decorations() -> void:
+	var deco := Node3D.new()
+	deco.name = "Decorations"
+	add_child(deco)
+
+	# --- Spectator stands (2 rows, both sides, Z ≈ ±8 so well outside FIELD_DEPTH/2=2.5)
+	# Each side: 2 tiered rows of 20 spectators each = 40 per side, 80 total.
+	var forest_bodies: Array = [
+		Color(0.20, 0.50, 0.18), Color(0.45, 0.30, 0.12),
+		Color(0.30, 0.55, 0.22), Color(0.55, 0.42, 0.18),
+		Color(0.65, 0.50, 0.25), Color(0.18, 0.40, 0.15),
+	]
+	var head_col := Color(0.85, 0.70, 0.55)
+	var mid_y: float = (SPAWN_Y + F6_Y) * 0.5     # vertical centre of track ≈ 20
+	for side in [-1, 1]:
+		var z_near: float = float(side) * 8.5
+		var z_far: float  = float(side) * 11.0
+		TrackBlocks.build_spectator_row(deco, "ForestStand_S%d_R0" % side,
+			Vector3(0.0, mid_y - 6.0, z_near), 20, 2.0, forest_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "ForestStand_S%d_R1" % side,
+			Vector3(0.0, mid_y - 4.5, z_far), 20, 2.0, forest_bodies, head_col)
+
+	# --- Billboards (4 panels, two per side above the stands)
+	# "FOREST RUN" lettering implied by the emissive green-gold panel.
+	var sign_cols: Array = [
+		Color(0.30, 0.90, 0.30),  # vivid green
+		Color(1.00, 0.80, 0.20),  # firefly gold
+		Color(0.20, 0.70, 0.20),  # darker green
+		Color(1.00, 0.70, 0.10),  # amber
+	]
+	var board_positions: Array = [-15.0, -5.0, 5.0, 15.0]
+	for i in range(board_positions.size()):
+		var bx: float = float(board_positions[i])
+		var col: Color = sign_cols[i % sign_cols.size()]
+		# Front-facing panel (visible from +Z camera).
+		var basis := Basis.IDENTITY    # faces +Z by default
+		TrackBlocks.build_billboard(deco, "ForestSign_%d" % i,
+			Transform3D(basis, Vector3(bx, SPAWN_Y + 2.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(7.0, 2.5, 0.18), col, 3.0)
+
+	# --- Neon accent lights: 6 lights bracketing the stands, green + amber mix
+	var neon_cols: Array = [
+		Color(0.25, 1.00, 0.35),
+		Color(1.00, 0.85, 0.25),
+		Color(0.25, 1.00, 0.35),
+	]
+	TrackBlocks.build_neon_array(deco, "ForestNeon_Pos",
+		mid_y, 10.0, [-15.0, 0.0, 15.0], neon_cols, 2.2, 22.0)
+	TrackBlocks.build_neon_array(deco, "ForestNeon_Neg",
+		mid_y, -10.0, [-15.0, 0.0, 15.0], neon_cols, 2.2, 22.0)
+
+	# --- Ambient particles: "firefly" dots drifting upward slowly
+	# Kept well inside the track corridor (Z=0) so they don't clip the stands.
+	TrackBlocks.build_ambient_particles(deco, "ForestFireflies",
+		Vector3(0.0, mid_y, 0.0),
+		60, 8.0,                                  # amount, lifetime
+		Color(1.00, 1.00, 0.40, 0.85),            # warm yellow
+		Vector3(0.0, 0.4, 0.0),                   # gentle upward drift
+		18.0, 15.0, 2.0,                          # spread_x/y/z
+		0.1, 0.5,                                 # velocity min/max
+		0.04, 0.12)                               # scale min/max

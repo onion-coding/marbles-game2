@@ -96,6 +96,7 @@ func _ready() -> void:
 	_build_catchment()
 	_build_pickup_zones()
 	_build_mood_lights()
+	_build_decorations()
 
 # M19 — Volcano pickup zones (lava-themed). Same standardized layout as
 # Forest (4 Tier-1 + 1 Tier-2 around F5 mid-Y), tuned colors for the lava
@@ -318,3 +319,73 @@ func camera_pose() -> Dictionary:
 
 func environment_overrides() -> Dictionary:
 	return _theme["env"]
+
+# ─── Decoration props (visual-only, NO collision) ───────────────────────────
+# Volcano theme: obsidian-rock bleachers, "VOLCANO CHAOS" ember banners,
+# spark + ash particles drifting upward, red/orange neon torchlight.
+func _build_decorations() -> void:
+	var deco := Node3D.new()
+	deco.name = "Decorations"
+	add_child(deco)
+
+	# --- Spectator stands: lava-rock crowd in dark ember tones
+	var lava_bodies: Array = [
+		Color(0.20, 0.08, 0.05), Color(0.35, 0.12, 0.05),
+		Color(0.15, 0.08, 0.06), Color(0.45, 0.18, 0.06),
+		Color(0.25, 0.10, 0.04), Color(0.40, 0.15, 0.06),
+	]
+	var head_col := Color(0.60, 0.35, 0.20)
+	var mid_y: float = (SPAWN_Y + F6_Y) * 0.5
+	for side in [-1, 1]:
+		var z_near: float = float(side) * 8.5
+		var z_far: float  = float(side) * 11.0
+		TrackBlocks.build_spectator_row(deco, "VolcanoStand_S%d_R0" % side,
+			Vector3(0.0, mid_y - 6.0, z_near), 20, 2.0, lava_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "VolcanoStand_S%d_R1" % side,
+			Vector3(0.0, mid_y - 4.5, z_far), 20, 2.0, lava_bodies, head_col)
+
+	# --- Billboards: hot orange/red ember-glow panels
+	var sign_cols: Array = [
+		Color(1.00, 0.45, 0.05),  # bright lava
+		Color(1.00, 0.20, 0.05),  # deep red
+		Color(1.00, 0.60, 0.10),  # ember
+		Color(0.85, 0.25, 0.05),  # dark lava
+	]
+	var board_positions: Array = [-15.0, -5.0, 5.0, 15.0]
+	for i in range(board_positions.size()):
+		var bx: float = float(board_positions[i])
+		TrackBlocks.build_billboard(deco, "VolcanoSign_%d" % i,
+			Transform3D(Basis.IDENTITY,
+				Vector3(bx, SPAWN_Y + 2.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(7.0, 2.5, 0.18), sign_cols[i % sign_cols.size()], 3.5)
+
+	# --- Neon accent lights: hot orange torches flanking the stands
+	var neon_cols: Array = [
+		Color(1.00, 0.40, 0.05),
+		Color(1.00, 0.65, 0.15),
+		Color(1.00, 0.40, 0.05),
+	]
+	TrackBlocks.build_neon_array(deco, "VolcanoNeon_Pos",
+		mid_y, 10.0, [-15.0, 0.0, 15.0], neon_cols, 2.8, 25.0)
+	TrackBlocks.build_neon_array(deco, "VolcanoNeon_Neg",
+		mid_y, -10.0, [-15.0, 0.0, 15.0], neon_cols, 2.8, 25.0)
+
+	# --- Ambient particles: sparks + ash rising from below
+	TrackBlocks.build_ambient_particles(deco, "VolcanoSparks",
+		Vector3(0.0, F6_Y + 3.0, 0.0),
+		80, 5.0,
+		Color(1.00, 0.70, 0.20, 0.90),
+		Vector3(0.0, 3.5, 0.0),          # fast upward
+		18.0, 6.0, 2.0,
+		1.0, 4.0,
+		0.03, 0.09)
+
+	# Slower dark ash particles higher up
+	TrackBlocks.build_ambient_particles(deco, "VolcanoAsh",
+		Vector3(0.0, mid_y, 0.0),
+		40, 10.0,
+		Color(0.25, 0.20, 0.18, 0.60),
+		Vector3(0.15, 0.5, 0.0),          # slight diagonal drift
+		20.0, 10.0, 2.0,
+		0.05, 0.25,
+		0.06, 0.15)

@@ -217,6 +217,7 @@ func _ready() -> void:
 	_build_tubes()
 	_build_section_lower_plinko()
 	_build_finish_and_catchment()
+	_build_decorations()
 
 func _init_physics_materials() -> void:
 	_mat_floor = PhysicsMaterial.new()
@@ -799,13 +800,105 @@ func camera_pose() -> Dictionary:
 
 func environment_overrides() -> Dictionary:
 	return {
-		"sky_top":        Color(0.04, 0.04, 0.06),
-		"sky_horizon":    Color(0.10, 0.08, 0.14),
-		"ground_top":     Color(0.06, 0.05, 0.08),
-		"ground_bottom":  Color(0.02, 0.02, 0.03),
-		"ambient_energy": 0.4,
-		"fog_energy":     0.0,
+		"sky_top":        Color(0.30, 0.55, 0.95),
+		"sky_horizon":    Color(0.95, 0.92, 0.78),
+		"ambient_energy": 1.20,
+		"fog_color":      Color(0.85, 0.90, 1.00),
+		"fog_density":    0.0008,
+		"sun_color":      Color(1.00, 0.95, 0.70),
+		"sun_energy":     1.7,
 	}
+
+# ─── Decoration props (visual-only, NO collision) ───────────────────────────
+# Sky / Plinko theme: cloud-white bleachers high above, sun-gold "SKY RUN"
+# banners, cloud-puff particles drifting sideways, warm golden neon.
+func _build_decorations() -> void:
+	var deco := Node3D.new()
+	deco.name = "Decorations"
+	add_child(deco)
+
+	# Plinko is very tall (y=-50..y=98). Place two stand clusters:
+	# Upper cluster around the S1 descent midpoint (~y=63), and lower cluster
+	# near the tube zone (~y=2). Both at Z ±10 outside FIELD_DEPTH/2=1.75.
+	var sky_bodies: Array = [
+		Color(0.92, 0.92, 0.98), Color(0.65, 0.85, 1.00),
+		Color(0.95, 0.85, 0.55), Color(0.55, 0.78, 0.95),
+		Color(0.80, 0.92, 1.00), Color(0.75, 0.88, 0.60),
+	]
+	var head_col := Color(0.95, 0.90, 0.80)
+
+	for side in [-1, 1]:
+		var z_near: float = float(side) * 8.0
+		var z_far: float  = float(side) * 10.5
+		# Upper stands (around upper S1 descent, y≈63)
+		TrackBlocks.build_spectator_row(deco, "SkyStandUpper_S%d_R0" % side,
+			Vector3(0.0, 60.0, z_near), 18, 1.8, sky_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "SkyStandUpper_S%d_R1" % side,
+			Vector3(0.0, 61.5, z_far),  18, 1.8, sky_bodies, head_col)
+		# Lower stands (around tube exit zone, y≈0)
+		TrackBlocks.build_spectator_row(deco, "SkyStandLower_S%d_R0" % side,
+			Vector3(0.0, -2.0, z_near), 18, 1.8, sky_bodies, head_col)
+		TrackBlocks.build_spectator_row(deco, "SkyStandLower_S%d_R1" % side,
+			Vector3(0.0, -0.5, z_far),  18, 1.8, sky_bodies, head_col)
+
+	# --- Billboards: sun-gold + sky-blue at top and bottom of track
+	var sign_cols: Array = [
+		Color(1.00, 0.90, 0.30),   # sun gold
+		Color(0.55, 0.85, 1.00),   # sky blue
+		Color(1.00, 0.80, 0.20),   # amber
+		Color(0.35, 0.80, 1.00),   # deep sky
+	]
+	# Upper row of signs near spawn
+	var upper_xs: Array = [-10.0, 0.0, 10.0]
+	for i in range(upper_xs.size()):
+		var bx: float = float(upper_xs[i])
+		TrackBlocks.build_billboard(deco, "SkySignTop_%d" % i,
+			Transform3D(Basis.IDENTITY,
+				Vector3(bx, SPAWN_Y + 2.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(7.5, 2.5, 0.18), sign_cols[i % sign_cols.size()], 3.0)
+	# Lower row near finish
+	var lower_xs: Array = [-8.0, 0.0, 8.0]
+	for i in range(lower_xs.size()):
+		var bx: float = float(lower_xs[i])
+		TrackBlocks.build_billboard(deco, "SkySignBot_%d" % i,
+			Transform3D(Basis.IDENTITY,
+				Vector3(bx, FINISH_Y - 3.0, -FIELD_DEPTH * 0.5 - 1.5)),
+			Vector3(6.5, 2.0, 0.18), sign_cols[(i + 1) % sign_cols.size()], 2.8)
+
+	# --- Neon accent lights: golden daylight brackets
+	var neon_cols: Array = [
+		Color(1.00, 0.90, 0.30),
+		Color(0.55, 0.85, 1.00),
+		Color(1.00, 0.90, 0.30),
+	]
+	TrackBlocks.build_neon_array(deco, "SkyNeonUpper_Pos",
+		65.0, 9.0, [-12.0, 0.0, 12.0], neon_cols, 2.0, 28.0)
+	TrackBlocks.build_neon_array(deco, "SkyNeonUpper_Neg",
+		65.0, -9.0, [-12.0, 0.0, 12.0], neon_cols, 2.0, 28.0)
+	TrackBlocks.build_neon_array(deco, "SkyNeonLower_Pos",
+		2.0, 9.0, [-10.0, 0.0, 10.0], neon_cols, 2.0, 22.0)
+	TrackBlocks.build_neon_array(deco, "SkyNeonLower_Neg",
+		2.0, -9.0, [-10.0, 0.0, 10.0], neon_cols, 2.0, 22.0)
+
+	# --- Ambient particles: cloud puffs + sparkle sun-beams
+	# Upper cloud puffs
+	TrackBlocks.build_ambient_particles(deco, "SkyClouds",
+		Vector3(0.0, 70.0, 0.0),
+		50, 15.0,
+		Color(0.95, 0.95, 1.00, 0.75),
+		Vector3(0.3, -0.1, 0.0),          # gentle sideways drift
+		14.0, 5.0, 1.5,
+		0.05, 0.25,
+		0.08, 0.22)
+	# Golden sun-sparkle near tubes
+	TrackBlocks.build_ambient_particles(deco, "SkySparks",
+		Vector3(0.0, 10.0, 0.0),
+		40, 8.0,
+		Color(1.00, 0.95, 0.60, 0.90),
+		Vector3(0.0, 0.5, 0.0),
+		12.0, 4.0, 1.5,
+		0.1, 0.5,
+		0.03, 0.08)
 
 # ─── Tube — kinematic waterslide ────────────────────────────────────────────
 #
