@@ -36,17 +36,26 @@ func parseRoundID(s string) (uint64, error) {
 //	POST /v1/rounds/start                     mint a server-authoritative round spec (client --rgs flow)
 //	POST /v1/rounds/{round_id}/bets           place a bet on a pre-minted round
 //	GET  /v1/rounds/{round_id}/bets           list bets for a round (filter: ?player_id=)
+//	GET  /v1/scheduler/status                 scheduler state (enabled, phase, current_round_id, next_round_at)
 //	GET  /v1/health                           liveness check
 //
 // The body schemas are defined inline in this file as request/response
 // structs so the JSON contract stays adjacent to the handler that uses
 // it; see api_test.go for examples.
 type HTTPHandler struct {
-	mgr *Manager
+	mgr   *Manager
+	sched *Scheduler // nil when scheduler is disabled
 }
 
 func NewHTTPHandler(mgr *Manager) *HTTPHandler {
 	return &HTTPHandler{mgr: mgr}
+}
+
+// NewHTTPHandlerWithScheduler is like NewHTTPHandler but also wires the
+// optional Scheduler so that GET /v1/scheduler/status reports live state.
+// Pass a nil sched to disable the endpoint (returns 404).
+func NewHTTPHandlerWithScheduler(mgr *Manager, sched *Scheduler) *HTTPHandler {
+	return &HTTPHandler{mgr: mgr, sched: sched}
 }
 
 func (h *HTTPHandler) Routes() *http.ServeMux {
@@ -60,6 +69,7 @@ func (h *HTTPHandler) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /v1/rounds/{round_id}/bets", h.placeRoundBet)
 	mux.HandleFunc("GET /v1/rounds/{round_id}/bets", h.getRoundBets)
 	mux.HandleFunc("GET /v1/wallets/{player_id}/balance", h.walletBalance)
+	mux.HandleFunc("GET /v1/scheduler/status", h.schedulerStatus)
 	mux.HandleFunc("GET /v1/health", h.health)
 	return mux
 }
@@ -402,6 +412,17 @@ func (h *HTTPHandler) walletBalance(w http.ResponseWriter, r *http.Request) {
 		Currency: cur,
 		Balance:  float64(bal) / scale,
 	})
+}
+
+// schedulerStatus handles GET /v1/scheduler/status.
+// Returns 404 when the scheduler is disabled (--scheduler-enabled was not set).
+func (h *HTTPHandler) schedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if h.sched == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("scheduler not enabled"))
+		return
+	}
+	st := h.sched.Status()
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (h *HTTPHandler) health(w http.ResponseWriter, r *http.Request) {

@@ -64,6 +64,11 @@ func main() {
 		supportedCurrencies = flag.String("supported-currencies", envOr("RGSD_SUPPORTED_CURRENCIES", "EUR,USD,GBP,BTC,ETH,USDT"), "comma-separated whitelist of accepted currency codes (env: RGSD_SUPPORTED_CURRENCIES)")
 		adminAddr       = flag.String("admin-addr", envOr("RGSD_ADMIN_ADDR", ":8091"), "admin panel listen address (env: RGSD_ADMIN_ADDR); separate from /v1/* so it can be firewalled")
 		adminHMAC       = flag.String("admin-hmac-secret-hex", envOr("RGSD_ADMIN_HMAC_SECRET", ""), "hex HMAC key for admin panel auth; empty = no auth (dev only, env: RGSD_ADMIN_HMAC_SECRET)")
+
+		// Scheduler flags — see docs/deployment.md §Round scheduler.
+		schedulerEnabled      = flag.Bool("scheduler-enabled", false, "run rounds automatically on a ticker (default false: use POST /v1/rounds/run instead)")
+		schedulerBetWindow    = flag.Duration("scheduler-bet-window", 10*time.Second, "bet window duration: how long players have to place bets before the round runs")
+		schedulerBetweenRounds = flag.Duration("scheduler-between-rounds", 5*time.Second, "cooldown between end of one round and start of the next bet window")
 	)
 	flag.Parse()
 
@@ -174,7 +179,32 @@ func main() {
 		os.Exit(1)
 	}
 
-	apiMux := rgs.NewHTTPHandler(mgr).Routes()
+	// ── Round scheduler (optional) ───────────────────────────────────────────
+	// When --scheduler-enabled the scheduler drives rounds automatically on a
+	// ticker; POST /v1/rounds/run still works but is redundant. When disabled
+	// (the default) behaviour is identical to before this flag existed.
+	var sched *rgs.Scheduler
+	if *schedulerEnabled {
+		sched = rgs.NewScheduler(rgs.SchedulerConfig{
+			Mgr:           mgr,
+			BetWindowSec:  *schedulerBetWindow,
+			BetweenRounds: *schedulerBetweenRounds,
+			Logger:        logger,
+			OnRoundStarted: func(roundID uint64, trackID uint8) {
+				logger.Info("scheduler: bet window open", "round_id", roundID, "track_id", trackID, "window", *schedulerBetWindow)
+			},
+			OnRoundFinished: func(_ *replay.Manifest, _ []rgs.SettlementOutcome) {
+				// metrics / alerting hook — extend as needed
+			},
+		})
+		logger.Info("rgsd: scheduler enabled",
+			"bet_window", *schedulerBetWindow,
+			"between_rounds", *schedulerBetweenRounds)
+	} else {
+		logger.Info("rgsd: scheduler disabled — use POST /v1/rounds/run to advance rounds")
+	}
+
+	apiMux := rgs.NewHTTPHandlerWithScheduler(mgr, sched).Routes()
 	rootMux := http.NewServeMux()
 	// /v1/* goes through the full middleware chain; /metrics is unauth so
 	// scrapers don't need keys.
@@ -249,6 +279,19 @@ func main() {
 		}
 	}()
 
+	// ── Scheduler goroutine (when enabled) ───────────────────────────────────
+	// Start() blocks until its context is cancelled, so we run it in a
+	// dedicated goroutine. The context is derived from a cancel func that the
+	// shutdown handler calls so the scheduler exits cleanly on SIGTERM.
+	schedCtx, schedCancel := context.WithCancel(context.Background())
+	if sched != nil {
+		go func() {
+			if err := sched.Start(schedCtx); err != nil {
+				logger.Error("rgsd: scheduler exited with error", "err", err)
+			}
+		}()
+	}
+
 	// Graceful shutdown: wait for SIGINT/SIGTERM, then give in-flight
 	// requests up to 20s to drain.
 	shutdownCh := make(chan os.Signal, 1)
@@ -256,6 +299,9 @@ func main() {
 	go func() {
 		<-shutdownCh
 		logger.Info("rgsd: shutdown signal received, draining")
+		// Cancel the scheduler first so it stops minting new rounds; it
+		// will finish its current RunNextRound call before exiting.
+		schedCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
