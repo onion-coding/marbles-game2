@@ -11,6 +11,18 @@ extends Object
 # NO state lives here — this file is intentionally stateless. All styling
 # is delegated to HudTheme, all localised strings to HudI18n.
 
+# Brightens the raw marble colour so the HUD chip / finisher swatch matches
+# what spectators see in 3D. The marble_glass shader mixes the base colour
+# with a lighter "swirl" highlight, making the rendered marble appear
+# noticeably lighter and more saturated than its raw RGB. We approximate
+# that perceived shade by lightening + boosting saturation.
+static func _hud_chip_color(c: Color) -> Color:
+	var hsv: Color = c
+	var h: float = hsv.h
+	var s: float = clampf(hsv.s * 1.10, 0.0, 1.0)
+	var v: float = clampf(hsv.v * 1.20 + 0.10, 0.0, 1.0)
+	return Color.from_hsv(h, s, v, 1.0)
+
 # ─── Top broadcast bar ──────────────────────────────────────────────────────
 
 static func build_top_bar(refs: Dictionary) -> Control:
@@ -313,7 +325,7 @@ static func make_tower_row(orig_idx: int, marble_name: String, color: Color,
 	chip.custom_minimum_size = Vector2(14, 14)
 	chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var sb_chip := StyleBoxFlat.new()
-	sb_chip.bg_color = color
+	sb_chip.bg_color = _hud_chip_color(color)
 	sb_chip.corner_radius_top_left    = 4
 	sb_chip.corner_radius_top_right   = 4
 	sb_chip.corner_radius_bottom_left = 4
@@ -341,6 +353,21 @@ static func make_tower_row(orig_idx: int, marble_name: String, color: Color,
 	badge.add_child(badge_lbl)
 	badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(badge)
+
+	# Finish-position badge — shown only after the marble crosses the line.
+	# HUD.add_finisher() flips it visible and sets the ordinal text.
+	var finish_badge := PanelContainer.new()
+	finish_badge.name = "FinishBadge"
+	finish_badge.visible = false
+	finish_badge.add_theme_stylebox_override("panel",
+		HudTheme.sb_pill(Color(1.0, 1.0, 1.0, 0.18)))
+	var finish_lbl := Label.new()
+	finish_lbl.name = "FinishBadgeLabel"
+	finish_lbl.text = ""
+	finish_lbl.label_settings = HudTheme.ls_label_caps(HudTheme.C_TEXT_PRIMARY, HudTheme.FS_TINY)
+	finish_badge.add_child(finish_lbl)
+	finish_badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(finish_badge)
 
 	btn.pressed.connect(func() -> void:
 		marble_selected_signal.emit(orig_idx)
@@ -839,6 +866,28 @@ static func build_winner_modal(refs: Dictionary) -> Control:
 	vb.add_child(winner_next_round_label)
 	refs["winner_next_round_label"] = winner_next_round_label
 
+	# Close button — dismisses the modal so the user can see the leaderboards
+	# and 3D scene underneath. The modal also auto-closes between rounds in
+	# RGS mode; this button is for interactive / single-round inspection.
+	var close_btn := Button.new()
+	close_btn.name = "WinnerModalClose"
+	close_btn.text = "  CLOSE  "
+	close_btn.focus_mode = Control.FOCUS_NONE
+	close_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	close_btn.add_theme_stylebox_override("normal",
+		HudTheme.sb_pill(Color(1.0, 1.0, 1.0, 0.10)))
+	close_btn.add_theme_stylebox_override("hover",
+		HudTheme.sb_pill(Color(1.0, 1.0, 1.0, 0.18)))
+	close_btn.add_theme_stylebox_override("pressed",
+		HudTheme.sb_pill(Color(1.0, 1.0, 1.0, 0.25)))
+	vb.add_child(close_btn)
+	refs["winner_modal_close"] = close_btn
+
+	# Mouse-pickable scrim only on the modal control itself when visible —
+	# the original control had MOUSE_FILTER_IGNORE so clicks passed through.
+	# To make the close button clickable we need the modal to capture mouse.
+	control.mouse_filter = Control.MOUSE_FILTER_STOP
+
 	return control
 
 # Internal: build one podium column; writes winner_name_label / podium_name_p2 /
@@ -1054,10 +1103,14 @@ static func build_session_stats(refs: Dictionary) -> Control:
 static func build_finishers_list(refs: Dictionary, marble_count: int) -> Control:
 	var panel := PanelContainer.new()
 	panel.name = "FinishersList"
-	panel.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-	panel.offset_left = -300
+	# Anchored to the LEFT side at the same vertical extent as the timing
+	# tower on the right (offset_top=80, offset_bottom=-180). Same width
+	# (300 px) so the two leaderboards mirror each other and the finishers
+	# list is never bigger than the game leaderboard.
+	panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+	panel.offset_left = 16
 	panel.offset_top = 80
-	panel.offset_right = -16
+	panel.offset_right = 316
 	panel.offset_bottom = -180
 	panel.add_theme_stylebox_override("panel",
 		HudTheme.sb_panel(HudTheme.C_SURFACE_1, HudTheme.accent(), 10, 2))
@@ -1136,7 +1189,7 @@ static func make_finisher_row(place: int, marble_name: String, color: Color) -> 
 	hb.add_child(place_label)
 
 	var swatch := ColorRect.new()
-	swatch.color = color
+	swatch.color = _hud_chip_color(color)
 	swatch.custom_minimum_size = Vector2(14, 14)
 	swatch.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(swatch)

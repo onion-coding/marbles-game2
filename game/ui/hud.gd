@@ -150,6 +150,12 @@ var _marble_meta: Array = []
 # original_index → {row: Control, current_rank: int, target_y: float, tween: Tween}
 var _rows_by_index: Dictionary = {}
 
+# original_index → finish position (1 = winner, 2 = 2nd, ...). Set in
+# add_finisher when a marble crosses the line. Used by update_standings to
+# pin finished marbles to the top of the leaderboard in finish order, so
+# they don't drift around as their physics positions wander in the catchment.
+var _finish_place_by_idx: Dictionary = {}
+
 var _following_index: int = -1
 var _initial_max_dist: float = -1.0
 var _is_mobile: bool = false
@@ -292,6 +298,9 @@ func _unpack_refs(r: Dictionary) -> void:
 
 	_winner_modal           = r.get("winner_modal")
 	_winner_modal_card      = r.get("winner_modal_card")
+	var winner_close: Button = r.get("winner_modal_close") as Button
+	if winner_close != null and not winner_close.pressed.is_connected(_on_winner_modal_close_pressed):
+		winner_close.pressed.connect(_on_winner_modal_close_pressed)
 	_winner_color_swatch    = r.get("winner_color_swatch")
 	_winner_caption_label   = r.get("winner_caption_label")
 	_winner_name_label      = r.get("winner_name_label")
@@ -423,6 +432,7 @@ func setup(header: Array) -> void:
 	_finish_settle_active = false
 	_finish_settle_remaining = 0.0
 	_finishers_count = 0
+	_finish_place_by_idx.clear()
 	if _finishers_panel != null:
 		_finishers_panel.visible = false
 	if _finishers_list != null:
@@ -460,8 +470,21 @@ func update_standings(marbles: Array, finish_pos: Vector3) -> void:
 		var dist: float = INF
 		if node != null and is_instance_valid(node):
 			dist = node.global_position.distance_to(finish_pos)
-		ranked.append({"dist": dist, "idx": i})
+		var place: int = int(_finish_place_by_idx.get(i, 0))
+		ranked.append({"dist": dist, "idx": i, "place": place})
+	# Finished marbles always come first, in finish order. Unfinished
+	# marbles follow, sorted by distance to finish. This keeps the
+	# leaderboard from reshuffling once balls cross — they stay pinned to
+	# their finish position even as the physics body drifts in the catchment.
 	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var ap: int = a["place"]
+		var bp: int = b["place"]
+		var a_finished: bool = ap > 0
+		var b_finished: bool = bp > 0
+		if a_finished != b_finished:
+			return a_finished     # finished < unfinished
+		if a_finished and b_finished:
+			return ap < bp        # both finished: by finish place
 		return a["dist"] < b["dist"]
 	)
 	_last_ranked = ranked
@@ -506,16 +529,20 @@ func start_finish_settle(seconds: float, winner_name: String, winner_color: Colo
 	_pending_winner_color = winner_color
 	_pending_winner_prize = prize
 	_pending_winner_breakdown = breakdown
-	_finishers_count = 0
+	# DO NOT reset _finishers_count here. start_finish_settle is called from
+	# race_finished, which fires AFTER marble_crossed has already incremented
+	# the count for the winner. Resetting would re-label the 2nd-place marble
+	# as "1st" and overwrite the winner's badge. The race-start reset() is
+	# the only correct place to zero the counter.
 
-	# Hide the timing tower so the finishers list takes its slot.
-	if _timing_tower != null:
-		_timing_tower.visible = false
+	# Keep the timing tower visible — finished marbles get a position badge
+	# on their row (see add_finisher) so spectators can read the leaderboard
+	# AND the finish positions on the same widget.
 
-	# Reset finishers list contents and reveal the panel.
-	if _finishers_list != null:
-		for c in _finishers_list.get_children():
-			c.queue_free()
+	# Don't reset the finishers list here — the first marble to cross has
+	# already been added by the marble_crossed signal handler (which fires
+	# immediately before race_finished). Clearing here would lose the winner
+	# from the panel.
 	if _finishers_subtitle != null:
 		_finishers_subtitle.text = HudI18n.t("hud.finishers.subtitle")
 	if _finishers_countdown != null:
@@ -537,6 +564,42 @@ func add_finisher(idx: int, color: Color, marble_name: String = "") -> void:
 		resolved_name = "Marble_%02d" % idx
 	var row := HudLayout.make_finisher_row(_finishers_count, resolved_name, color)
 	_finishers_list.add_child(row)
+
+	# Pin the marble to its finish position in the live leaderboard so it
+	# doesn't drift as physics moves it around the catchment.
+	_finish_place_by_idx[idx] = _finishers_count
+
+	# Mark the marble's row in the timing tower with its finish position so
+	# the leaderboard remains useful after balls cross. The badge sits to the
+	# right of the name (see HudLayout.make_tower_row) and is highlighted with
+	# the accent colour for the winner, white for the rest.
+	if _rows_by_index.has(idx):
+		var entry: Dictionary = _rows_by_index[idx]
+		var tower_row: Control = entry["row"]
+		var badge: PanelContainer = tower_row.find_child("FinishBadge", true, false) as PanelContainer
+		if badge != null:
+			var badge_lbl := badge.find_child("FinishBadgeLabel", true, false) as Label
+			if badge_lbl != null:
+				badge_lbl.text = _ordinal(_finishers_count)
+				var accent := HudTheme.accent() if _finishers_count == 1 else HudTheme.C_TEXT_PRIMARY
+				badge_lbl.label_settings = HudTheme.ls_label_caps(accent, HudTheme.FS_TINY)
+			var sb_bg: Color = HudTheme.accent() if _finishers_count == 1 \
+					else Color(1.0, 1.0, 1.0, 0.35)
+			sb_bg = Color(sb_bg.r, sb_bg.g, sb_bg.b, 0.30)
+			badge.add_theme_stylebox_override("panel", HudTheme.sb_pill(sb_bg))
+			badge.visible = true
+		entry["finish_place"] = _finishers_count
+
+# Returns "1st", "2nd", "3rd", "4th", ..., "30th" for the finish-position badge.
+func _ordinal(n: int) -> String:
+	var n_mod_100: int = n % 100
+	if n_mod_100 >= 11 and n_mod_100 <= 13:
+		return "%dth" % n
+	match n % 10:
+		1: return "%dst" % n
+		2: return "%dnd" % n
+		3: return "%drd" % n
+		_: return "%dth" % n
 
 # Internal — called from HudRuntime when the settle countdown reaches zero.
 # Hides the finishers panel and shows the regular winner modal.
@@ -684,6 +747,12 @@ func reset() -> void:
 	if _timing_tower != null:
 		_timing_tower.visible = true
 	_runtime.refresh_bets_list()
+
+# Close-button handler: hide the winner modal so the user can see the
+# leaderboards and the 3D scene. Idempotent — safe to call when already hidden.
+func _on_winner_modal_close_pressed() -> void:
+	if _winner_modal != null:
+		_winner_modal.visible = false
 
 # ─── Player session / persistence API ────────────────────────────────────────
 

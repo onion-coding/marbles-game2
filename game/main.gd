@@ -10,6 +10,25 @@ const RGS_BETWEEN_ROUNDS_SEC := 15.0
 # can watch the rest of the field cross the line. Per user spec.
 const POST_FINISH_SETTLE_SEC := 15.0
 
+# Interactive (HUD v2) round timings.
+const INTERACTIVE_ROUND_SECONDS  := 30.0   # IDLE / bet window before each race
+# Legacy HUD's start_finish_settle holds the winner modal for
+# POST_FINISH_SETTLE_SEC (15 s); the v2 RESOLVE banner needs to outlast it
+# so cleanup_round() doesn't free the marbles before the modal renders.
+const INTERACTIVE_RESOLVE_HOLD   := POST_FINISH_SETTLE_SEC + 5.0
+# Approximate gap-seconds-per-metre conversion for the position card. Plinko
+# marbles average ~5 m/s descent — close enough for a player-visible gap
+# readout. Server-authoritative gameplay would replace this with the real
+# per-marble crossing-tick deltas.
+const V2_GAP_SEC_PER_M := 0.18
+
+# Payout table when a player has bet on this round (HudV2 picks marble 0 as
+# "your marble" for now). Values mirror docs/plinko-spec.md §Payout rules.
+const V2_PAYOUT_1ST := 9.0
+const V2_PAYOUT_2ND := 4.5
+const V2_PAYOUT_3RD := 3.0
+const V2_PLAYER_MARBLE_IDX := 0
+
 var _status_path: String = ""  # if non-empty, write status JSON on race completion
 var _round_id: int = 0
 var _server_seed_hash: PackedByteArray = PackedByteArray()
@@ -18,11 +37,15 @@ var _replay_path: String = ""
 # Interactive-mode HUD + camera. Both are null in spec (headless) mode so all
 # HUD/camera code is guarded. The tick counter drives the race timer display.
 var _hud: HUD = null
+var _hud_v2: HudV2 = null    # new spec-based HUD; populated only in interactive mode
 var _freecam: FreeCamera = null
 var _live_marbles: Array = []
+var _live_marble_colors: Array = []
 var _live_finish_pos: Vector3 = Vector3.ZERO
 var _live_tick: int = 0
 var _live_racing: bool = false
+var _v2_pending_round_id: int = 0
+var _v2_settled: bool = false
 
 # RGS mode state
 var _rgs_client: RgsClient = null
@@ -54,8 +77,10 @@ func _ready() -> void:
 
 	var rgs_url := _get_rgs_url()
 	if rgs_url.is_empty():
-		# (c) Interactive mode — start immediately with local seed.
-		_start_race({})
+		# (c) Interactive mode — open HUD v2 IDLE state with bet window first;
+		# the race kicks off when the round timer hits 0 OR the player taps
+		# the debug FORCE START button.
+		_begin_interactive_session()
 		return
 
 	# (b) RGS mode — create the persistent HTTP client node.
@@ -295,9 +320,19 @@ func _start_race(spec: Dictionary) -> void:
 	finish.track = track
 	add_child(finish)
 	_live_finish = finish
+	# Per-marble finish animation — every marble that crosses gets a confetti
+	# burst tinted with its own colour. The race-winner gets the emission
+	# boost + the headless auto-quit timer on top.
+	finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
+		var idx_str := String(marble.name).trim_prefix("Marble_")
+		if not idx_str.is_valid_int():
+			return
+		var idx := int(idx_str)
+		if idx < 0 or idx >= colors.size():
+			return
+		WinnerReveal.spawn_confetti(self, marble.global_position, colors[idx])
+	)
 	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
-		var winner_color: Color = colors[int(String(winner.name).trim_prefix("Marble_"))]
-		WinnerReveal.spawn_confetti(self, winner.global_position, winner_color)
 		WinnerReveal.boost_winner_emission(winner, get_tree())
 		# Headless smoke-test convenience: when running with --headless and
 		# no display server, auto-quit ~3s after race finishes so batch
@@ -342,7 +377,17 @@ func _start_race(spec: Dictionary) -> void:
 		_freecam.track = track
 		add_child(_freecam)
 
-		# Build the full HUD header with real colors.
+		_live_racing = true
+		_live_tick = 0
+		_live_marbles = marbles
+		_live_marble_colors = colors
+		_live_finish_pos = track.finish_area_transform().origin
+
+		# Build the full HUD header with real colors. The legacy HUD always
+		# runs — it owns the timing tower / podium / finishers list / winner
+		# modal / track-name top bar. HUD v2 (if present) is rendered on top
+		# of it as an *additional* layer for balance, bet card, round timer,
+		# and position card.
 		var hud_header: Array = []
 		for i in range(marbles.size()):
 			var c: Color = colors[i]
@@ -358,17 +403,19 @@ func _start_race(spec: Dictionary) -> void:
 		_hud.setup(hud_header)
 		_hud.set_track_name(TrackRegistry.name_of(track_id))
 		_hud.set_track_node(track)
-		_live_racing = true
-		_live_tick = 0
-		_live_marbles = marbles
-		_live_finish_pos = track.finish_area_transform().origin
-
 		_hud.marble_selected.connect(_freecam.follow_marble_index)
 		_freecam.following_changed.connect(_hud.set_following)
 
-		# Per-marble crossing → top-right FinishersList entry. Fires for every
-		# marble in finish-line order. The first crossing also fires
-		# race_finished below.
+		# v2 overlay (interactive mode): kick off LIVE phase, hand it the
+		# round id + field size + player marble.
+		if _hud_v2 != null:
+			_hud_v2.set_track_name(TrackRegistry.name_of(track_id))
+			_hud_v2.set_field_size(marbles.size())
+			_hud_v2.set_player_marble_idx(V2_PLAYER_MARBLE_IDX)
+			_hud_v2.begin_live(_v2_pending_round_id)
+			_v2_settled = false
+
+		# Per-marble crossing → finisher banner (legacy HUD).
 		finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
 			if _hud == null:
 				return
@@ -389,12 +436,18 @@ func _start_race(spec: Dictionary) -> void:
 			_winner_idx_at_finish = winner_idx
 			_race_visually_finished = true
 
-			# Hold the full leaderboard back. Show only the live FinishersList
-			# (top-right) for POST_FINISH_SETTLE_SEC seconds — spectators see
-			# the rest of the field cross the line before the modal lands.
-			# HudRuntime ticks the countdown and calls reveal_winner() at 0.
+			# Legacy HUD: 15-s settle window before the winner modal — keeps
+			# spectators on the live finishers list while the rest of the
+			# field crosses.
 			_hud.start_finish_settle(POST_FINISH_SETTLE_SEC,
 				winner_name, colors[winner_idx])
+
+			# v2 overlay (interactive mode): settle bet + queue next IDLE
+			# round. Runs in parallel with the legacy settle window.
+			if _hud_v2 != null and not _v2_settled:
+				_v2_settled = true
+				_v2_resolve_and_loop(winner_idx)
+				return
 
 			# In RGS mode: apply settlement overlay if server result already arrived,
 			# otherwise _on_round_completed will call apply_settlement when it lands.
@@ -481,13 +534,123 @@ func _fetch_rgs_spec() -> void:
 			_hud.show_error_toast("Auto-restart failed: network error. Reload to play again.")
 
 func _physics_process(_delta: float) -> void:
-	if _hud == null:
+	# Both HUDs run together in interactive v2 mode — the legacy HUD owns
+	# the timing tower / podium / finishers / winner modal, and v2 owns the
+	# balance / bet card / round timer / position card overlay.
+	if _hud == null and _hud_v2 == null:
 		return
+	var rate := float(Engine.physics_ticks_per_second)
 	if _live_racing:
 		_live_tick += 1
-		_hud.update_tick(_live_tick, float(Engine.physics_ticks_per_second))
+		if _hud != null:
+			_hud.update_tick(_live_tick, rate)
 		if _live_tick % 6 == 0:
-			_hud.update_standings(_live_marbles, _live_finish_pos)
+			if _hud != null:
+				_hud.update_standings(_live_marbles, _live_finish_pos)
+			if _hud_v2 != null and _live_marbles.size() > 0:
+				_hud_v2.update_standings(_compute_v2_standings())
+	elif _race_visually_finished and not _live_marbles.is_empty():
+		# Race ended but marbles still settling — keep both leaderboards
+		# refreshing so finished marbles slot into their final rows. Don't
+		# increment _live_tick (timer is frozen at the winner's crossing).
+		if Engine.get_physics_frames() % 6 == 0:
+			if _hud != null:
+				_hud.update_standings(_live_marbles, _live_finish_pos)
+			if _hud_v2 != null:
+				_hud_v2.update_standings(_compute_v2_standings())
+
+# ─── HUD v2 interactive flow ───────────────────────────────────────────────
+#
+# State machine: IDLE (HUD timer counting down + bet card unlocked) → LIVE
+# (race spawns + bet locked) → RESOLVE (balance flashes win/loss + winner
+# label) → IDLE (next round).
+#
+# The legacy HUD (game/ui/hud.gd) is intentionally bypassed in this path —
+# v2 owns balance, betting, multiplier, and standings UI for interactive
+# mode. RGS / spec / replay paths still drive the legacy HUD so we don't
+# break the existing server flow until those modes are migrated too.
+
+func _begin_interactive_session() -> void:
+	# Build HudV2 once and reuse across rounds — the player's balance
+	# carries over.
+	if _hud_v2 == null:
+		_hud_v2 = HudV2.new()
+		add_child(_hud_v2)
+		_hud_v2.bet_placed.connect(_on_v2_bet_placed)
+		_hud_v2.force_start_requested.connect(_on_v2_force_start)
+	_v2_settled = false
+	_hud_v2.begin_idle(INTERACTIVE_ROUND_SECONDS)
+
+func _on_v2_bet_placed(_amount: float) -> void:
+	# HudV2 already tracks `_open_bet_amount` internally; the actual debit
+	# happens when begin_live() runs at the IDLE→LIVE transition. Nothing
+	# to do here today, but the hook is in place so we can record the bet
+	# for replay / server confirmation later.
+	pass
+
+func _on_v2_force_start() -> void:
+	# Either the round timer hit zero or the player clicked the debug
+	# FORCE START button. Generate a fresh round and run it.
+	_v2_pending_round_id = int(Time.get_unix_time_from_system())
+	_start_race({})
+
+# Resolve the current bet against the finishing podium, hold the RESOLVE
+# banner for INTERACTIVE_RESOLVE_HOLD seconds, then clean up and start the
+# next IDLE round. Mirrors the RGS auto-restart loop, just driven by HudV2.
+func _v2_resolve_and_loop(winner_idx: int) -> void:
+	var podium: Array[RigidBody3D] = []
+	if _live_finish != null:
+		podium = _live_finish.get_podium(3)
+	var podium_ids: Array = []
+	for m in podium:
+		if m == null:
+			podium_ids.append(-1)
+		else:
+			podium_ids.append(int(String(m.name).trim_prefix("Marble_")))
+	var payouts: Dictionary = {}
+	# Hard-coded position payouts for now (V2_PAYOUT_*). The math model
+	# allows for slot multipliers stacking on top — wiring those requires
+	# coupling HudV2 to PickupZone, deferred until the server-authoritative
+	# split (see docs/architecture.md §Client/server separation).
+	if podium_ids.size() > 0 and int(podium_ids[0]) >= 0:
+		payouts[int(podium_ids[0])] = V2_PAYOUT_1ST
+	if podium_ids.size() > 1 and int(podium_ids[1]) >= 0:
+		payouts[int(podium_ids[1])] = V2_PAYOUT_2ND
+	if podium_ids.size() > 2 and int(podium_ids[2]) >= 0:
+		payouts[int(podium_ids[2])] = V2_PAYOUT_3RD
+	_hud_v2.begin_resolve(winner_idx, payouts)
+	# Wait for the post-finish settle, then loop back to IDLE.
+	await get_tree().create_timer(INTERACTIVE_RESOLVE_HOLD).timeout
+	_cleanup_round()
+	_begin_interactive_session()
+
+# Compute the per-marble standings rows that HudV2's position card consumes.
+# Distance to finish is a workable proxy in 2-D plinko-style tracks; the
+# leader is the closest marble; gap_sec is rough (distance / avg-speed).
+func _compute_v2_standings() -> Array:
+	var raw: Array = []
+	for i in range(_live_marbles.size()):
+		var m: RigidBody3D = _live_marbles[i]
+		if not is_instance_valid(m):
+			continue
+		raw.append({
+			"idx": i,
+			"dist": (m.global_position - _live_finish_pos).length(),
+		})
+	raw.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a["dist"]) < float(b["dist"]))
+	var leader_dist: float = float(raw[0]["dist"]) if raw.size() > 0 else 0.0
+	var rows: Array = []
+	for r in raw:
+		var idx: int = int(r["idx"])
+		var col: Color = _live_marble_colors[idx] if idx < _live_marble_colors.size() else Color.WHITE
+		rows.append({
+			"idx": idx,
+			"name": "M%02d" % idx,
+			"colour": col,
+			"gap_sec": (float(r["dist"]) - leader_dist) * V2_GAP_SEC_PER_M,
+		})
+	return rows
 
 # Return the --rgs=<url> value from the command-line user args, or empty
 # string if the flag is absent.

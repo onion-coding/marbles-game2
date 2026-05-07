@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b7yxz5qa3plinko_live"]
+
+[ext_resource type="Script" path="res://tools/capture_plinko_live.gd" id="1_caplive"]
+
+[node name="CapturePlinkoLive" type="Node3D"]
+script = ExtResource("1_caplive")

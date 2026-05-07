@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b9hdv2cap0001"]
+
+[ext_resource type="Script" path="res://tools/capture_hud_v2.gd" id="1_caphud"]
+
+[node name="CaptureHudV2" type="Node3D"]
+script = ExtResource("1_caphud")
