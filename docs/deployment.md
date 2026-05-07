@@ -203,34 +203,32 @@ The `postgres:16-alpine` service is already present in
 The MVP gets you to "could be deployed for an internal dogfood / closed
 beta". To take real money these still need work:
 
+### DONE (M23–M28)
+- ✅ **Real wallet client** — [HTTPWallet](../server/rgs/wallet_http.go) in place. 12-test contract suite. Provider adapters (SoftSwiss, EveryMatrix) still needed; see [rgs-integration.md §How to integrate with operator X](../docs/rgs-integration.md#how-to-integrate-with-operator-x-template).
+- ✅ **Postgres for sessions** — `--postgres-dsn` wires a durable `SessionStore`; sessions survive restarts. [server/postgres/](../server/postgres/) package with idempotent migration.
+
+### REMAINING
 1. **Durable replay store.** Today: filesystem at `--replay-root`. A
    single-host failure loses round audit data. Replace with object
    storage (S3/GCS/R2) using a write-once + hash-verified envelope; the
    current `replay.Store` API is small enough that a swap is contained.
-2. **Real wallet client.** `rgsd` ships with `MockWallet` — an in-process
-   map. Real deployments need an HTTP client that talks the operator's
-   wallet protocol (typically POST with HMAC); the [Wallet](../server/rgs/wallet.go)
-   interface is the seam.
-3. **Multi-round concurrency.** `Manager.RunNextRound` is serial. A real
+2. **Multi-round concurrency.** `Manager.RunNextRound` is serial. A real
    deployment runs lobbies in parallel — one Goroutine per active
    round_id with isolated state.
-4. **Postgres for sessions (done — M24).** `--postgres-dsn` wires a
-   durable `SessionStore`; sessions survive restarts. Round-bet
-   persistence (`pendingRounds` / `roundBets`) is still in-memory and
-   remains an open item.
-5. **Round scheduler.** `/v1/rounds/run` is currently the only way to
+3. **Round scheduler.** `/v1/rounds/run` is currently the only way to
    advance a round — fine for demos, useless for a 24/7 lobby. Add a
    ticker that runs rounds at a fixed cadence + opens new sessions
    automatically when the prior one ends.
-6. **Distributed deployment.** Multiple rgsd nodes need to coordinate on
+4. **Round-bet persistence.** `pendingRounds` / `roundBets` in Manager
+   are in-memory. Restart loses queued bets. Postgres-backed store needed (M9.x work).
+5. **Distributed deployment.** Multiple rgsd nodes need to coordinate on
    `previousTrack` (for the no-back-to-back selector), the round_id
    counter (currently unix-nanos — collision-prone across hosts), and
    replay-store ownership. A small etcd / Redis layer is the natural fit.
-7. **Certification readiness.** RNG audit, round-determinism replay
+6. **Certification readiness.** RNG audit, round-determinism replay
    tests at scale, third-party security review of the HMAC scheme,
    regulator-side auditor portal. None of this is in the repo today.
 
-A reasonable order of attack: 2 (real wallet) → 6 (distributed) → 1
-(durable storage) → 5 (scheduler) → 4 (Postgres) → 3 (concurrency) →
-7 (certification). Steps 1-5 are infrastructure; step 7 is a
+A reasonable order of attack: 2 (wallet provider adapters) → 5 (distributed) → 1
+(durable storage) → 3 (scheduler) → 4 (round-bet persistence) → 6 (certification). Steps 1-4 are infrastructure; step 6 is a
 months-long external process in any tier-1 jurisdiction.

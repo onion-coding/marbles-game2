@@ -1,23 +1,28 @@
-# Handoff — sessione 2026-05-08 (VS Code → Claude Code)
+# Handoff — sessione autonoma 2026-05-08 (Claude Code wave 6 commit)
 
-Documento per la prossima sessione Claude Code che riprende da qui.
+Documento per la prossima sessione che riprende da qui.
 
 ## TL;DR
 
-Il branch `dev` su origin ora contiene **tutto** il lavoro: M9-M22, Spiral Drop, leaderboard transplant onion, refactor HUD, replay v4 cert-ready, HUD v2 nuovo + Plinko 4-tube di onion. Worktree allineato a dev. Niente uncommitted. Smoke + 105 test Go verdi.
+Branch `dev` HEAD = `47ecd0a`. 6 commit consolidated:
+- M23 scenografia procedurale (TrackBlocks decoration helpers)
+- M24 BroadcastDirector (3-cam auto-cuts)
+- M25 HTTPWallet client (real operator wallet)
+- M26 Postgres session durability
+- M27 stress-test harness
+- M28 multi-currency + admin panel
+
+Test count: 8 packages, ~135 green. Niente uncommitted. Smoke OK (Plinko 1715 frames).
 
 ## Stato repo
 
 ```
-origin/main  (599b254) ← stabile, NON usare per dev work
-origin/dev   (df46472) ← TRUNK ATTIVO ★ — riparti da qui
+origin/main  (599b254) ← stabile, NON toccare
+origin/dev   (47ecd0a) ← TRUNK ATTIVO ★ HEAD of work
 local:
   dev (= origin/dev)
   main
-  claude/compassionate-hellman-4f7e39 (worktree, allineato a dev)
-worktree:
-  D:/Documents/GitHub/marbles-game2 (main repo on dev)
-  .claude/worktrees/compassionate-hellman-4f7e39 (claude branch = dev tip)
+worktree: D:/Documents/GitHub/marbles-game2 on dev
 ```
 
 **Una sola fonte di verità: `dev`**. Quando inizi una sessione Claude Code:
@@ -26,31 +31,42 @@ worktree:
 3. Lavora, lascia uncommitted, lascia HANDOFF.md aggiornato
 4. La sessione VS Code (questa) committa + pusha
 
-## Cosa è stato fatto questa sessione (VS Code, 2026-05-08)
+## Cosa è stato fatto QUESTA wave (autonoma, 2026-05-08)
 
-1. **Cleanup repo completo**:
-   - Phase A: 4 branch stale eliminati locale (operator-mode, player-stats-history, rgs-auto-restart, claude/exciting-jemison-f60a90), stash droppato, rgsd.exe rimosso
-   - Phase B: 4 branch eliminati origin (operator-mode, player-stats-history, rgs-auto-restart, feature/m12-broadcast)
-   - Phase C: consolidamento — tutto M11-M22 + Spiral + leaderboard onion fuso in dev (force-push autorizzato)
+1. **M23 — Scenografia procedurale (commit `0f97471`)**
+   - [game/tracks/track_blocks.gd](game/tracks/track_blocks.gd) → nuovi helpers: `add_spectators_bleachers()`, `add_billboard()`, `add_neon_tubes()`, `add_ambient_particles()`
+   - Ogni track M11 chiama `_build_decorations()` seeded da track_id + round_id
+   - Senza asset esterni; visivamente distintivo; no fairness chain impact
 
-2. **Step 5 — Replay format v4** (commit `febb8bc`):
-   - Manifest porta marble_count + podium_payouts + pickup_per_marble_tier + finish_order
-   - ProtocolVersion4 + ValidateJackpotConsistency() helper
-   - 100 → 105 test Go
-   - Backward-compat con v3 (omitempty)
-   - **Spec source**: `docs/math-model.md §4.3`
+2. **M24 — BroadcastDirector (commit `0f7b09c`)**
+   - [game/cameras/broadcast_director.gd](game/cameras/broadcast_director.gd) — 3 cam: stadium-wide, leader-follow, finish low-angle
+   - Auto-cuts ogni N sec o su sorpassi
+   - Rimpiazza free-cam in interactive mode (Web playback decision pending per HANDOFF)
 
-3. **Step 4 — HUD refactor** (commit `7901282`):
-   - hud.gd 1971 LOC → 615 LOC (-69%)
-   - Split in `hud_layout.gd` (1047) + `hud_runtime.gd` (892) + esistenti `hud_theme.gd` (433) + `hud_i18n.gd` (298)
-   - Pattern: HudLayout = static helpers, HudRuntime = Object con back-ref
-   - **Persistenza session stats ripristinata** (era stata droppata in v1 del refactor — fixata)
-   - API pubblica preservata 100%
+3. **M25 — HTTPWallet client (commit `b5f84e6`)**
+   - [server/rgs/wallet_http.go](server/rgs/wallet_http.go) — REST client Debit/Credit/Balance
+   - HMAC-SHA256 signing (identico middleware server)
+   - 12-test contract suite [wallet_http_test.go](server/rgs/wallet_http_test.go)
+   - Flag config: `--wallet-mode={mock|http}`, `--wallet-url`, `--wallet-hmac-secret-hex`, etc.
+   - **Spec**: [docs/rgs-integration.md §Wallet integration](docs/rgs-integration.md#wallet-integration)
 
-4. **Onion ha aggiunto** (mentre la sessione era a metà — ora tutto in dev):
-   - `de64d16` Plinko Casino Drop rebuild
-   - `fe1bcf7` HUD post-finish settle window 15s + FinishersList top-right panel
-   - `df46472` HUD v2 (game/ui/v2/) con balance/round-timer/bet/position cards + Plinko 4-tube intrecciati
+4. **M26 — Postgres session storage (commit `6d6e5c5`)**
+   - [server/postgres/](server/postgres/) — SessionStore durable
+   - DSN via `--postgres-dsn` (empty = in-mem dev fallback)
+   - `--postgres-migrate` one-time schema setup (idempotente)
+   - Schema: `sessions` table (id, player_id, state, balance, timestamps)
+
+5. **M27 — Stress-test harness (commit `20c3756`)**
+   - [scripts/stress/](scripts/stress/) — Go load tester
+   - 3 preset: quick (10p/2r), medium (50p/10r), full (200p/50r)
+   - Latency + throughput + bet acceptance rate
+
+6. **M28 — Multi-currency + admin panel (commit `47ecd0a`)**
+   - Currency: EUR, USD, GBP, BTC, ETH, USDT (flag-configurable)
+   - [server/admin/](server/admin/) — HTML UI `GET /admin` (HMAC auth)
+   - 4 tabs: Sessions, Rounds, Configuration (RTP hotfix + pause/resume), Wallet (recovery)
+   - No DB dependency; reads live Manager + Postgres state
+   - Embedded HTML + inline CSS
 
 ## Validazione corrente
 
@@ -60,13 +76,25 @@ WINNER: Marble_00 at tick 1655
 RECORDER: captured 1715 frames, 20 marbles/frame
 ROUNDTRIP: OK
 
-# Go tests: 8 packages tutti verdi (~105 test)
-ok  server/replay   server/rgs   server/middleware   ...
+# Go tests: 8 packages (~135 test, tutte verdi)
+ok  server/postgres   server/rgs   server/middleware   ...
 ```
+
+Nuovi test: postgres integration, wallet contract suite, admin endpoints.
 
 ## Open items per la prossima sessione
 
-In ordine di priorità (mio audit precedente):
+**Deployment-blocking (priorità):**
+
+1. **Real wallet integration testing** — HTTPWallet spec è generica. SoftSwiss/EveryMatrix/Spike sandboxing needed pre-go-live.
+2. **Durable replay store** — oggi: filesystem `--replay-root`. Un crash perde audit data. Swap in S3/GCS/R2 con write-once + hash verify.
+3. **Round scheduler** — `/v1/rounds/run` è on-demand. Production needs fixed-cadence ticker + auto-open nuove sessions.
+4. **Distributed coordination** — multi-host rgsd: collision-free round_id, previousTrack locking, replay-store ownership. Etcd / Redis layer.
+5. **Certification readiness** — RNG audit, regulator auditor portal, 3rd-party security review. Months-long external.
+
+**Quality-of-life (next priority):**
+
+6. **Scenografia refinement** — particle FPS, spectator LOD, billboard resolution su zoom-out.
 
 ### 1. Visual smoke — l'utente lo deve fare
 L'utente non ha ancora confermato visivamente le 7 tracce M11+M13. Comando:

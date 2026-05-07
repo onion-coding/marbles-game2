@@ -4,7 +4,7 @@ Running log of what's done, mapped against [PLAN.md](PLAN.md) milestones. Update
 
 ## Current milestone
 
-**M11 done (2026-05-02)** — Track design philosophy reset. All six tracks rebuilt as drop-cascade courses with real 9.8 m/s² gravity (no SLOW_GRAVITY hack), themed palettes (Stadium / Forest / Volcano / Ice / Cavern / Sky), shared TrackBlocks geometry library, centralised TrackPalette colour/sky themes, and a real glass marble shader. Race times 27–33s consistent across all tracks; fairness verifier + vectors 4/4 pass.
+**M23–M28 production readiness wave done (2026-05-08)** — 6 commits span broadcast infrastructure (BroadcastDirector 3-cam auto-cuts), real wallet HTTP client + HMAC signing, Postgres session durability, stress-test harness, and multi-currency admin panel (EUR/USD/GBP/BTC/ETH/USDT). Scenografia procedurale per M11 (spectators, billboards, neon, ambient particles, no external assets). Test count: 8 packages, ~135 tests green. Branch dev = 47ecd0a.
 
 **M9 done (2026-04-29)** — RGS betting end-to-end (client `--rgs=<url>` → bet window → settlement overlay) + HUD interactive mode (clickable standings, zoom 0.05–1000m, marble lookup keys, bet placement panel, countdown timers, balance refresh).
 
@@ -21,6 +21,41 @@ Next natural moves (not started): real-wallet client to replace `MockWallet`, di
 Pre-M6 audit (2026-04-22) closed all four blockers before starting: (1) `RampTrack` static singleton → new `Track` base class (see "Track abstraction"); (2) Web bundle 37 MB → 6.35 MB wire via precompressed bundle + compression-aware handler (see "Web bundle compression"); (3) stale M1 description fixed in place; (4) 1-frame tail drop on live-WS close fixed (sim-side disconnect was racing TCP flush, see "Live-stream tail drop").
 
 ## Done
+
+### M23–M28 production readiness (2026-05-08)
+Broadcast-ready infrastructure, wallet integration, durability, and multi-currency support. See [docs/deployment.md §Open operational items](docs/deployment.md#open-operational-items) for prioritisation.
+
+**M23 — Scenografia procedurale (2026-05-08)**, commit `0f97471`. The M11 tracks lack context beyond themed geometry — no crowd, no branding. TrackBlocks expanded with decoration helpers:
+- [game/tracks/track_blocks.gd](game/tracks/track_blocks.gd) — `add_spectators_bleachers(...)`, `add_billboard(...)`, `add_neon_tubes(...)`, `add_ambient_particles(...)` for procedural assembly.
+- Each of the 6 M11 tracks gained a `_build_decorations()` call in `_ready()` seeded from track theme + round_id so variation is deterministic per-round but visually distinct. No external asset files. Fairness chain + verifier unchanged.
+
+**M24 — BroadcastDirector (2026-05-08)**, commit `0f7b09c`. Free-cam legacy replaced by auto-director:
+- [game/cameras/broadcast_director.gd](game/cameras/broadcast_director.gd) — 3-camera system: stadium-wide (overview), leader-follow (dynamic on-track), finish-line low-angle (money shot). Auto-cuts every N seconds or on marble overtake events. Replaces [game/cameras/free_camera.gd](game/cameras/free_camera.gd) in interactive mode (Web playback still uses legacy free-cam per HANDOFF decision pending).
+
+**M25 — HTTPWallet client (2026-05-08)**, commit `b5f84e6`. Real operator wallet swap replaces `MockWallet`:
+- [server/rgs/wallet_http.go](server/rgs/wallet_http.go) — REST client with `Debit`, `Credit`, `Balance` methods. HMAC-SHA256 request signing matching server middleware. Idempotency keys + exponential backoff retry on 5xx. Passes 12-test contract suite in [server/rgs/wallet_http_test.go](server/rgs/wallet_http_test.go) (new file).
+- Config flags `--wallet-mode={mock|http}`, `--wallet-url`, `--wallet-hmac-secret-hex`, `--wallet-retries`, `--wallet-idempotency-keys`. Per [docs/rgs-integration.md §Wallet integration](docs/rgs-integration.md#wallet-integration) with provider integration templates (SoftSwiss, EveryMatrix, Spike Aggregator).
+
+**M26 — Postgres session storage (2026-05-08)**, commit `6d6e5c5`. Durable player sessions across restarts:
+- [server/postgres/](server/postgres/) new package — migration runner + `SessionStore` interface impl. DSN via `--postgres-dsn` flag (empty = in-memory fallback for dev/CI).
+- Schema: `sessions` table (id, player_id, state, balance, opened_at, updated_at, closed_at). `OpenSession` / `PlaceBet` / `CloseSession` write-through; `Session()` falls back to DB read on cache-miss.
+- `--postgres-migrate` flag for one-time schema setup (idempotent). Integrated into docker-compose yaml. Env var equiv: `RGSD_POSTGRES_DSN`.
+
+**M27 — Stress-test harness (2026-05-08)**, commit `20c3756`. Load testing scaffold for rgsd:
+- [scripts/stress/](scripts/stress/) — Go load tester with 3 presets: `quick` (10 players, 2 rounds), `medium` (50 players, 10 rounds), `full` (200 players, 50 rounds). Measures latency, throughput, bet acceptance rate. Used pre-deploy QA.
+
+**M28 — Multi-currency wallet + admin panel (2026-05-08)**, commit `47ecd0a`. Production operator UX + flexibility:
+- Currency support: EUR, USD, GBP, BTC, ETH, USDT (configurable via flag). Wallet interface changed from opaque `uint64` to `{amount: float64, currency: string}`.
+- [server/admin/](server/admin/) new package — HTML UI at `GET /admin` (requires HMAC auth if enabled). 4 tabs:
+  1. **Sessions** — list active players, balances, session state.
+  2. **Rounds** — pending + completed rounds, outcomes.
+  3. **Configuration** — live RTP hotfix, pause/resume toggle.
+  4. **Wallet** — currency selector, test debit/credit, pending-credit recovery.
+- No database dependency; reads live state from Manager + Postgres if enabled. Embedded HTML + inline CSS (no separate assets).
+
+**Tests:** Pre-wave 105 Go tests → Post-wave ~135 tests (new packages: postgres integration, wallet contract, admin endpoints). All green. Smoke: headless Plinko 1715 frames, roundtrip OK.
+
+**Stale information struck:** [docs/deployment.md §Open operational items](docs/deployment.md#open-operational-items) items 2 (Real wallet), 4 (Postgres sessions) now marked DONE. Items 1, 5, 6, 7 remain open (durable replay store, scheduler, distributed coordination, certification).
 
 ### M11 — Track design reset + visual identity (2026-05-02)
 Driven by user feedback "le mappe sono brutte, poca dinamica, palline non hanno dinamicità, tutto da restauro, non assomiglia a Marble on Stream". The five M6 casino tracks compensated for poor design with SLOW_GRAVITY zones (0.21–5.0 m/s²); marbles felt floaty rather than dynamic. M11 rebuilds all six tracks under a single design philosophy: real gravity, vertical drop-cascade with directed gaps, themed palettes, shared geometry library.

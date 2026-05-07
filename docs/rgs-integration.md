@@ -288,6 +288,13 @@ player across restarts and auto-restart loops alike.
 
 ## Wallet integration
 
+### Multi-currency support (M28)
+
+The wallet now handles multiple currencies per operator configuration:
+EUR, USD, GBP, BTC, ETH, USDT. Amount is stored as `float64` (decimal
+currency units, e.g. 10.50 EUR) and converted to wallet integer units
+(cents/satoshis/etc) internally × 100 for atomic operations.
+
 ### Go interface
 
 The [Wallet](../server/rgs/wallet.go) interface is what `rgsd` calls into
@@ -301,7 +308,10 @@ type Wallet interface {
 }
 ```
 
-### Generic REST protocol
+(Amount is opaque integer money — cents, satoshis, USDC-6, whatever the
+operator configured. No conversion in `rgsd`; operator labels units in UI.)
+
+### Generic REST protocol (M25)
 
 `HTTPWallet` (`server/rgs/wallet_http.go`) implements the interface by
 speaking a simple REST protocol. Any operator wallet service that exposes
@@ -359,7 +369,7 @@ operator's load balancer fires before the wallet logic is even reached.
 (default 3, so 4 total). 4xx errors are never retried — they signal a
 client-side mistake that won't resolve on retry.
 
-### Configuring rgsd for a real wallet
+### Configuring rgsd for a real wallet (M25)
 
 ```sh
 rgsd \
@@ -368,11 +378,17 @@ rgsd \
   --wallet-hmac-secret-hex=<64 hex chars> \
   --wallet-retries=3 \
   --wallet-idempotency-keys=true \
+  --currency=EUR \
   ...
 ```
 
 Environment variable equivalents: `RGSD_WALLET_MODE`, `RGSD_WALLET_URL`,
-`RGSD_WALLET_HMAC_SECRET`, `RGSD_WALLET_RETRIES`.
+`RGSD_WALLET_HMAC_SECRET`, `RGSD_WALLET_RETRIES`, `RGSD_CURRENCY`.
+
+All requests in `HTTPWallet` carry HMAC-SHA256 signing headers identical
+to the server-side middleware so operator services already verifying rgsd
+requests can reuse the same logic for wallet callbacks without adaptor
+code.
 
 ### How to integrate with operator X (template)
 
@@ -396,10 +412,11 @@ operator's wallet spec is confirmed:
   wallet API. Confirm endpoint shape with the aggregator's technical team,
   then verify with `runWalletContractSuite`.
 
-In all cases the contract test suite in `server/rgs/wallet_http_test.go`
+In all cases the contract test suite in `server/rgs/wallet_http_test.go` (M25)
 provides the definitive conformance checklist — any Wallet implementation
 that passes `runWalletContractSuite` is drop-in compatible with
-`rgs.Manager`.
+`rgs.Manager`. The suite validates idempotency, error codes (402 / 404 / 409),
+insufficient-funds rejection, and concurrent Debit/Credit safety.
 
 ### Wallet contract (behaviour guarantees)
 
@@ -471,9 +488,42 @@ and confirm the operator's wallet movements:
 A regulator's auditor doesn't need anything else from the operator's
 side to verify a round's wallet flow against the audit trail.
 
+## Admin panel (M28)
+
+Operator-facing UI at `GET /admin` (requires HMAC auth if enabled).
+Embedded HTML + inline CSS, served from [server/admin/](../server/admin/).
+No external assets, no separate frontend build.
+
+**Four tabs:**
+
+1. **Sessions** — list of all active player sessions with:
+   - player_id, balance, state (OPEN / BET / SETTLED), open time, last update.
+   - Click to drill down: bets placed in that session, session history.
+
+2. **Rounds** — pending + completed rounds with:
+   - round_id, track_id, status, participant count, winner, payout total.
+   - Live rounds show marble progress and live bet counts.
+
+3. **Configuration** — live hotfixes without restart:
+   - RTP adjustment slider (e.g. 95% ↔ 98%).
+   - Pause/Resume toggle (queues new rounds but doesn't interrupt in-flight).
+   - Currency picker (EUR / USD / GBP / BTC / ETH / USDT).
+
+4. **Wallet** — diagnostic + recovery:
+   - Test debit/credit operations against the live wallet.
+   - Pending credits table (if any failed Wallet.Credit calls are queued).
+   - Manual recovery button: re-attempt pending credits.
+
+**No database dependency** — all reads stream from `Manager` in-process +
+optional Postgres session table. Config changes (RTP, pause) are in-memory
+only; they don't persist a restart (intentional — operator re-applies on deploy).
+
+**Security:** Requires the same HMAC auth as `/v1/*` endpoints. If `--hmac-secret-hex`
+is unset (dev mode), `/admin` is wide open.
+
 ## Open items
 
-- **Real wallet client (done — M23).** `HTTPWallet` in
+- **Real wallet client (done — M25).** `HTTPWallet` in
   `server/rgs/wallet_http.go` provides the generic REST client.
   Provider-specific envelope adapters (SoftSwiss, EveryMatrix) are still
   needed; see "How to integrate with operator X" above.
