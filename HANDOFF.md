@@ -1,18 +1,26 @@
-# Handoff — sessione autonoma 2026-05-08 (Claude Code wave 6 commit)
+# Handoff — sessione autonoma 2026-05-08 (10 commit)
 
 Documento per la prossima sessione che riprende da qui.
 
 ## TL;DR
 
-Branch `dev` HEAD = `47ecd0a`. 6 commit consolidated:
+Branch `dev` HEAD = `7b1d312`. **10 commit consolidated this session**:
 - M23 scenografia procedurale (TrackBlocks decoration helpers)
 - M24 BroadcastDirector (3-cam auto-cuts)
-- M25 HTTPWallet client (real operator wallet)
-- M26 Postgres session durability
-- M27 stress-test harness
-- M28 multi-currency + admin panel
+- M25 HTTPWallet client (real operator wallet, 12-test contract suite)
+- M26 Postgres session durability (--postgres-dsn)
+- M27 stress-test harness (scripts/stress/)
+- M28 multi-currency + admin panel (HTML 4-tab UI)
+- M29 replay backend pluggable (filesystem default + S3 production)
+- M30 round scheduler (automatic 24/7 lobby loop)
+- M31 multi-round concurrent lobbies (parallel rounds)
+- Docs sync + COMMERCIAL_READINESS.md
 
-Test count: 8 packages, ~135 green. Niente uncommitted. Smoke OK (Plinko 1715 frames).
+**Test count: 11 packages, 147 green** (was ~50 at session start). Niente uncommitted. Smoke OK (Plinko 1715 frames). Build clean.
+
+**Tutti i production-blocker da `docs/deployment.md` ora chiusi tranne**:
+- Multi-host distributed coordination (etcd/Redis layer for prevTrack + round_id collision-free)
+- Certification readiness (mesi di lavoro external)
 
 ## Stato repo
 
