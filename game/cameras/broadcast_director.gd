@@ -54,8 +54,11 @@ func start_directing() -> void:
 	_elapsed      = 0.0
 	_cut_index    = 0
 	_finish_locked = false
-	_set_active_camera(_cam_wide)
-	_current_mode = MODE_AUTO
+	# Start in FREE mode so the player has immediate camera control
+	# (mouse drag, WASD, follow keys). The broadcast auto-cuts can be
+	# enabled with T (toggle), or via the HUD camera-mode buttons.
+	_set_active_camera(_freecam)
+	_current_mode = MODE_FREE
 	_schedule_next_cut()
 
 func stop_directing() -> void:
@@ -157,6 +160,63 @@ func _process(delta: float) -> void:
 	_tick_leader_follow(delta)
 	_tick_finish_trigger()
 	_tick_auto_cuts()
+
+# Keyboard shortcuts so the player doesn't have to find HUD buttons.
+# Also: any mouse drag or movement key snaps the director to FREE so the
+# embedded FreeCamera reacts immediately to user input. (Without this
+# auto-snap the FreeCamera processes the input internally but isn't the
+# `current` camera, so the user sees no movement and thinks "controls
+# broken".)
+func _input(event: InputEvent) -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	# Note: works even when _directing = false (e.g. after race finished)
+	# so the player can navigate the post-race scene with mouse + WASD.
+
+	# User input → snap to FREE so they take control. Skip if already FREE
+	# (avoid stomping on the FreeCamera that would otherwise process the
+	# event normally).
+	if _current_mode != MODE_FREE:
+		var snap_to_free := false
+		if event is InputEventMouseButton:
+			var mb := event as InputEventMouseButton
+			# Any click or wheel: snap to free.
+			if mb.pressed:
+				snap_to_free = true
+		elif event is InputEventMouseMotion:
+			var mm := event as InputEventMouseMotion
+			# Mouse drag (any button held) → snap. Plain hover does NOT
+			# snap so the user can watch the broadcast peacefully.
+			if mm.button_mask != 0:
+				snap_to_free = true
+		elif event is InputEventKey:
+			var ke := event as InputEventKey
+			if ke.pressed and not ke.echo:
+				match ke.keycode:
+					KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E, \
+					KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT:
+						snap_to_free = true
+		if snap_to_free:
+			_current_mode = MODE_FREE
+			_set_active_camera(_freecam)
+
+	# Camera-mode keyboard shortcuts (work in any mode).
+	if event is InputEventKey:
+		var ke2 := event as InputEventKey
+		if ke2.pressed and not ke2.echo:
+			match ke2.keycode:
+				KEY_T:
+					# Toggle director auto-cuts.
+					if _current_mode == MODE_AUTO:
+						set_mode(MODE_FREE)
+					else:
+						set_mode(MODE_AUTO)
+				KEY_B:
+					set_mode(MODE_WIDE)
+				KEY_L:
+					set_mode(MODE_LEADER)
+				KEY_G:
+					set_mode(MODE_FINISH)
 
 # ─── Camera building ─────────────────────────────────────────────────────────
 
