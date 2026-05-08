@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marbles — Casino</title>
+  <link rel="stylesheet" href="/casino/static/casino.css">
+  <link rel="icon" href="data:,">
+</head>
+<body>
+
+<noscript>
+  <p style="padding:1rem; color:#fff; background:#a00;">Enable JavaScript to view the live race.</p>
+</noscript>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-dot">●</span>
+    <span class="brand-name">Marbles</span>
+    <span class="brand-tag">Phase 1.0 — plumbing only (no video yet)</span>
+  </div>
+  <div id="conn-state" class="conn conn-idle">disconnected</div>
+</header>
+
+<main class="stage">
+
+  <!-- Video element + DOM overlay for HUD labels. The overlay is
+       absolutely-positioned over the video; labels are placed by the
+       hud metadata coords streamed alongside the video frames. -->
+  <div class="video-wrap">
+    <video id="race-video" autoplay playsinline muted></video>
+    <div id="hud-overlay" class="hud-overlay"></div>
+    <div id="video-overlay" class="video-overlay">
+      <div class="overlay-msg">
+        Waiting for video stream…
+        <span class="hint">If the connection turns green and heartbeats arrive, the SFU is wired. Video lights up once Godot starts publishing.</span>
+      </div>
+    </div>
+    <canvas id="minimap" class="minimap" width="200" height="200"></canvas>
+  </div>
+
+  <!-- Datachannel heartbeats prove the metadata side-channel works. -->
+  <section class="diagnostics">
+    <h2>SFU diagnostics</h2>
+    <div class="diag-grid">
+      <div class="diag-row"><span>WebRTC state</span><code id="rtc-state">—</code></div>
+      <div class="diag-row"><span>ICE state</span><code id="ice-state">—</code></div>
+      <div class="diag-row"><span>DataChannel state</span><code id="dc-state">—</code></div>
+      <div class="diag-row"><span>Last heartbeat seq</span><code id="hb-seq">—</code></div>
+      <div class="diag-row"><span>Server time</span><code id="hb-time">—</code></div>
+      <div class="diag-row"><span>Other subscribers</span><code id="hb-subs">—</code></div>
+    </div>
+
+    <details class="logs" open>
+      <summary>Event log</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+
+</main>
+
+<script src="/casino/static/casino.js" defer></script>
+
+</body>
+</html>

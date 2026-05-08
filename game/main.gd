@@ -62,49 +62,51 @@ var _live_recorder: Node = null
 var _live_finish: Node = null
 var _live_streamer = null   # TickStreamer (RefCounted) or null; untyped to avoid Node constraint
 
+# Casino broadcast (M29). Active when --casino-video=host:port and
+# --casino-meta=host:port are passed on the CLI. Streams raw RGBA frames
+# of THIS scene's main viewport to rgsd's TCP listeners; rgsd encodes
+# H.264 + fans out via WebRTC. No new game state — re-uses _live_marbles
+# and the active Camera3D set by the BroadcastDirector. See
+# game/casino/{frame,meta}_streamer.gd.
+var _casino_frames: CasinoFrameStreamer = null
+var _casino_meta: CasinoMetaStreamer = null
+var _casino_minimap_accum: float = 0.0
+const CASINO_BROADCAST_W := 854
+const CASINO_BROADCAST_H := 480
+const CASINO_BROADCAST_FPS := 30.0
+
 func _ready() -> void:
-	# Three modes (evaluated in this order of priority):
-	# (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>). Used
-	#     by the Go server (server/sim) to drive deterministic rounds with supplied seeds.
-	# (b) RGS mode: --rgs=<base_url> is present but no --round-spec. The client
-	#     fetches a server-authoritative spec via POST /v1/rounds/start, opens a
-	#     bet-placement window for RGS_BET_WINDOW_SEC seconds, then starts the race.
-	# (c) Interactive mode: neither flag → generate a fresh local seed.
+	# Casino broadcast: if --casino-video / --casino-meta were passed,
+	# pin the window/viewport size to a known resolution before anything
+	# renders. The frame streamer captures from the main viewport, and
+	# rgsd was launched with --casino-video-width/-height set to the same
+	# numbers — any mismatch produces corrupted encoded frames.
+	_maybe_setup_casino_window()
+
+	# Two modes remain (evaluated in priority order):
+	#   (a) Spec mode: a round-spec JSON is passed via CLI (++ --round-spec=<path>).
+	#       Used by the Go server (server/sim) to drive deterministic rounds
+	#       with server-supplied seeds.
+	#   (c) Interactive mode: no flag → generate a fresh local seed.
+	#
+	# Mode (b) — RGS client-physics (--rgs=<base_url>, fetch /v1/rounds/start,
+	# run physics locally with the server seed) — was retired with the M29
+	# casino architecture. Player-facing rendering is now server-side via the
+	# /casino/ WebRTC pipeline; there's no scenario where a desktop or browser
+	# client should run physics with a server-supplied seed. The handler
+	# functions (_on_rgs_spec_received, _on_bet_*, _on_round_*, _fetch_rgs_spec,
+	# RgsClient bindings) stay on disk as orphaned code — the dispatch below
+	# is the only thing keeping them in scope, so flipping --rgs back on is a
+	# one-line revert if needed.
 	var spec := _load_spec_from_cli()
 	if not spec.is_empty():
-		# (a) Spec mode — start immediately.
 		_start_race(spec)
 		return
 
-	var rgs_url := _get_rgs_url()
-	if rgs_url.is_empty():
-		# (c) Interactive mode — open HUD v2 IDLE state with bet window first;
-		# the race kicks off when the round timer hits 0 OR the player taps
-		# the debug FORCE START button.
-		_begin_interactive_session()
-		return
+	if not _get_rgs_url().is_empty():
+		push_warning("main.gd: --rgs=<url> ignored; RGS client-physics mode was retired with the M29 casino architecture (player rendering is server-side via /casino/). Falling back to interactive mode.")
 
-	# (b) RGS mode — create the persistent HTTP client node.
-	_rgs_client = RgsClient.new()
-	_rgs_client.base_url = rgs_url
-	add_child(_rgs_client)
-	# player_id is populated by RgsClient._ready() from user://player_id.txt.
-
-	print("RGS: fetching round spec from %s/v1/rounds/start" % rgs_url)
-	var http := HTTPRequest.new()
-	add_child(http)
-	http.request_completed.connect(_on_rgs_spec_received.bind(http))
-	var err := http.request(
-		rgs_url + "/v1/rounds/start",
-		["Content-Type: application/json"],
-		HTTPClient.METHOD_POST,
-		"{}"
-	)
-	if err != OK:
-		push_error("RGS: HTTPRequest.request() failed (err=%d); falling back to local seed" % err)
-		remove_child(http)
-		http.queue_free()
-		_start_race({})
+	_begin_interactive_session()
 
 # Callback for the asynchronous RGS spec fetch (mode b).
 func _on_rgs_spec_received(result: int, response_code: int, _headers: PackedStringArray,
@@ -424,6 +426,10 @@ func _start_race(spec: Dictionary) -> void:
 		# Start auto-cut scheduling once everything is wired.
 		_director.start_directing()
 
+		# Casino broadcast streamers, if --casino-video/--casino-meta CLI
+		# flags were passed. No-op when not in broadcast mode.
+		_maybe_start_casino_streamers()
+
 		# v2 overlay (interactive mode): kick off LIVE phase, hand it the
 		# round id + field size + player marble.
 		if _hud_v2 != null:
@@ -513,6 +519,10 @@ func _cleanup_round() -> void:
 	if is_instance_valid(_live_track):
 		_live_track.queue_free()
 	_live_track = null
+
+	# Casino broadcast streamers — close before freeing the director so
+	# the last frame doesn't capture a half-torn-down scene.
+	_maybe_close_casino_streamers()
 
 	# Free the broadcast director (owns FreeCamera internally).
 	# In spec/server mode _director is null; guard before freeing.
@@ -877,3 +887,199 @@ func _build_environment(track: Track) -> void:
 	var overrides: Dictionary = track.environment_overrides()
 	add_child(EnvironmentBuilder.build_sun(overrides))
 	add_child(EnvironmentBuilder.build_environment(overrides))
+
+# ─── Casino broadcast (M29) ────────────────────────────────────────────────
+#
+# Hooks into the existing race lifecycle:
+#   _maybe_setup_casino_window()    — _ready() head, before any rendering
+#   _maybe_start_casino_streamers() — after _director.start_directing()
+#   _process()                       — per-frame tick + HUD/minimap metadata
+#   _maybe_close_casino_streamers() — _cleanup_round() teardown
+#
+# All four are no-ops when --casino-video/--casino-meta CLI flags are
+# absent. The streamers reuse _live_marbles + the active Camera3D from
+# get_viewport().get_camera_3d() — no parallel scene state.
+
+func _process(delta: float) -> void:
+	if _casino_frames != null and _casino_frames.is_streaming():
+		_casino_frames.tick(delta)
+	if _casino_meta != null and _casino_meta.is_streaming() and _live_racing:
+		_send_casino_meta(delta)
+
+func _maybe_setup_casino_window() -> void:
+	var addrs := _get_casino_broadcast_addrs()
+	if addrs.is_empty():
+		return
+	var w := get_window()
+	w.size = Vector2i(CASINO_BROADCAST_W, CASINO_BROADCAST_H)
+	# Borderless eliminates the OS chrome that otherwise inflates the
+	# viewport size beyond the window.size we just set.
+	w.borderless = true
+	w.unresizable = true
+	w.title = "Marbles broadcast"
+
+func _maybe_start_casino_streamers() -> void:
+	var addrs := _get_casino_broadcast_addrs()
+	if addrs.is_empty():
+		return
+	# Close any prior session (round 2+ on auto-restart re-enters this path).
+	_maybe_close_casino_streamers()
+
+	# Strip the render profile to broadcast-server defaults: no SSAO, no
+	# glow, no shadows, no MSAA, no TAA, conservative LOD. Done after
+	# _build_environment ran so the WorldEnvironment / DirectionalLight
+	# nodes already exist and we just override their fields. Cheaper to
+	# do this once per round than to refactor EnvironmentBuilder.
+	_apply_broadcast_render_profile()
+
+	_casino_frames = CasinoFrameStreamer.new()
+	if not _casino_frames.connect_to(
+			addrs.video_host, addrs.video_port, get_viewport(), CASINO_BROADCAST_FPS):
+		push_error("casino: frame streamer failed to connect to %s:%d"
+				% [addrs.video_host, addrs.video_port])
+		_casino_frames = null
+
+	_casino_meta = CasinoMetaStreamer.new()
+	if not _casino_meta.connect_to(addrs.meta_host, addrs.meta_port):
+		push_error("casino: meta streamer failed to connect to %s:%d"
+				% [addrs.meta_host, addrs.meta_port])
+		_casino_meta = null
+	elif _live_marbles.size() > 0:
+		# Names are stable for the whole round — push once at start. Use
+		# the marble Node's name (set by the round runner upstream) so
+		# bettor IDs survive into the browser overlay verbatim.
+		var names := {}
+		for i in range(_live_marbles.size()):
+			var m: Node = _live_marbles[i]
+			names[str(i)] = String(m.name) if is_instance_valid(m) else "marble_%02d" % i
+		_casino_meta.send_names(names)
+
+func _send_casino_meta(delta: float) -> void:
+	# Active camera = whatever the BroadcastDirector currently has set
+	# as `current` on its viewport. Fetching from the viewport rather
+	# than the director keeps this loose-coupled — works whether _director
+	# is alive, in spotlight pass, free-cam mode, or replaced.
+	var cam := get_viewport().get_camera_3d()
+	if cam == null or _live_marbles.is_empty():
+		return
+	_casino_meta.send_hud(_live_tick, _live_marbles, cam)
+
+	_casino_minimap_accum += delta
+	if _casino_minimap_accum >= 0.1:
+		_casino_minimap_accum = 0.0
+		_casino_meta.send_minimap(_live_tick, _live_marbles)
+
+func _maybe_close_casino_streamers() -> void:
+	if _casino_frames != null:
+		_casino_frames.close()
+		_casino_frames = null
+	if _casino_meta != null:
+		_casino_meta.close()
+		_casino_meta = null
+	_casino_minimap_accum = 0.0
+
+# Strip the render profile to broadcast-server defaults. There is no
+# local viewer for this Godot subprocess — only the H.264 stream — so
+# every shader/effect cost we pay shows up as encoded fps lost. The
+# toggles below mirror the list spec'd in the M29 broadcast plan:
+# WorldEnvironment SSAO/SSR/glow/volumetric-fog OFF, MSAA OFF, FXAA on,
+# DirectionalLight shadows OFF, mesh-LOD bias toward lower detail.
+#
+# Each change is logged so we can read the rgsd-side ffmpeg fps before/
+# after and keep only the cheapest ones if we want to dial visual
+# quality back in later.
+func _apply_broadcast_render_profile() -> void:
+	# 1. Find the active WorldEnvironment node and override its Environment.
+	#    The scene's WorldEnvironment was added by EnvironmentBuilder.build_environment().
+	var env_node: WorldEnvironment = null
+	for child in get_children():
+		if child is WorldEnvironment:
+			env_node = child
+			break
+	if env_node != null and env_node.environment != null:
+		var env: Environment = env_node.environment
+		var prev_glow := env.glow_enabled
+		var prev_ssao := env.ssao_enabled
+		var prev_ssil := env.ssil_enabled
+		var prev_ssr  := env.ssr_enabled
+		var prev_fog  := env.fog_enabled
+		var prev_volfog := env.volumetric_fog_enabled
+		var prev_sdfgi := env.sdfgi_enabled
+		env.glow_enabled = false
+		env.ssao_enabled = false
+		env.ssil_enabled = false
+		env.ssr_enabled = false
+		env.volumetric_fog_enabled = false
+		env.sdfgi_enabled = false
+		# Keep linear fog: cheap and used for atmospheric depth cues.
+		print("[broadcast-profile] env: glow=%s→off ssao=%s→off ssil=%s→off ssr=%s→off volfog=%s→off sdfgi=%s→off (linear fog kept=%s)"
+				% [prev_glow, prev_ssao, prev_ssil, prev_ssr, prev_volfog, prev_sdfgi, prev_fog])
+	else:
+		print("[broadcast-profile] no WorldEnvironment found — skipped env tweaks")
+
+	# 2. Disable shadows on every DirectionalLight3D in the tree. The
+	#    casino sun is added directly under main.gd by _build_environment;
+	#    tracks may add their own. Walk recursively to catch them all.
+	var shadowed_lights := 0
+	_disable_shadows_recursive(self, shadowed_lights)
+	# (The recursive helper logs its own count.)
+
+	# 3. Viewport: MSAA off, FXAA on (very cheap), TAA off, debanding off,
+	#    LOD bias toward less detail. mesh_lod_threshold default is 1.0
+	#    (pixels of error before stepping down a LOD); 8.0 is a noticeable
+	#    drop in distant detail and visibly cheaper.
+	var vp := get_viewport()
+	if vp != null:
+		var prev_msaa := vp.msaa_3d
+		var prev_aa := vp.screen_space_aa
+		var prev_taa := vp.use_taa
+		var prev_debanding := vp.use_debanding
+		var prev_lod := vp.mesh_lod_threshold
+		vp.msaa_3d = Viewport.MSAA_DISABLED
+		vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+		vp.use_taa = false
+		vp.use_debanding = false
+		vp.mesh_lod_threshold = 8.0
+		print("[broadcast-profile] viewport: msaa3d=%s→DISABLED ssaa=%s→FXAA taa=%s→false debanding=%s→false lod_threshold=%s→8.0"
+				% [prev_msaa, prev_aa, prev_taa, prev_debanding, prev_lod])
+
+func _disable_shadows_recursive(node: Node, count: int) -> int:
+	for child in node.get_children():
+		if child is DirectionalLight3D and child.shadow_enabled:
+			child.shadow_enabled = false
+			count += 1
+			print("[broadcast-profile] sun-shadows: %s.shadow_enabled = false" % child.name)
+		# Optionally include OmniLight3D / SpotLight3D shadows too — the
+		# tracks set their own; turn them off here for a uniform profile.
+		elif (child is OmniLight3D or child is SpotLight3D) and child.shadow_enabled:
+			child.shadow_enabled = false
+			count += 1
+			print("[broadcast-profile] light-shadows: %s.shadow_enabled = false" % child.name)
+		count = _disable_shadows_recursive(child, count)
+	return count
+
+func _get_casino_broadcast_addrs() -> Dictionary:
+	# Parse `--casino-video=host:port` and `--casino-meta=host:port` from
+	# the CLI tail (Godot exposes these via OS.get_cmdline_user_args()).
+	# Returns empty dict when either is missing — both are required.
+	var args := OS.get_cmdline_user_args()
+	var video := ""
+	var meta := ""
+	for a in args:
+		if a.begins_with("--casino-video="):
+			video = a.substr("--casino-video=".length())
+		elif a.begins_with("--casino-meta="):
+			meta = a.substr("--casino-meta=".length())
+	if video == "" or meta == "":
+		return {}
+	var v_bits := video.split(":")
+	var m_bits := meta.split(":")
+	if v_bits.size() != 2 or m_bits.size() != 2:
+		push_error("casino: --casino-video / --casino-meta must be host:port")
+		return {}
+	return {
+		"video_host": v_bits[0],
+		"video_port": int(v_bits[1]),
+		"meta_host":  m_bits[0],
+		"meta_port":  int(m_bits[1]),
+	}
