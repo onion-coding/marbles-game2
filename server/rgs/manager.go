@@ -56,6 +56,10 @@ type ManagerConfig struct {
 	// SupportedCurrencies is the whitelist of accepted currency codes.
 	// Defaults to defaultSupportedCurrencies when nil.
 	SupportedCurrencies []string
+	// MaxConcurrentRounds caps the number of rounds that may execute
+	// concurrently inside RunRound / RunNextRound. 0 is treated as the
+	// documented default (4). Set to 1 to restore strict serial behaviour.
+	MaxConcurrentRounds int
 }
 
 // SimRunner is the surface rgs needs from the sim package — small enough
@@ -119,16 +123,57 @@ type pendingRound struct {
 // paused via Pause(). Callers should respond with 503 Service Unavailable.
 var ErrManagerPaused = errors.New("manager paused")
 
+// ErrRoundInFlight is returned by RunRound when the requested round_id is
+// already being executed by another goroutine. Callers should wait and retry,
+// or poll the outcome via the settled-round cache.
+var ErrRoundInFlight = errors.New("round already in flight")
+
+// ErrMaxConcurrentRounds is returned by RunRound / RunNextRound when the
+// manager is already running MaxConcurrentRounds rounds simultaneously.
+// Callers should retry after a short back-off.
+var ErrMaxConcurrentRounds = errors.New("max concurrent rounds reached")
+
+// roundExecution tracks the in-progress or completed state of a single
+// round. It is the unit of concurrency isolation: each round owns its own
+// mu so that sim, manifest, and settle steps never share locks with other
+// concurrent rounds. The result is cached here after completion so that
+// duplicate RunRound calls on the same round_id return the same outcome
+// without re-running the sim.
+type roundExecution struct {
+	mu     sync.Mutex        // guards done + fields below
+	done   bool              // true when the round has completed (success or error)
+	doneCh chan struct{}      // closed when done becomes true
+
+	// populated on success:
+	manifest        *replay.Manifest
+	outcomes        []SettlementOutcome
+	roundBetOutcomes []RoundBetOutcome
+
+	// populated on failure:
+	err error
+}
+
 // Manager is the central coordinator. It owns the session table, the
 // "next round" buffer of pending bets, and the wallet client. Methods
 // are safe for concurrent calls.
 //
-// Lifecycle (synchronous, one round at a time, MVP):
+// Concurrency model (M9.6):
 //
-//	OpenSession → PlaceBet → RunNextRound → settlement → SETTLED state
+//	Multiple rounds may execute concurrently — up to cfg.MaxConcurrentRounds
+//	at a time. Each round runs in its own goroutine (spawned by RunRound /
+//	RunNextRound) and owns a *roundExecution that holds per-round state.
+//	The Manager's main mutex (m.mu) is held only for bookkeeping operations
+//	(queue pops, map writes, prevTrack updates) — never while the sim or
+//	wallet calls are in progress. This ensures that N in-flight rounds do
+//	not block each other on the Manager mutex.
 //
-// Multi-round-at-once / lobby semantics are M9.x; this MVP runs one round
-// in process, blocking, with deterministic settlement.
+//	Idempotency: a second call to RunRound with an already-in-flight
+//	round_id returns ErrRoundInFlight. A call against an already-settled
+//	round_id returns the cached outcome immediately (no re-sim).
+//
+//	Serial default: MaxConcurrentRounds defaults to 4, but the Scheduler
+//	drives only one round at a time unless --scheduler-overlap-rounds > 0.
+//	Operator opt-in via that flag.
 type Manager struct {
 	cfg ManagerConfig
 
@@ -140,6 +185,10 @@ type Manager struct {
 	pendingRounds []*pendingRound        // pre-minted round specs with their round-level bets, FIFO
 	roundBets     map[uint64][]*RoundBet // round_id → all settled+pending bets (for GET queries)
 	paused        bool                   // when true, RunNextRound returns ErrManagerPaused immediately
+
+	// per-round concurrency tracking (guarded by mu)
+	inFlightRounds map[uint64]*roundExecution // round_id → in-progress or completed execution
+	inFlightCount  int                        // number of rounds currently executing (not yet done)
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
@@ -173,6 +222,9 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		// game/tracks/track_registry.gd.
 		cfg.TrackPool = []uint8{1, 2, 3, 4, 5, 6}
 	}
+	if cfg.MaxConcurrentRounds <= 0 {
+		cfg.MaxConcurrentRounds = 4
+	}
 	// m.sessions is always the live-pointer cache (used by RunNextRound to
 	// hold *Session pointers across the race). When no external SessionStore
 	// is configured, the inMemorySessionStore wraps the same map so we have
@@ -185,11 +237,12 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		store = &inMemorySessionStore{m: cache}
 	}
 	return &Manager{
-		cfg:          cfg,
-		sessions:     cache,
-		sessionStore: store,
-		prevTrack:    -1,
-		roundBets:    map[uint64][]*RoundBet{},
+		cfg:            cfg,
+		sessions:       cache,
+		sessionStore:   store,
+		prevTrack:      -1,
+		roundBets:      map[uint64][]*RoundBet{},
+		inFlightRounds: map[uint64]*roundExecution{},
 	}, nil
 }
 
@@ -312,6 +365,11 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64, currency string) (*B
 //
 // Returns the manifest as written to disk, a per-session-bet outcome list, and
 // the per-round-bet outcome list (bets placed via POST /v1/rounds/{id}/bets).
+//
+// Concurrency: RunNextRound pops a pending round from the shared queue and
+// then calls RunRound to execute it. Multiple concurrent callers each pop a
+// distinct round so there is no cross-contamination. The MaxConcurrentRounds
+// semaphore in RunRound limits total parallelism.
 func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []SettlementOutcome, []RoundBetOutcome, error) {
 	m.mu.Lock()
 	if m.paused {
@@ -354,6 +412,98 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		m.mu.Unlock()
 	}
 
+	return m.executeRound(ctx, pr, pending)
+}
+
+// RunRound executes the round with the given round_id. The round_id must have
+// been previously minted by GenerateRoundSpec. Session-based bets (PlaceBet)
+// are NOT included — those flow through RunNextRound. This method is designed
+// for direct targeted execution by the Scheduler when overlap > 0.
+//
+// Concurrency guarantees:
+//   - If round_id is currently in-flight: returns ErrRoundInFlight immediately.
+//   - If round_id was already settled: returns the cached outcome, no re-sim.
+//   - If MaxConcurrentRounds would be exceeded: returns ErrMaxConcurrentRounds.
+//
+// The round_id is removed from pendingRounds and its execution tracked in
+// inFlightRounds. On completion the roundExecution is retained for idempotent
+// result delivery.
+func (m *Manager) RunRound(ctx context.Context, roundID uint64) (*replay.Manifest, []SettlementOutcome, []RoundBetOutcome, error) {
+	m.mu.Lock()
+	if m.paused {
+		m.mu.Unlock()
+		return nil, nil, nil, ErrManagerPaused
+	}
+
+	// Check for existing execution.
+	if ex, exists := m.inFlightRounds[roundID]; exists {
+		m.mu.Unlock()
+		ex.mu.Lock()
+		defer ex.mu.Unlock()
+		if ex.done {
+			// Already settled — return cached outcome.
+			return ex.manifest, ex.outcomes, ex.roundBetOutcomes, ex.err
+		}
+		// In-flight but not done yet.
+		return nil, nil, nil, ErrRoundInFlight
+	}
+
+	// Check concurrency cap.
+	if m.inFlightCount >= m.cfg.MaxConcurrentRounds {
+		m.mu.Unlock()
+		return nil, nil, nil, ErrMaxConcurrentRounds
+	}
+
+	// Pop the specific pending round.
+	var pr *pendingRound
+	for i, p := range m.pendingRounds {
+		if p.spec.RoundID == roundID {
+			pr = p
+			m.pendingRounds = append(m.pendingRounds[:i], m.pendingRounds[i+1:]...)
+			break
+		}
+	}
+	if pr == nil {
+		// Not in pendingRounds — check if already in roundBets (already run).
+		_, known := m.roundBets[roundID]
+		m.mu.Unlock()
+		if known {
+			return nil, nil, nil, ErrRoundAlreadyRun
+		}
+		return nil, nil, nil, ErrUnknownRound
+	}
+
+	// Register in-flight execution.
+	ex := &roundExecution{doneCh: make(chan struct{})}
+	m.inFlightRounds[roundID] = ex
+	m.inFlightCount++
+	m.mu.Unlock()
+
+	manifest, outcomes, rbOutcomes, err := m.executeRound(ctx, pr, nil)
+
+	// Record result and mark done.
+	m.mu.Lock()
+	m.inFlightCount--
+	m.mu.Unlock()
+
+	ex.mu.Lock()
+	ex.manifest = manifest
+	ex.outcomes = outcomes
+	ex.roundBetOutcomes = rbOutcomes
+	ex.err = err
+	ex.done = true
+	close(ex.doneCh)
+	ex.mu.Unlock()
+
+	return manifest, outcomes, rbOutcomes, err
+}
+
+// executeRound is the shared implementation called by both RunNextRound and
+// RunRound. It takes the resolved pendingRound (guaranteed non-nil) and the
+// list of session-based bettors (nil when called from RunRound). All
+// sim/wallet/store operations happen here, under no Manager mutex — only
+// short bookkeeping locks are acquired at the start and end.
+func (m *Manager) executeRound(ctx context.Context, pr *pendingRound, pending []*Session) (*replay.Manifest, []SettlementOutcome, []RoundBetOutcome, error) {
 	// Decode the seed from the spec's hex string.
 	seedBytes, err := hex.DecodeString(pr.spec.ServerSeedHex)
 	if err != nil {
@@ -552,12 +702,12 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	// Apply jackpot rule B2: 1° marble has Tier 2 pickup → jackpot fires.
 	// Uses the same outcome model the payoff calc reads from.
 	pickupsMap := map[int]float64{}
-	for i, m := range pickupPerMarble {
-		if m > 1.0 {
-			pickupsMap[i] = m
+	for i, mv := range pickupPerMarble {
+		if mv > 1.0 {
+			pickupsMap[i] = mv
 		}
 	}
-	outcome := NewRoundOutcome([3]int{
+	roundOutcome := NewRoundOutcome([3]int{
 		podium[0].MarbleIndex, podium[1].MarbleIndex, podium[2].MarbleIndex,
 	}, pickupsMap)
 
@@ -592,7 +742,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 	for rank := 0; rank < 3; rank++ {
 		idx := podium[rank].MarbleIndex
 		if idx >= 0 {
-			gross := ComputeBetPayoff(idx, 1.0, outcome)
+			gross := ComputeBetPayoff(idx, 1.0, roundOutcome)
 			podiumPayoutsArr[rank] = uint64(gross * 100)
 		}
 	}
@@ -629,8 +779,8 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		Tier2Active:         tier2Active,
 		PickupPerMarble:     pickupPerMarble,
 		PickupPerMarbleTier: pickupPerMarbleTier,
-		JackpotTriggered:    outcome.JackpotTriggered,
-		JackpotMarbleIdx:    outcome.JackpotMarbleIdx,
+		JackpotTriggered:    roundOutcome.JackpotTriggered,
+		JackpotMarbleIdx:    roundOutcome.JackpotMarbleIdx,
 		FinishOrder:         finishOrder,
 	}
 	replayFile, err := os.Open(simRes.ReplayPath)
@@ -664,7 +814,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 			if rbCur == "" {
 				rbCur = m.currency()
 			}
-			payout := ComputeBetPayoff(rb.MarbleIdx, rb.Amount, outcome)
+			payout := ComputeBetPayoff(rb.MarbleIdx, rb.Amount, roundOutcome)
 			won := payout > 0.0
 			if won {
 				scale := float64(UnitsPerWhole(rbCur))
@@ -692,7 +842,7 @@ func (m *Manager) RunNextRound(ctx context.Context) (*replay.Manifest, []Settlem
 		}
 		totalLoss := totalBets - totalPayout
 		fmt.Fprintf(os.Stderr, "rgs: round %d round-bets settled (v2 model): count=%d total_bets=%.2f total_payout=%.2f total_loss=%.2f jackpot=%v\n",
-			roundID, len(pr.bets), totalBets, totalPayout, totalLoss, outcome.JackpotTriggered)
+			roundID, len(pr.bets), totalBets, totalPayout, totalLoss, roundOutcome.JackpotTriggered)
 	}
 	m.mu.Lock()
 	m.prevTrack = int(trackID)

@@ -207,6 +207,7 @@ beta". To take real money these still need work:
 - ✅ **Real wallet client** — [HTTPWallet](../server/rgs/wallet_http.go) in place. 12-test contract suite. Provider adapters (SoftSwiss, EveryMatrix) still needed; see [rgs-integration.md §How to integrate with operator X](../docs/rgs-integration.md#how-to-integrate-with-operator-x-template).
 - ✅ **Postgres for sessions** — `--postgres-dsn` wires a durable `SessionStore`; sessions survive restarts. [server/postgres/](../server/postgres/) package with idempotent migration.
 - ✅ **Round scheduler** — `--scheduler-enabled` launches a goroutine that runs rounds automatically at a fixed cadence. `--scheduler-bet-window` (default 10s) and `--scheduler-between-rounds` (default 5s) are tunable. `GET /v1/scheduler/status` reports live phase / round_id / next_round_at. See [server/rgs/scheduler.go](../server/rgs/scheduler.go).
+- ✅ **Multi-round concurrency** — `Manager.RunRound(ctx, round_id)` executes rounds concurrently up to `--max-concurrent-rounds` (default 4). Each round has isolated state (`roundExecution`) so sim, manifest, and settle steps never share locks with other rounds. The Scheduler supports `--scheduler-overlap-rounds` (default 0 = serial) to keep N rounds in flight simultaneously. Idempotency guaranteed: duplicate `RunRound` calls on the same `round_id` return the cached outcome; a call while the round is still executing returns `ErrRoundInFlight`. See [server/rgs/manager.go](../server/rgs/manager.go).
 
 ### Scheduler configuration
 
@@ -217,6 +218,8 @@ When `--scheduler-enabled` is set, `rgsd` drives rounds autonomously:
 | `--scheduler-enabled`         | —                              | `false` | Enable the round ticker. When false, use POST /v1/rounds/run |
 | `--scheduler-bet-window`      | —                              | `10s`   | How long the bet window stays open before RunNextRound fires |
 | `--scheduler-between-rounds`  | —                              | `5s`    | Cooldown between a settled round and the next bet window     |
+| `--max-concurrent-rounds`     | `RGSD_MAX_CONCURRENT_ROUNDS`   | `4`     | Max rounds executing simultaneously inside Manager           |
+| `--scheduler-overlap-rounds`  | —                              | `0`     | Scheduler overlap: rounds in flight at once (0 = serial)     |
 
 Lifecycle per round:
 
@@ -272,19 +275,18 @@ use `--scheduler-bet-window=3s --scheduler-between-rounds=2s`.
    storage (S3/GCS/R2) using a write-once + hash-verified envelope; the
    current `replay.Store` API is small enough that a swap is contained.
    (S3Backend stub is in [server/replay/backend_s3.go](../server/replay/backend_s3.go) — needs wiring in rgsd.)
-2. **Multi-round concurrency.** `Manager.RunNextRound` is serial. A real
-   deployment runs lobbies in parallel — one Goroutine per active
-   round_id with isolated state.
-3. **Round-bet persistence.** `pendingRounds` / `roundBets` in Manager
+2. **Round-bet persistence.** `pendingRounds` / `roundBets` in Manager
    are in-memory. Restart loses queued bets. Postgres-backed store needed (M9.x work).
-4. **Distributed deployment.** Multiple rgsd nodes need to coordinate on
+3. **Distributed deployment.** Multiple rgsd nodes need to coordinate on
    `previousTrack` (for the no-back-to-back selector), the round_id
    counter (currently unix-nanos — collision-prone across hosts), and
    replay-store ownership. A small etcd / Redis layer is the natural fit.
-5. **Certification readiness.** RNG audit, round-determinism replay
+   Note: single-host multi-round concurrency (per-round isolation) is
+   now done; this item covers the multi-host coordination layer only.
+4. **Certification readiness.** RNG audit, round-determinism replay
    tests at scale, third-party security review of the HMAC scheme,
    regulator-side auditor portal. None of this is in the repo today.
 
-A reasonable order of attack: 2 (wallet provider adapters) → 4 (distributed) → 1
-(durable storage) → 3 (round-bet persistence) → 5 (certification). Steps 1-4 are infrastructure; step 5 is a
-months-long external process in any tier-1 jurisdiction.
+A reasonable order of attack: 3 (distributed) → 1 (durable storage) → 2
+(round-bet persistence) → 4 (certification). Steps 1-3 are infrastructure;
+step 4 is a months-long external process in any tier-1 jurisdiction.

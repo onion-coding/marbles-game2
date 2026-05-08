@@ -10,6 +10,15 @@ import (
 	"github.com/onion-coding/marbles-game2/server/replay"
 )
 
+// schedulerRoundResult is the outcome of a single overlapping round executed
+// by the scheduler's overlap goroutines.
+type schedulerRoundResult struct {
+	roundID  uint64
+	manifest *replay.Manifest
+	outcomes []SettlementOutcome
+	err      error
+}
+
 // SchedulerPhase describes what the scheduler loop is currently doing.
 type SchedulerPhase string
 
@@ -60,6 +69,16 @@ type SchedulerConfig struct {
 	// OnRoundFinished is called (in the scheduler goroutine) immediately
 	// after RunNextRound returns successfully. Safe to leave nil.
 	OnRoundFinished func(manifest *replay.Manifest, outcomes []SettlementOutcome)
+
+	// OverlapRounds is the number of rounds the scheduler may keep in
+	// flight simultaneously. 0 (the default) means serial: each round
+	// must complete before the next bet window opens. Set to > 0 to allow
+	// up to N concurrent rounds; the Manager's MaxConcurrentRounds cap
+	// still applies as a hard upper bound.
+	//
+	// Operator opt-in via --scheduler-overlap-rounds. Serial behaviour
+	// is preserved by default for backward compatibility.
+	OverlapRounds int
 }
 
 // SchedulerStatus is the read-only view of the scheduler returned by Status().
@@ -194,12 +213,27 @@ func (s *Scheduler) setPhase(phase SchedulerPhase, roundID uint64, nextAt time.T
 }
 
 // loop is the scheduler goroutine. It runs until ctx is cancelled.
+//
+// When cfg.OverlapRounds == 0 (the default), the scheduler is strictly serial:
+// it waits for RunNextRound to complete before opening the next bet window.
+//
+// When cfg.OverlapRounds > 0, the scheduler may keep up to OverlapRounds
+// rounds in flight simultaneously. Each round is launched in its own goroutine
+// via RunRound; the loop tracks in-flight count via a semaphore channel so it
+// never exceeds the configured overlap. Results are dispatched to the
+// OnRoundFinished callback from the round's own goroutine.
 func (s *Scheduler) loop(ctx context.Context) {
 	defer func() {
 		s.setPhase(PhaseStopped, 0, time.Time{})
 		close(s.done)
 	}()
 
+	if s.cfg.OverlapRounds > 0 {
+		s.loopOverlapping(ctx)
+		return
+	}
+
+	// ── Serial path (default, OverlapRounds == 0) ────────────────────────
 	for {
 		// Respect pause: spin-poll until manager is resumed or ctx done.
 		if !s.waitIfPaused(ctx) {
@@ -264,6 +298,101 @@ func (s *Scheduler) loop(ctx context.Context) {
 		cooldownEnd := time.Now().Add(s.cfg.BetweenRounds)
 		s.setPhase(PhaseCooldown, 0, cooldownEnd)
 
+		if !s.sleepOrDone(ctx, s.cfg.BetweenRounds) {
+			return
+		}
+	}
+}
+
+// loopOverlapping is the concurrent variant of loop, used when
+// cfg.OverlapRounds > 0. It uses a buffered semaphore channel to limit
+// in-flight rounds to OverlapRounds at a time. Each round's bet window
+// and execution run concurrently; the loop itself only drives bet-window
+// minting at the configured cadence.
+func (s *Scheduler) loopOverlapping(ctx context.Context) {
+	overlap := s.cfg.OverlapRounds
+	// semaphore: acquiring a slot means "we have budget to run another round"
+	sem := make(chan struct{}, overlap)
+
+	// wg tracks in-flight round goroutines so we can wait for all of them
+	// to finish before loopOverlapping returns (and loop closes s.done).
+	var wg sync.WaitGroup
+
+	defer wg.Wait() // drain all in-flight rounds before exiting
+
+	for {
+		// Respect pause.
+		if !s.waitIfPaused(ctx) {
+			return
+		}
+
+		// Acquire a concurrency slot. Block until one is available or ctx done.
+		select {
+		case sem <- struct{}{}:
+			// got slot
+		case <-ctx.Done():
+			return
+		}
+
+		// Mint a round spec.
+		spec, err := s.cfg.Mgr.GenerateRoundSpec()
+		if err != nil {
+			s.logger.Error("scheduler: GenerateRoundSpec failed (overlap)", "err", err)
+			<-sem // release slot
+			if !s.sleepOrDone(ctx, time.Second) {
+				return
+			}
+			continue
+		}
+
+		s.logger.Info("scheduler: bet window open (overlap)",
+			"round_id", spec.RoundID,
+			"track_id", spec.TrackID,
+			"duration", s.cfg.BetWindowSec)
+
+		betWindowEnd := time.Now().Add(s.cfg.BetWindowSec)
+		s.setPhase(PhaseBetWindow, spec.RoundID, betWindowEnd)
+
+		if s.cfg.OnRoundStarted != nil {
+			s.cfg.OnRoundStarted(spec.RoundID, spec.TrackID)
+		}
+
+		// Launch a goroutine to: wait for bet window, then run the round.
+		roundID := spec.RoundID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }() // release concurrency slot when done
+
+			// Wait for bet window (or ctx cancel).
+			betTimer := time.NewTimer(s.cfg.BetWindowSec)
+			defer betTimer.Stop()
+			select {
+			case <-betTimer.C:
+				// bet window elapsed
+			case <-ctx.Done():
+				return
+			}
+
+			s.logger.Info("scheduler: running round (overlap)", "round_id", roundID)
+
+			manifest, outcomes, _, err := s.cfg.Mgr.RunRound(ctx, roundID)
+			if err != nil {
+				s.logger.Error("scheduler: RunRound failed (overlap)",
+					"round_id", roundID, "err", err)
+				return
+			}
+			s.logger.Info("scheduler: round settled (overlap)",
+				"round_id", manifest.RoundID,
+				"winner", manifest.Winner.MarbleIndex,
+				"outcomes", len(outcomes))
+
+			if s.cfg.OnRoundFinished != nil {
+				s.cfg.OnRoundFinished(manifest, outcomes)
+			}
+		}()
+
+		// Cooldown between minting new bet windows (not between round completions).
 		if !s.sleepOrDone(ctx, s.cfg.BetweenRounds) {
 			return
 		}

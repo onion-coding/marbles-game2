@@ -69,6 +69,10 @@ func main() {
 		schedulerEnabled      = flag.Bool("scheduler-enabled", false, "run rounds automatically on a ticker (default false: use POST /v1/rounds/run instead)")
 		schedulerBetWindow    = flag.Duration("scheduler-bet-window", 10*time.Second, "bet window duration: how long players have to place bets before the round runs")
 		schedulerBetweenRounds = flag.Duration("scheduler-between-rounds", 5*time.Second, "cooldown between end of one round and start of the next bet window")
+
+		// Concurrency flags — see docs/deployment.md §Multi-round concurrency.
+		maxConcurrentRounds   = flag.Int("max-concurrent-rounds", 4, "max rounds executing simultaneously inside Manager (env: RGSD_MAX_CONCURRENT_ROUNDS)")
+		schedulerOverlapRounds = flag.Int("scheduler-overlap-rounds", 0, "scheduler overlap: how many rounds may be in flight at once (0 = serial default)")
 	)
 	flag.Parse()
 
@@ -173,6 +177,7 @@ func main() {
 		SessionStore:        sessionStore,
 		DefaultCurrency:     *defaultCurrency,
 		SupportedCurrencies: strings.Split(*supportedCurrencies, ","),
+		MaxConcurrentRounds: *maxConcurrentRounds,
 	})
 	if err != nil {
 		logger.Error("NewManager", "err", err)
@@ -186,10 +191,11 @@ func main() {
 	var sched *rgs.Scheduler
 	if *schedulerEnabled {
 		sched = rgs.NewScheduler(rgs.SchedulerConfig{
-			Mgr:           mgr,
-			BetWindowSec:  *schedulerBetWindow,
-			BetweenRounds: *schedulerBetweenRounds,
-			Logger:        logger,
+			Mgr:            mgr,
+			BetWindowSec:   *schedulerBetWindow,
+			BetweenRounds:  *schedulerBetweenRounds,
+			Logger:         logger,
+			OverlapRounds:  *schedulerOverlapRounds,
 			OnRoundStarted: func(roundID uint64, trackID uint8) {
 				logger.Info("scheduler: bet window open", "round_id", roundID, "track_id", trackID, "window", *schedulerBetWindow)
 			},
