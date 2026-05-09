@@ -720,17 +720,25 @@ func _pick_interactive_track() -> int:
 				"sky", "plinko":                return TrackRegistry.PLINKO
 				"stadium":                      return TrackRegistry.STADIUM
 				"serpent", "snake":             return TrackRegistry.SERPENT
-				"spiral", "spiral_drop":        return TrackRegistry.SPIRAL_DROP
+				"spiral", "spiral_drop":
+					push_warning("--track=spiral: SpiralDropTrack is experimental and known to deadlock " +
+							"(marbles get stuck mid-helix, race never finishes). Use only for diagnostic.")
+					return TrackRegistry.SPIRAL_DROP
 				_:
 					push_warning("--track=%s not recognized; falling back to random themed track" % name)
 					break
-	# Phase 6 default: SPIRAL_DROP only.  Old M11 cascade tracks
-	# (ROULETTE/CRAPS/POKER/SLOTS/PLINKO/STADIUM) are still valid for replay
-	# decode but excluded from interactive random pick — they're the
-	# "scatola schifosa" the user explicitly rejected.  When the rest of
-	# Phase 6 (Pinball Chaos / Zig-Zag / Funnel / Split / Rotating Rings)
-	# lands, append them here.
-	return TrackRegistry.SPIRAL_DROP
+	# Default interactive: random pick from SELECTABLE (the M11 themed
+	# tracks: forest / volcano / ice / cavern / sky / stadium). Spiral
+	# Drop was the prior default during Phase 6 design exploration but
+	# is currently broken (race times out — marbles deadlock in the
+	# inner-curb / split-merge geometry). Removed from default until
+	# fixed; still accessible via explicit --track=spiral with a
+	# warning, and still in TrackRegistry for old replay decode.
+	var pool := TrackRegistry.SELECTABLE
+	if pool.is_empty():
+		return TrackRegistry.STADIUM   # last-ditch fallback
+	randomize()
+	return int(pool[randi() % pool.size()])
 
 func _load_spec_from_cli() -> Dictionary:
 	var args := OS.get_cmdline_user_args()
