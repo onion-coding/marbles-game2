@@ -249,36 +249,42 @@ func _input(event: InputEvent) -> void:
 func _build_cameras() -> void:
 	var bb: AABB = _track.camera_bounds()
 
+	# IMPORTANT ORDERING: each Camera3D must be add_child()'d BEFORE we set
+	# global_position / call look_at() — those APIs require the node to be
+	# inside the scene tree, otherwise Godot prints
+	# "Condition !is_inside_tree() is true" + "Use look_at_from_position()
+	# instead" and the camera ends up at the origin.
+
 	# ── STADIUM_WIDE ────────────────────────────────────────────────────────
 	_cam_wide = Camera3D.new()
 	_cam_wide.name = "CamWide"
 	_cam_wide.fov  = 60.0
-	_place_wide_camera(_cam_wide, bb)
 	add_child(_cam_wide)
+	_place_wide_camera(_cam_wide, bb)
 
 	# ── LEADER_FOLLOW ───────────────────────────────────────────────────────
 	_cam_leader = Camera3D.new()
 	_cam_leader.name = "CamLeader"
 	_cam_leader.fov  = 55.0
+	add_child(_cam_leader)
 	# Initial position equals wide; will be moved every frame.
 	_cam_leader.global_position = _cam_wide.global_position
 	_cam_leader.look_at(bb.get_center(), Vector3.UP)
-	add_child(_cam_leader)
 
 	# ── FINISH_LINE_LOWANGLE ─────────────────────────────────────────────────
 	_cam_finish = Camera3D.new()
 	_cam_finish.name = "CamFinish"
 	_cam_finish.fov  = 50.0
-	_place_finish_camera(_cam_finish)
 	add_child(_cam_finish)
+	_place_finish_camera(_cam_finish)
 
 	# ── SPOTLIGHT (per-bettor close-up) ─────────────────────────────────────
 	_cam_spotlight = Camera3D.new()
 	_cam_spotlight.name = "CamSpotlight"
 	_cam_spotlight.fov  = 45.0   # tighter than leader for portrait-style framing
+	add_child(_cam_spotlight)
 	_cam_spotlight.global_position = _cam_wide.global_position
 	_cam_spotlight.look_at(bb.get_center(), Vector3.UP)
-	add_child(_cam_spotlight)
 
 	# ── FREECAM (fallback "free" mode) ──────────────────────────────────────
 	_freecam = FreeCamera.new()
