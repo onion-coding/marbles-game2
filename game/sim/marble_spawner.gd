@@ -78,7 +78,34 @@ static func make_glass_material(color: Color, swirl_seed: int) -> Material:
 	# Map swirl_seed (drop_order 0-19, or arbitrary int) into [0,1] so each
 	# marble has a deterministic but distinct internal pattern.
 	mat.set_shader_parameter("swirl_seed", float(swirl_seed % 64) / 64.0)
+	# Per-marble VARIANT: cycle through cat's-eye / swirl / banded / clearie
+	# so every round has visual diversity. (drop_order modulo 4) gives a
+	# deterministic distribution; over 12-30 marbles each type appears
+	# multiple times with different colours.
+	var variant: int = swirl_seed % 4
+	mat.set_shader_parameter("marble_type", variant)
+	# Secondary colour for two-tone variants. Derive from primary via a hue
+	# shift so the two colours read as related, not random. HSV rotate +0.5
+	# (complementary) for swirl/banded, +0.15 (analogous) for cat's-eye, and
+	# white-ish for clearie centre highlight.
+	var hsv := _color_to_hsv(color)
+	var second_hue: float
+	match variant:
+		0:  second_hue = fmod(hsv.x + 0.15, 1.0)    # cat's-eye
+		1:  second_hue = fmod(hsv.x + 0.50, 1.0)    # swirl
+		2:  second_hue = fmod(hsv.x + 0.50, 1.0)    # banded
+		_:  second_hue = hsv.x                       # clearie (same hue, brighter)
+	var second_sat: float = clampf(hsv.y * 0.85, 0.2, 1.0)
+	var second_val: float = clampf(hsv.z + 0.15, 0.3, 1.0)
+	var second_color: Color = Color.from_hsv(second_hue, second_sat, second_val)
+	mat.set_shader_parameter("secondary_color",
+		Vector4(second_color.r, second_color.g, second_color.b, 1.0))
 	return mat
+
+# HSV decomposition (Godot's Color.h/.s/.v works in 4.x but is occasionally
+# flaky on edge cases; this is explicit so the shader inputs are predictable).
+static func _color_to_hsv(c: Color) -> Vector3:
+	return Vector3(c.h, c.s, c.v)
 
 # Floating name label that always faces the camera. Kept public for
 # opt-in callers (e.g. a future "leader badge" that shows only above
@@ -129,8 +156,10 @@ static func attach_number_label(marble: Node3D, drop_order: int) -> void:
 static func attach_trail(marble: Node3D, color: Color) -> void:
 	var trail := GPUParticles3D.new()
 	trail.name = "Trail"
-	trail.amount = 32
-	trail.lifetime = 0.55
+	# Lowered from 32 — denser trails cluttered the close-up frame and
+	# obscured the glass-marble shader.
+	trail.amount = 18
+	trail.lifetime = 0.45
 	trail.preprocess = 0.0
 	trail.emitting = true
 	trail.local_coords = false   # particles emit in world space, freezing them
@@ -175,7 +204,10 @@ static func attach_trail(marble: Node3D, color: Color) -> void:
 	trail_mat.albedo_color = color
 	trail_mat.emission_enabled = true
 	trail_mat.emission = color
-	trail_mat.emission_energy_multiplier = 0.8
+	# Lower than 0.8 — the old value bloomed the trail into a halo that
+	# washed out the glass-marble shader behind it. 0.3 is enough to read
+	# as a coloured streak at distance without overwhelming the marble.
+	trail_mat.emission_energy_multiplier = 0.3
 	trail_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	trail_mesh.material = trail_mat
 	trail.draw_pass_1 = trail_mesh

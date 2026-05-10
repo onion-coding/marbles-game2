@@ -23,6 +23,11 @@ const STADIUM := 6
 # Not in SELECTABLE until validated end-to-end.
 const SERPENT := 7
 const SPIRAL_DROP := 8
+# Demo / proof-of-quality: smooth procedurally-swept half-pipe slide. Builds
+# its geometry via ArrayMesh + parallel-transport frames + smooth normals so
+# the curved surface has no box-faceting and lights cleanly. Not in
+# SELECTABLE — invoked explicitly via --track=curve_demo.
+const CURVE_DEMO := 9
 
 # Track IDs currently available for selection by roundd / random pick.
 # Six M11 themed tracks (forest/volcano/ice/cavern/sky/stadium). The legacy
@@ -39,7 +44,7 @@ static func is_valid_id(id: int) -> bool:
 	# Any ID ever shipped is valid for decode. Only SELECTABLE are picked
 	# by the server for new rounds.
 	match id:
-		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM, SERPENT, SPIRAL_DROP:
+		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM, SERPENT, SPIRAL_DROP, CURVE_DEMO:
 			return true
 		_:
 			return false
@@ -64,6 +69,8 @@ static func instance(id: int) -> Track:
 			return SerpentTrack.new()
 		SPIRAL_DROP:
 			return SpiralDropTrack.new()
+		CURVE_DEMO:
+			return CurveDemoTrack.new()
 		_:
 			push_error("TrackRegistry: unknown track_id=%d — falling back to RampTrack" % id)
 			return RampTrack.new()
@@ -88,5 +95,7 @@ static func name_of(id: int) -> String:
 			return "SerpentTrack"
 		SPIRAL_DROP:
 			return "SpiralDropTrack"
+		CURVE_DEMO:
+			return "CurveDemoTrack"
 		_:
 			return "unknown(%d)" % id
