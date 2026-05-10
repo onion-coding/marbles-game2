@@ -510,3 +510,149 @@ static func build_ambient_particles(parent: Node, node_name: String,
 
 	parent.add_child(gp)
 	return gp
+
+# ─── Smooth swept tube ──────────────────────────────────────────────────────
+#
+# Replace the legacy "stack a CylinderMesh per polyline segment" approach
+# with a single procedurally-swept ArrayMesh. Eliminates the visible
+# faceting + lighting striping at every segment joint.
+#
+# Pipeline:
+#   1. Polyline waypoints → Curve3D with Catmull-Rom-derived Bezier handles
+#      (smooth tangent continuity at every interior waypoint; the curve
+#      passes through every waypoint exactly).
+#   2. Sample the baked curve at uniform arc-length intervals.
+#   3. Compute parallel-transport frames at each sample (no Frenet-Serret
+#      flip on near-straight runs).
+#   4. Sweep a closed full-circle cross-section, emitting indexed vertices
+#      so SurfaceTool.generate_normals can average normals at every shared
+#      vertex — smooth shading across the whole tube.
+#
+# `path`: at least 2 Vector3 waypoints in world space (or local — the mesh
+#         is built in the parent's frame). Sharp interior bends round off
+#         into smooth Bezier curves; the polyline shape is preserved
+#         qualitatively but not pixel-exact at the corners.
+# `sample_spacing`: target arc-length between rings, metres. 0.25 gives
+#         ~4 rings per metre, smooth at any expected camera distance.
+# `section_verts`: vertices around the cross-section (≥6, sweet spot 14–20).
+#
+# Returns the MeshInstance3D so callers can chain (set layer, attach
+# overlays, etc.). Adds it to `parent` as part of the call.
+static func add_smooth_tube(parent: Node, node_name: String, path: Array,
+		radius: float, mat: Material,
+		sample_spacing: float = 0.25, section_verts: int = 16) -> MeshInstance3D:
+	if path.size() < 2:
+		push_warning("TrackBlocks.add_smooth_tube: path needs ≥2 points (%s)" % node_name)
+		return null
+
+	# 1. Polyline → Curve3D with Catmull-Rom handles.
+	var curve := Curve3D.new()
+	curve.bake_interval = max(sample_spacing * 0.5, 0.1)
+	var n := path.size()
+	for i in range(n):
+		var p: Vector3 = path[i]
+		var prev: Vector3 = path[i - 1] if i > 0 else p
+		var next: Vector3 = path[i + 1] if i < n - 1 else p
+		# Catmull-Rom-ish tangent at the waypoint: half the chord from
+		# neighbour to neighbour, scaled by 1/3 for cubic-Bezier handles.
+		# Endpoints taper because prev/next collapse to p there.
+		var tangent: Vector3 = (next - prev) * (1.0 / 6.0)
+		curve.add_point(p, -tangent, tangent)
+
+	# 2. Uniform-arc-length sampling.
+	var length: float = curve.get_baked_length()
+	if length < 0.001:
+		push_warning("TrackBlocks.add_smooth_tube: zero-length path (%s)" % node_name)
+		return null
+	var n_rings: int = max(int(ceil(length / sample_spacing)) + 1, 4)
+	var samples: Array[Vector3] = []
+	samples.resize(n_rings)
+	for i in range(n_rings):
+		var s: float = (float(i) / float(n_rings - 1)) * length
+		samples[i] = curve.sample_baked(s, true)
+
+	# 3. Tangents via central differences (forward at endpoints).
+	var tangents: Array[Vector3] = []
+	tangents.resize(n_rings)
+	tangents[0] = (samples[1] - samples[0]).normalized()
+	tangents[n_rings - 1] = (samples[n_rings - 1] - samples[n_rings - 2]).normalized()
+	for i in range(1, n_rings - 1):
+		var t := samples[i + 1] - samples[i - 1]
+		if t.length() < 0.001:
+			t = samples[i + 1] - samples[i]
+		tangents[i] = t.normalized()
+
+	# 4. Parallel-transport frames.
+	var rights: Array[Vector3] = []
+	var ups: Array[Vector3] = []
+	rights.resize(n_rings)
+	ups.resize(n_rings)
+	var seed_ref := Vector3.UP
+	if absf(tangents[0].dot(seed_ref)) > 0.95:
+		seed_ref = Vector3.RIGHT
+	var r0 := (seed_ref - tangents[0] * seed_ref.dot(tangents[0])).normalized()
+	var u0 := tangents[0].cross(r0).normalized()
+	rights[0] = r0
+	ups[0] = u0
+	for i in range(1, n_rings):
+		var t := tangents[i]
+		var r := rights[i - 1] - t * rights[i - 1].dot(t)
+		if r.length() < 0.001:
+			r = Vector3.RIGHT - t * Vector3.RIGHT.dot(t)
+		r = r.normalized()
+		var u := t.cross(r).normalized()
+		rights[i] = r
+		ups[i] = u
+
+	# 5. Full-circle cross-section.
+	var sv: int = max(section_verts, 6)
+	var profile: Array[Vector2] = []
+	profile.resize(sv)
+	for j in range(sv):
+		var theta: float = TAU * float(j) / float(sv)
+		profile[j] = Vector2(cos(theta), sin(theta)) * radius
+
+	# 6. Emit indexed vertices, ring-major.
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for ring in range(n_rings):
+		var p := samples[ring]
+		var rr := rights[ring]
+		var uu := ups[ring]
+		for j in range(sv):
+			var pr := profile[j]
+			var v := p + rr * pr.x + uu * pr.y
+			var uv := Vector2(
+				float(j) / float(sv),
+				float(ring) / float(n_rings - 1) * (length / max(radius * TAU, 0.01))
+			)
+			st.set_uv(uv)
+			st.add_vertex(v)
+
+	# 7. Quad indices. Wrap around the cross-section so j == sv-1 connects
+	# back to j == 0 (closed cylindrical loop). Winding orients normals
+	# outward (away from the curve centreline).
+	for ring in range(n_rings - 1):
+		for j in range(sv):
+			var j2: int = (j + 1) % sv
+			var i00: int = ring * sv + j
+			var i01: int = ring * sv + j2
+			var i10: int = (ring + 1) * sv + j
+			var i11: int = (ring + 1) * sv + j2
+			st.add_index(i00)
+			st.add_index(i10)
+			st.add_index(i11)
+			st.add_index(i00)
+			st.add_index(i11)
+			st.add_index(i01)
+
+	st.generate_normals()
+	st.generate_tangents()
+	var mesh: ArrayMesh = st.commit()
+
+	var mi := MeshInstance3D.new()
+	mi.name = node_name
+	mi.mesh = mesh
+	mi.material_override = mat
+	parent.add_child(mi)
+	return mi

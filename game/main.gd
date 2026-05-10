@@ -991,10 +991,9 @@ func _process(delta: float) -> void:
 		# Once racing, save one PNG every 2s so the user can review without
 		# watching the window live.
 		# Screenshots disabled by default — synchronous PNG save blocks the
-		# main thread for ~250ms each and was the dominant cause of the
-		# user's "demo is laggy" feedback. Re-enable by flipping the
-		# threshold below or wiring a --shots=N CLI flag.
-		if false and _live_racing and _perf_shot_count < 12:
+		# main thread for ~250ms each. Flip `false` to `true` to re-enable
+		# (used during the plinko smooth-tube verification, then disabled).
+		if false and _live_racing and _perf_shot_count < 8:
 			# Cycle camera mode between leader-follow (close) and wide so the
 			# user gets both close-up and overall framings of the same race.
 			if _director != null:
@@ -1007,7 +1006,7 @@ func _process(delta: float) -> void:
 			var img := get_viewport().get_texture().get_image()
 			if img != null:
 				DirAccess.make_dir_recursive_absolute(_perf_shot_dir)
-				var p := "%s/curve_demo_%02d.png" % [_perf_shot_dir, _perf_shot_count]
+				var p := "%s/shot_%02d.png" % [_perf_shot_dir, _perf_shot_count]
 				img.save_png(p)
 				print("[PERF] screenshot %s" % p)
 				_perf_shot_count += 1
