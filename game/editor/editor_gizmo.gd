@@ -22,8 +22,11 @@ const ARROW_LENGTH := 1.6
 const ARROW_RADIUS := 0.05
 const ARROW_HEAD_R := 0.18
 const ARROW_HEAD_LEN := 0.40
-const ARROW_HIT_R := 0.20      # collider radius — fatter than the visual
-                                # so the arrow is easy to grab.
+const ARROW_HIT_R := 0.10      # collider radius — slightly fatter than
+                                # the visual (0.05) so the arrow is easy
+                                # to grab, but small enough that clicks
+                                # in the surrounding empty space still
+                                # reach the scene below for deselect.
 
 const AXIS_COLOURS := {
 	"x": Color(1.00, 0.30, 0.30),

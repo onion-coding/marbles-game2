@@ -55,7 +55,54 @@ func build_visual() -> void:
 		body.add_child(coll)
 		add_child(body)
 
+	_build_endpoint_caps()
 	_build_markers()
+
+# Solid colour discs at the FIRST and LAST waypoints, always visible
+# (not gated by selection). Tells the user at a glance where the tube
+# begins and ends — clarifies the 'I can't tell when the tube stops'
+# ambiguity that a smooth swept mesh has without explicit terminals.
+func _build_endpoint_caps() -> void:
+	if waypoints.size() < 2:
+		return
+	var cap_mat := StandardMaterial3D.new()
+	cap_mat.albedo_color = Color(color.r, color.g, color.b, 0.95)
+	cap_mat.emission_enabled = true
+	cap_mat.emission = color
+	cap_mat.emission_energy_multiplier = 0.30
+	for ends in [0, waypoints.size() - 1]:
+		var cap := MeshInstance3D.new()
+		cap.name = "EndCap_%d" % ends
+		var cm := CylinderMesh.new()
+		cm.top_radius = radius * 1.05
+		cm.bottom_radius = radius * 1.05
+		cm.height = 0.08
+		cm.radial_segments = 24
+		cap.mesh = cm
+		cap.material_override = cap_mat
+		cap.position = waypoints[ends]
+		# Orient the cap perpendicular to the tube's tangent at this
+		# waypoint so the disc faces along the pipe rather than always
+		# standing upright in world space.
+		var neighbour_idx: int = (ends + 1) if ends == 0 else (ends - 1)
+		var tangent: Vector3 = (waypoints[neighbour_idx] as Vector3) - (waypoints[ends] as Vector3)
+		if tangent.length() > 0.01:
+			tangent = tangent.normalized()
+			# Cylinder's local +Y axis should point along the tangent
+			# (toward the neighbouring waypoint for "entry", away for
+			# "exit" — flipping doesn't change the appearance of an
+			# axis-symmetric disc).
+			cap.basis = _basis_with_up(tangent)
+		add_child(cap)
+
+static func _basis_with_up(up_dir: Vector3) -> Basis:
+	var u := up_dir.normalized()
+	var ref := Vector3.RIGHT
+	if absf(u.dot(ref)) > 0.95:
+		ref = Vector3.FORWARD
+	var right := u.cross(ref).normalized()
+	var forward := right.cross(u).normalized()
+	return Basis(right, u, forward)
 
 func _build_markers() -> void:
 	# Small unshaded spheres at each waypoint so the user can read the

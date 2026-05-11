@@ -79,6 +79,7 @@ func to_dict() -> Dictionary:
 		"type": get_object_type(),
 		"position": [position.x, position.y, position.z],
 		"rotation_y": rotation.y,
+		"scale": [scale.x, scale.y, scale.z],
 		"params": get_params(),
 	}
 
@@ -87,4 +88,7 @@ func from_dict(d: Dictionary) -> void:
 	if p is Array and p.size() >= 3:
 		position = Vector3(float(p[0]), float(p[1]), float(p[2]))
 	rotation.y = float(d.get("rotation_y", 0.0))
+	var s = d.get("scale", null)
+	if s is Array and s.size() >= 3:
+		scale = Vector3(float(s[0]), float(s[1]), float(s[2]))
 	apply_params(d.get("params", {}))

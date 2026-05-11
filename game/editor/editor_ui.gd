@@ -44,9 +44,11 @@ func _ready() -> void:
 	_palette.anchor_top = 0.0
 	_palette.anchor_bottom = 1.0
 	_palette.offset_left = -PANEL_WIDTH
-	_palette.offset_right = 0
-	_palette.offset_top = 0
-	_palette.offset_bottom = 0
+	_palette.offset_right = -8                   # right margin so the panel
+												  # doesn't bleed into the
+												  # window edge
+	_palette.offset_top = 8
+	_palette.offset_bottom = -8
 	add_child(_palette)
 
 	var vbox := VBoxContainer.new()
@@ -144,6 +146,8 @@ func _ready() -> void:
 	_status.text = ""
 	_status.add_theme_font_size_override("font_size", 11)
 	_status.modulate = Color(1, 1, 1, 0.6)
+	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(_status)
 
 	show_properties(null)
@@ -177,6 +181,12 @@ func show_properties(obj) -> void:
 	_pos_spinboxes = _add_vec3_row(obj, "Position", -100.0, 100.0, 0.1,
 		func(): return obj.position,
 		func(v: Vector3): obj.position = v)
+
+	# Scale editors. Drives Node3D.scale, which propagates to every
+	# child mesh + collider. Step 0.1 so resize matches the move grid.
+	_add_vec3_row(obj, "Scale", 0.1, 20.0, 0.1,
+		func(): return obj.scale,
+		func(v: Vector3): obj.scale = v)
 
 	# Subclass-specific params.
 	var params: Dictionary = obj.get_params()
