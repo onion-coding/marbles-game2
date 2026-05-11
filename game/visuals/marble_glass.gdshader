@@ -175,8 +175,9 @@ void fragment() {
 	ROUGHNESS = roughness_param;
 	SPECULAR  = specular_param;
 
-	// Emission: only enough to make bloom paint a trail, not enough to blow
-	// out the highlight. The rim glows slightly so even slow marbles still
-	// have presence at distance.
-	EMISSION = base * emission_strength * 0.7 + rim_tint * 0.25 * rim;
+	// EMISSION zero. Any non-zero emission on the rim was crossing the
+	// bloom HDR threshold (1.0) intermittently as marbles rotated under
+	// the sun specular highlight, producing pulsing bloom that read as
+	// "flickering between colours."
+	EMISSION = vec3(0.0);
 }

@@ -78,12 +78,15 @@ static func make_glass_material(color: Color, swirl_seed: int) -> Material:
 	# Map swirl_seed (drop_order 0-19, or arbitrary int) into [0,1] so each
 	# marble has a deterministic but distinct internal pattern.
 	mat.set_shader_parameter("swirl_seed", float(swirl_seed % 64) / 64.0)
-	# Per-marble VARIANT: cycle through cat's-eye / swirl / banded / clearie
-	# so every round has visual diversity. (drop_order modulo 4) gives a
-	# deterministic distribution; over 12-30 marbles each type appears
-	# multiple times with different colours.
-	var variant: int = swirl_seed % 4
-	mat.set_shader_parameter("marble_type", variant)
+	# Force clearie variant (3) for ALL marbles. The other variants (swirl
+	# w/ Voronoi, banded w/ stripes, cat's-eye w/ vane) all have high-
+	# frequency surface patterns that alias temporally on a rotating sphere
+	# at sub-pixel resolution → flicker on motion, unsolvable without TAA
+	# motion vectors. Clearie is a smooth radial gradient — stable under
+	# rotation. Variety still comes from primary colour + the secondary
+	# tint which lifts the inner highlight slightly differently per marble.
+	mat.set_shader_parameter("marble_type", 3)
+	var variant: int = swirl_seed % 4   # kept for downstream secondary-colour palette logic
 	# Secondary colour for two-tone variants. Derive from primary via a hue
 	# shift so the two colours read as related, not random. HSV rotate +0.5
 	# (complementary) for swirl/banded, +0.15 (analogous) for cat's-eye, and

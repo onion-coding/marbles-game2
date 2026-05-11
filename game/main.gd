@@ -480,13 +480,12 @@ func _start_race(spec: Dictionary) -> void:
 				if t != null:
 					t.queue_free()
 			_director.set_mode("free")
-			# Anti-aliasing: silhouette aliasing on small fast-moving
-			# spheres reads as "flicker" even when there's no actual
-			# pixel-content change. FXAA is cheap and kills the worst of
-			# it. TAA would be smoother but produces ghost trails on
-			# fast-rotating marbles (which is most of them) — pass on it.
+			# FXAA only — MSAA 4x in Forward+ was interfering with the
+			# bloom/tonemap chain and producing ugly artefacts on the
+			# marble surfaces ("all fucked up"). FXAA alone handles
+			# silhouette aliasing without the post-process side effects.
 			var vp := get_viewport()
-			vp.msaa_3d = Viewport.MSAA_4X
+			vp.msaa_3d = Viewport.MSAA_DISABLED
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 
 		# Casino broadcast streamers, if --casino-video/--casino-meta CLI
