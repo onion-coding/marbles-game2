@@ -672,9 +672,13 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	tube.entry_size = def["entry_size"]
 	root.add_child(tube)
 
-	var pipe_mat := TrackBlocks.std_mat_emit(glow, 0.20, 0.30, 1.4)
+	# Translucent coloured pipe — emission ZERO so marbles passing through
+	# don't get repainted by the tube's colour. The tube reads as a tinted
+	# glass cylinder via albedo alone; bloom on the tube comes from the
+	# emissive entry/exit rings (below), not from the pipe body itself.
+	var pipe_mat := TrackBlocks.std_mat(glow, 0.10, 0.25)
 	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 2.5)
+	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 1.6)
 
 	# Stabilise depth writes so a marble alpha-blending against the tube
 	# from the inside doesn't flicker as it moves: forcing depth-write
