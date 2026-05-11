@@ -666,54 +666,11 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 	# Built using the EXACT same rights[]/ups[] frames so the cap's
 	# outer edge sits flush against the swept mesh's terminal ring —
 	# no rotation mismatch, no visible gap.
-	if cap_inner_radius > 0.0 and cap_inner_radius < radius:
-		var cap_endpoints: Array = [0, n_rings - 1]
-		for cap_ring in cap_endpoints:
-			# Add inner-ring vertices at the same frame as the outer ring.
-			var inner_base: int = st.get_aabb().size.x   # placeholder; we just need new indices
-			# Track the vertex index counter manually via additions —
-			# SurfaceTool doesn't expose a vertex count getter directly,
-			# so we record the index just before adding inner verts.
-			# (Indices: existing outer-ring verts are at cap_ring*sv .. cap_ring*sv + sv - 1.)
-			var p := samples[cap_ring]
-			var rr := rights[cap_ring]
-			var uu := ups[cap_ring]
-			# Inner-ring vertices indices start AFTER all existing vertices.
-			# We track via the cumulative count: n_rings * sv + sum of prior cap rings * sv.
-			var inner_start: int = n_rings * sv + cap_endpoints.find(cap_ring) * sv
-			for j in range(sv):
-				var pr := profile[j]
-				# Same angle around the cross-section, but scaled to
-				# cap_inner_radius instead of `radius`.
-				var scale_ratio: float = cap_inner_radius / radius
-				var v: Vector3 = p + rr * (pr.x * scale_ratio) + uu * (pr.y * scale_ratio)
-				st.set_uv(Vector2(float(j) / float(sv), 0.5))
-				st.add_vertex(v)
-			# Connect outer ring (existing verts at cap_ring*sv..) to
-			# inner ring (just-added verts at inner_start..). Triangle
-			# winding chosen so the cap's normal points outward at the
-			# tube end (along the end tangent for ring (n_rings-1),
-			# opposite tangent for ring 0). We render with CULL_DISABLED
-			# at the EditorTube level so it doesn't matter; pick either.
-			# Winding flips between start and end caps so each cap's
-			# normal points AWAY from the tube interior. At the END
-			# (cap_ring == n_rings-1) the tangent already points
-			# outward; default winding is correct. At the START
-			# (cap_ring == 0) the tangent points INTO the tube, so we
-			# reverse the winding to flip the cap's normal outward.
-			var reverse: bool = (cap_ring == 0)
-			for j in range(sv):
-				var j2: int = (j + 1) % sv
-				var o0: int = cap_ring * sv + j
-				var o1: int = cap_ring * sv + j2
-				var i0: int = inner_start + j
-				var i1: int = inner_start + j2
-				if reverse:
-					st.add_index(o0); st.add_index(i1); st.add_index(o1)
-					st.add_index(o0); st.add_index(i0); st.add_index(i1)
-				else:
-					st.add_index(o0); st.add_index(o1); st.add_index(i1)
-					st.add_index(o0); st.add_index(i1); st.add_index(i0)
+	# Cap-building moved out of this surface — winding direction was
+	# putting the cap on the wrong side of the tube end. Caps are now
+	# built by the caller as a SEPARATE MeshInstance3D with CULL_DISABLED
+	# material so they always render regardless of normal direction.
+	# (See add_smooth_tube_caps below.)
 
 	st.generate_normals()
 	st.generate_tangents()
@@ -725,3 +682,145 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 	mi.material_override = mat
 	parent.add_child(mi)
 	return mi
+
+# Build annular end caps for a swept tube. Same path / sample-spacing /
+# section_verts as add_smooth_tube so the cap rings sit at the exact
+# same positions as the swept mesh's terminal rings (perfect alignment,
+# no gap). The cap is a SEPARATE MeshInstance3D so its material can be
+# CULL_DISABLED (always visible from any side) without forcing the
+# swept tube's curved walls to render two-sided (which produces ugly
+# lighting bands).
+#
+# outer_radius : cap's outer edge (= tube wall outer radius)
+# inner_radius : cap's inner edge (= tube wall inner radius)
+# Cap is rendered double-sided so no winding direction maths.
+static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
+		outer_radius: float, inner_radius: float, mat: Material,
+		sample_spacing: float = 0.25, section_verts: int = 16) -> MeshInstance3D:
+	if path.size() < 2:
+		return null
+
+	# Replicate add_smooth_tube's Curve3D + sampling + parallel-transport
+	# frame computation so the cap rings have the exact same orientation
+	# as the swept mesh's terminal rings.
+	var curve := Curve3D.new()
+	curve.bake_interval = max(sample_spacing * 0.5, 0.1)
+	var n_path := path.size()
+	for i in range(n_path):
+		var pp: Vector3 = path[i]
+		var prev: Vector3 = path[i - 1] if i > 0 else pp
+		var next: Vector3 = path[i + 1] if i < n_path - 1 else pp
+		var tangent: Vector3 = (next - prev) * (1.0 / 6.0)
+		curve.add_point(pp, -tangent, tangent)
+
+	var length: float = curve.get_baked_length()
+	if length < 0.001:
+		return null
+	var n_rings: int = max(int(ceil(length / sample_spacing)) + 1, 4)
+
+	# Compute the two endpoint samples + tangents.
+	var s0: Vector3 = curve.sample_baked(0.0, true)
+	var s_last: Vector3 = curve.sample_baked(length, true)
+	# Tangents via forward / backward differences at the very ends.
+	var step: float = max(sample_spacing * 0.5, 0.05)
+	var t0: Vector3 = (curve.sample_baked(step, true) - s0).normalized()
+	var t_last: Vector3 = (s_last - curve.sample_baked(length - step, true)).normalized()
+
+	# Parallel-transport from start: same seed_ref selection as add_smooth_tube.
+	var seed_ref := Vector3.UP
+	if absf(t0.dot(seed_ref)) > 0.95:
+		seed_ref = Vector3.RIGHT
+	var r_curr := (seed_ref - t0 * seed_ref.dot(t0)).normalized()
+	var u_curr := t0.cross(r_curr).normalized()
+	var r_start := r_curr
+	var u_start := u_curr
+
+	# Walk the rings to propagate the frame to the last sample. We only
+	# need the endpoint frames; intermediate frames are discarded.
+	for i in range(1, n_rings):
+		var s: float = (float(i) / float(n_rings - 1)) * length
+		var s_prev: Vector3 = curve.sample_baked(s - step * 0.5, true)
+		var s_next: Vector3 = curve.sample_baked(s + step * 0.5, true) \
+				if i < n_rings - 1 else s_last
+		var t_i: Vector3 = (s_next - s_prev).normalized()
+		var r_new: Vector3 = r_curr - t_i * r_curr.dot(t_i)
+		if r_new.length() < 0.001:
+			r_new = Vector3.RIGHT - t_i * Vector3.RIGHT.dot(t_i)
+		r_new = r_new.normalized()
+		u_curr = t_i.cross(r_new).normalized()
+		r_curr = r_new
+	var r_end := r_curr
+	var u_end := u_curr
+
+	# Build the two annular caps in one SurfaceTool.
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var endpoints: Array = [
+		{"centre": s0,     "right": r_start, "up": u_start},
+		{"centre": s_last, "right": r_end,   "up": u_end},
+	]
+	# Manual vertex counter: SurfaceTool doesn't expose vertex count
+	# directly in Godot 4. Each ring adds section_verts verts.
+	var vert_counter: int = 0
+	for ep in endpoints:
+		var p_c: Vector3 = ep["centre"]
+		var rr: Vector3 = ep["right"]
+		var uu: Vector3 = ep["up"]
+		var outer_start: int = vert_counter
+		# Outer ring
+		for j in range(section_verts):
+			var theta: float = TAU * float(j) / float(section_verts)
+			var v: Vector3 = p_c + rr * (cos(theta) * outer_radius) \
+					+ uu * (sin(theta) * outer_radius)
+			st.set_uv(Vector2(float(j) / float(section_verts), 0.0))
+			st.add_vertex(v)
+		vert_counter += section_verts
+		var inner_start: int = vert_counter
+		# Inner ring
+		for j in range(section_verts):
+			var theta: float = TAU * float(j) / float(section_verts)
+			var v: Vector3 = p_c + rr * (cos(theta) * inner_radius) \
+					+ uu * (sin(theta) * inner_radius)
+			st.set_uv(Vector2(float(j) / float(section_verts), 1.0))
+			st.add_vertex(v)
+		vert_counter += section_verts
+		# Triangulate annulus (winding doesn't matter — CULL_DISABLED).
+		for j in range(section_verts):
+			var j2: int = (j + 1) % section_verts
+			var o0: int = outer_start + j
+			var o1: int = outer_start + j2
+			var i0: int = inner_start + j
+			var i1: int = inner_start + j2
+			st.add_index(o0); st.add_index(o1); st.add_index(i1)
+			st.add_index(o0); st.add_index(i1); st.add_index(i0)
+
+	st.generate_normals()
+	st.generate_tangents()
+	var cap_mesh: ArrayMesh = st.commit()
+
+	var cap_mat := StandardMaterial3D.new()
+	if mat is StandardMaterial3D:
+		var src := mat as StandardMaterial3D
+		cap_mat.albedo_color = src.albedo_color
+		cap_mat.metallic = src.metallic
+		cap_mat.roughness = src.roughness
+	cap_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+	var mi := MeshInstance3D.new()
+	mi.name = node_name
+	mi.mesh = cap_mesh
+	mi.material_override = cap_mat
+	parent.add_child(mi)
+	return mi
+
+# SurfaceTool doesn't expose vertex count directly; track via dummy
+# scratch surface. We just call add_vertex+add_index counted manually.
+# Simpler: pass through outer_start/inner_start indices recorded by the
+# caller before each ring's emission. The helper just returns the next
+# available index.
+static func _surface_vertex_count(_st: SurfaceTool) -> int:
+	# Not actually queryable in Godot 4 — but our caller pre-computes
+	# indices based on a manual cumulative counter. This helper exists
+	# so future maintainers don't trip on the missing API.
+	return 0
