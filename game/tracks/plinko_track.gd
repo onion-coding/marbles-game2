@@ -104,84 +104,64 @@ const DIVIDER_THICK     := 0.2
 # is an open free-fall zone (FREEFALL_TOP_Y..FREEFALL_BOT_Y) — TBD.
 const TUBE_DEFS: Array = [
 	# Z-layout INSIDE the frame walls (which sit at z = ±FIELD_DEPTH/2 = ±1.75).
-	# Tube radii 0.45 + 4 tubes at z=-1.4 / -0.5 / +0.5 / +1.4 gives ~0.9 m
-	# centre-to-centre between adjacent tubes and ~0.05 m edge-to-edge —
-	# enough visible space that they read as four separate depth layers,
-	# without any tube crossing the back/front frame walls.
+	# 3-tube layout (T4 JACKPOT removed for now — 4 tubes geometrically
+	# couldn't fit in the 3.5 m field depth at marble-passable radius).
+	# Tubes at z=-1.2 / 0 / +1.2, radius 0.55: ~1.2 m centre-to-centre,
+	# 0.1 m edge-to-edge gap, marble inner clearance 0.25 m per side.
 
-	# Tube 1 (BACK, z≈-1.4) — enters left, sweeps full-width. First segment
-	# is VERTICAL (path[0] -> path[1] both at x=-9, z=0) so a marble
-	# falling straight down from the funnel deck enters the cylinder
-	# axis-aligned instead of glancing off a tilted rim.
+	# Tube 1 (BACK, z≈-1.2) — enters left, sweeps full-width.
 	{
 		"path": [
 			Vector3(-9.0,  19.5,  0.0),
 			Vector3(-9.0,  18.0,  0.0),
-			Vector3(-9.0,  17.0, -1.4),
-			Vector3( 9.0,  12.0, -1.2),
-			Vector3(-9.0,   5.0, -1.4),
-			Vector3( 9.0,  -3.0, -1.3),
-			Vector3(-5.0, -11.0, -1.4),
-			Vector3(-5.0, -14.0, -0.7),
+			Vector3(-9.0,  17.0, -1.2),
+			Vector3( 9.0,  12.0, -1.0),
+			Vector3(-9.0,   5.0, -1.2),
+			Vector3( 9.0,  -3.0, -1.1),
+			Vector3(-5.0, -11.0, -1.2),
+			Vector3(-5.0, -14.0, -0.6),
 			Vector3(-5.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.45,
+		"visual_radius": 0.55,
 		"colour": Color(0.40, 0.85, 1.00, 0.55),     # cyan
 	},
-	# Tube 2 (BACK-MIDDLE, z≈-0.5) — enters centre, opposite-phase swings.
+	# Tube 2 (CENTRE, z≈0) — enters centre, opposite-phase swings.
 	{
 		"path": [
 			Vector3( 0.0,  19.5,  0.0),
 			Vector3( 0.0,  18.0,  0.0),
-			Vector3( 0.0,  17.0, -0.5),
-			Vector3( 9.0,  12.0, -0.4),
-			Vector3(-9.0,   6.0, -0.5),
-			Vector3( 9.0,  -2.0, -0.4),
-			Vector3(-9.0,  -9.0, -0.5),
-			Vector3( 0.0, -14.0, -0.25),
+			Vector3( 0.0,  17.0,  0.0),
+			Vector3( 9.0,  12.0,  0.1),
+			Vector3(-9.0,   6.0,  0.0),
+			Vector3( 9.0,  -2.0,  0.1),
+			Vector3(-9.0,  -9.0,  0.0),
+			Vector3( 0.0, -14.0,  0.0),
 			Vector3( 0.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.45,
+		"visual_radius": 0.55,
 		"colour": Color(1.00, 0.85, 0.40, 0.55),     # warm gold
 	},
-	# Tube 3 (FRONT-MIDDLE, z≈+0.5) — mirror of Tube 1 in X-phase.
+	# Tube 3 (FRONT, z≈+1.2) — mirror of Tube 1 in X-phase.
 	{
 		"path": [
 			Vector3( 9.0,  19.5,  0.0),
 			Vector3( 9.0,  18.0,  0.0),
-			Vector3( 9.0,  17.0,  0.5),
-			Vector3(-9.0,  12.0,  0.4),
-			Vector3( 9.0,   6.0,  0.5),
-			Vector3(-9.0,  -2.0,  0.4),
-			Vector3( 9.0,  -9.0,  0.5),
-			Vector3( 5.0, -14.0,  0.25),
+			Vector3( 9.0,  17.0,  1.2),
+			Vector3(-9.0,  12.0,  1.0),
+			Vector3( 9.0,   6.0,  1.2),
+			Vector3(-9.0,  -2.0,  1.1),
+			Vector3( 9.0,  -9.0,  1.2),
+			Vector3( 5.0, -14.0,  0.6),
 			Vector3( 5.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.45,
+		"visual_radius": 0.55,
 		"colour": Color(1.00, 0.40, 0.95, 0.55),     # magenta
-	},
-	# Tube 4 — JACKPOT. Tiny entrance at x=+4.5 on the apex of the right
-	# funnel peak. Stays at z≈+1.4 (FRONT layer, opposite of T1).
-	{
-		"path": [
-			Vector3( 4.5,  19.5,  0.0),
-			Vector3( 4.5,  18.0,  0.0),
-			Vector3( 4.5,  17.0,  1.4),
-			Vector3(-3.0,   2.0,  1.4),
-			Vector3(-3.0, -12.0,  1.4),
-			Vector3(-3.0, -14.0,  0.7),
-			Vector3(-3.0, -15.0,  0.0),
-		],
-		"speed": 20.0,
-		"entry_size": Vector3(0.5, 0.4, 0.6),
-		"visual_radius": 0.42,                        # ≥ marble radius 0.30 + clearance
-		"colour": Color(0.55, 1.00, 0.55, 0.65),     # jackpot green
 	},
 ]
 const T4_HOLE_X     := 4.5
@@ -718,60 +698,12 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 		body.add_child(coll)
 		add_child(body)
 
-	# Entry funnel: a wide cone collider above each tube entry that
-	# directs marbles falling anywhere within the funnel-deck gap into
-	# the tube opening. Without this, marbles emerging from the funnel
-	# deck with horizontal velocity miss the small tube radius (0.45 m)
-	# and fall past — 'no ball actually goes through the tubes'.
-	#
-	# Cone: cylinder mesh + cylinder shape, but tapered (top_radius =
-	# 0.85 ≈ half the funnel-deck gap width; bottom_radius = visual_r,
-	# matching the tube opening). Sits in the gap between funnel-deck
-	# slabs and the actual tube entry, ~1 m tall.
-	if def.has("entry_size"):
-		var entry_w: float = float((def["entry_size"] as Vector3).x)
-		# Only build funnels for the main wide-entry tubes (T1/T2/T3).
-		# T4 (entry_w=0.5) is the jackpot peak-drop — narrow on purpose.
-		if entry_w >= 1.0:
-			var entry_pos: Vector3 = path[0]
-			var funnel_top_r: float = max(entry_w * 0.5, visual_r + 0.4)
-			var funnel_h: float = 1.5
-			var funnel_y: float = entry_pos.y + funnel_h * 0.5
-			var funnel_body := StaticBody3D.new()
-			funnel_body.name = "Pipe_funnel_body_%d" % idx
-			funnel_body.physics_material_override = _mat_smooth
-			# Build the funnel as a thin cone surface via cylinder mesh
-			# with different top/bottom radii. Use CSGCombiner-less
-			# approach: just a tapered cylinder with hollow interior
-			# isn't easy with primitives, so use a CYLINDER + a
-			# bottom-cap-hole = tilted cone walls.
-			var funnel_mesh_inst := MeshInstance3D.new()
-			funnel_mesh_inst.name = "Pipe_funnel_mesh_%d" % idx
-			var cm := CylinderMesh.new()
-			cm.top_radius = funnel_top_r
-			cm.bottom_radius = visual_r
-			cm.height = funnel_h
-			cm.radial_segments = 24
-			cm.cap_top = false
-			cm.cap_bottom = false
-			funnel_mesh_inst.mesh = cm
-			var funnel_mat := TrackBlocks.std_mat_emit(glow, 0.15, 0.30, 0.15)
-			funnel_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			funnel_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-			funnel_mesh_inst.material_override = funnel_mat
-			funnel_mesh_inst.position = Vector3(entry_pos.x, funnel_y, entry_pos.z)
-			funnel_body.add_child(funnel_mesh_inst)
-			# Collision: build from the cylinder mesh as a trimesh so
-			# marbles hit the slanted inside wall and roll downward into
-			# the tube opening.
-			var funnel_coll := CollisionShape3D.new()
-			funnel_coll.name = "Pipe_funnel_shape_%d" % idx
-			funnel_coll.position = Vector3(entry_pos.x, funnel_y, entry_pos.z)
-			var funnel_trimesh: ConcavePolygonShape3D = cm.create_trimesh_shape()
-			funnel_trimesh.backface_collision = true
-			funnel_coll.shape = funnel_trimesh
-			funnel_body.add_child(funnel_coll)
-			add_child(funnel_body)
+	# Funnels removed entirely. Earlier attempt with a visible CylinderMesh
+	# cone read as 'tilted nipples' protruding from the funnel deck;
+	# replacing with an invisible-collider was rejected by the user as a
+	# hack (see feedback_no_invisible_colliders.md). With wider tube radii
+	# the funnel-deck gap and tube mouth are close enough in width that
+	# most marbles enter cleanly without a separate funnel object.
 
 # ─── LOWER PLINKO — receives tube exits, leads to finish ────────────────────
 
