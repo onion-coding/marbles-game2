@@ -92,19 +92,16 @@ static func make_glass_material(color: Color, swirl_seed: int) -> Material:
 	# multiple times with different colours.
 	var variant: int = swirl_seed % 4
 	mat.set_shader_parameter("marble_type", variant)
-	# Secondary colour for two-tone variants. Derive from primary via a hue
-	# shift so the two colours read as related, not random. HSV rotate +0.5
-	# (complementary) for swirl/banded, +0.15 (analogous) for cat's-eye, and
-	# white-ish for clearie centre highlight.
+	# Secondary colour: small HUE shift only (analogous, not complementary).
+	# Earlier complementary palette (hue + 0.5) made each marble look like
+	# two different marbles when rotating — pink on one side, cyan on the
+	# other — which the user perceived as "flickering between colours".
+	# Analogous secondaries keep each marble a single visual identity:
+	# every variant shows shade variation, not colour-swap variation.
 	var hsv := _color_to_hsv(color)
-	var second_hue: float
-	match variant:
-		0:  second_hue = fmod(hsv.x + 0.15, 1.0)    # cat's-eye
-		1:  second_hue = fmod(hsv.x + 0.50, 1.0)    # swirl
-		2:  second_hue = fmod(hsv.x + 0.50, 1.0)    # banded
-		_:  second_hue = hsv.x                       # clearie (same hue, brighter)
-	var second_sat: float = clampf(hsv.y * 0.85, 0.2, 1.0)
-	var second_val: float = clampf(hsv.z + 0.15, 0.3, 1.0)
+	var second_hue: float = fmod(hsv.x + 0.06, 1.0)    # ~22° hue shift, always analogous
+	var second_sat: float = clampf(hsv.y * 0.92, 0.3, 1.0)
+	var second_val: float = clampf(hsv.z * 1.18, 0.3, 1.0)
 	var second_color: Color = Color.from_hsv(second_hue, second_sat, second_val)
 	mat.set_shader_parameter("secondary_color",
 		Vector4(second_color.r, second_color.g, second_color.b, 1.0))
