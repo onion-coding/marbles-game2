@@ -51,6 +51,21 @@ const GRID_STEP := 0.1
 var _drag_active: bool = false
 var _drag_grab_offset: Vector3 = Vector3.ZERO   # local offset from cursor hit to obj.position
 
+# Axis-gizmo state. _axis_drag is "x"/"y"/"z" when the user is dragging
+# one of the gizmo arrows. _axis_drag_t0 records the initial t along
+# the axis (from the cursor's first ray) so the visible motion mirrors
+# the user's cursor delta exactly. _axis_drag_pos0 is the object's
+# starting position so each frame computes an absolute target instead
+# of accumulating float drift.
+var _axis_drag: String = ""
+var _axis_drag_t0: float = 0.0
+var _axis_drag_pos0: Vector3 = Vector3.ZERO
+
+# The on-screen gizmo. Created on first selection, repositioned every
+# time the selected object's position changes, hidden when nothing is
+# selected.
+var _gizmo: EditorGizmo = null
+
 # In-progress tube placement. Each click during this mode appends a
 # waypoint to the active EditorTube and rebuilds its visual. Enter
 # finalises; ESC cancels (and frees the partial tube).
@@ -164,8 +179,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				_handle_left_click(mb.position)
 			else:
 				_drag_active = false
+				_axis_drag = ""
 	elif event is InputEventMouseMotion:
-		if _drag_active and _selected != null:
+		if _axis_drag != "" and _selected != null:
+			_handle_axis_drag(event.position)
+		elif _drag_active and _selected != null:
 			_handle_drag(event.position)
 	elif event is InputEventKey:
 		var k := event as InputEventKey
@@ -222,7 +240,25 @@ func _handle_left_click(screen_pos: Vector2) -> void:
 	var dir := _camera.project_ray_normal(screen_pos)
 	var to := from + dir * 1000.0
 	var space := get_world_3d().direct_space_state
+
+	# 1. Gizmo first. If the user clicked one of the XYZ arrows on the
+	#    currently-selected object, lock the drag to that axis. Mask is
+	#    the gizmo's collision layer ONLY so we don't grab regular
+	#    objects through the gizmo.
+	if _selected != null and _gizmo != null and _gizmo.visible:
+		var gz_query := PhysicsRayQueryParameters3D.create(from, to)
+		gz_query.collision_mask = 1 << (EditorGizmo.GIZMO_LAYER - 1)
+		var gz_hit := space.intersect_ray(gz_query)
+		if gz_hit.has("collider"):
+			var arrow: Node = gz_hit["collider"]
+			if arrow.has_meta("axis"):
+				_start_axis_drag(String(arrow.get_meta("axis")), from, dir)
+				return
+
+	# 2. Normal scene ray (default object layer). collision_mask=1 so
+	#    we never accidentally grab a gizmo arrow.
 	var query := PhysicsRayQueryParameters3D.create(from, to)
+	query.collision_mask = 1
 	var hit := space.intersect_ray(query)
 
 	# Tube multi-click placement: each click appends a waypoint to the
@@ -284,6 +320,37 @@ func _handle_drag(screen_pos: Vector2) -> void:
 	_selected.position = Vector3(target.x, _selected.position.y, target.z)
 	# Push the new XYZ into the property panel's SpinBoxes immediately.
 	_ui.refresh_position(_selected.position)
+	_refresh_gizmo()
+
+# --- Axis-gizmo drag ------------------------------------------------
+
+# Start an axis-locked drag on the named axis ('x' / 'y' / 'z'). Records
+# the cursor's initial parameter along the axis so subsequent motion
+# computes an absolute delta — avoids drift from frame-to-frame
+# accumulation, and the cursor stays under the same point on the arrow.
+func _start_axis_drag(axis: String, ray_origin: Vector3, ray_dir: Vector3) -> void:
+	_axis_drag = axis
+	_axis_drag_pos0 = _selected.position
+	var axis_dir := EditorGizmo.axis_unit_vector(axis)
+	_axis_drag_t0 = EditorGizmo.axis_param_under_ray(ray_origin, ray_dir,
+			_selected.position, axis_dir)
+	_push_undo()
+	_ui.set_status("Dragging on %s axis." % axis.to_upper())
+
+func _handle_axis_drag(screen_pos: Vector2) -> void:
+	if _selected == null or _axis_drag == "":
+		return
+	var from := _camera.project_ray_origin(screen_pos)
+	var dir := _camera.project_ray_normal(screen_pos)
+	var axis_dir := EditorGizmo.axis_unit_vector(_axis_drag)
+	var t := EditorGizmo.axis_param_under_ray(from, dir, _axis_drag_pos0, axis_dir)
+	var delta_t := t - _axis_drag_t0
+	# Snap the delta to GRID_STEP so the visible motion ratchets along
+	# the 0.1 m grid (same step as the spinboxes and arrow-key nudge).
+	delta_t = snappedf(delta_t, GRID_STEP)
+	_selected.position = _axis_drag_pos0 + axis_dir * delta_t
+	_ui.refresh_position(_selected.position)
+	_refresh_gizmo()
 
 func _ray_to_xz_plane(origin: Vector3, dir: Vector3, plane_y: float) -> Vector3:
 	# Ray-plane intersection with the horizontal plane y=plane_y. If the
@@ -375,6 +442,7 @@ func _arrow_nudge(dx: float, _dy: float, dz: float, shift_pressed: bool) -> void
 	p.z = snappedf(p.z, GRID_STEP)
 	_selected.position = p
 	_ui.refresh_position(_selected.position)
+	_refresh_gizmo()
 
 # Raise/lower the last waypoint of the in-progress tube. Useful for
 # building vertical paths — click to lay a horizontal segment, press R
@@ -465,6 +533,22 @@ func _select(obj) -> void:
 	if obj != null:
 		obj.set_selected(true)
 	_ui.show_properties(_selected)
+	_refresh_gizmo()
+
+# Keep the XYZ gizmo at the selected object's position (or hide it
+# when nothing's selected). Called whenever selection changes OR the
+# selected object's position changes (drag / arrow / axis-drag).
+func _refresh_gizmo() -> void:
+	if _selected == null:
+		if _gizmo != null and is_instance_valid(_gizmo):
+			_gizmo.visible = false
+		return
+	if _gizmo == null or not is_instance_valid(_gizmo):
+		_gizmo = EditorGizmo.new()
+		_gizmo.name = "EditorGizmo"
+		add_child(_gizmo)
+	_gizmo.visible = true
+	_gizmo.global_position = _selected.global_position
 
 func _delete_selected() -> void:
 	if _selected == null:
