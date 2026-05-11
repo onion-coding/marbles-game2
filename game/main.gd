@@ -479,6 +479,10 @@ func _start_race(spec: Dictionary) -> void:
 				var t := m.get_node_or_null("Trail")
 				if t != null:
 					t.queue_free()
+				# Freeze marbles at spawn — the user starts them manually
+				# via the on-screen START button below. Lets them fly the
+				# free cam around and look at the geometry first.
+				m.freeze = true
 			_director.set_mode("free")
 			# FXAA only — MSAA 4x in Forward+ was interfering with the
 			# bloom/tonemap chain and producing ugly artefacts on the
@@ -487,6 +491,30 @@ func _start_race(spec: Dictionary) -> void:
 			var vp := get_viewport()
 			vp.msaa_3d = Viewport.MSAA_DISABLED
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+			# Center-screen START button. Click → unfreeze marbles, race
+			# begins. Button removes itself after click.
+			var layer := CanvasLayer.new()
+			layer.name = "DemoStartLayer"
+			var btn := Button.new()
+			btn.text = "  ▶  START RACE  "
+			btn.add_theme_font_size_override("font_size", 32)
+			btn.anchor_left = 0.5
+			btn.anchor_right = 0.5
+			btn.anchor_top = 0.5
+			btn.anchor_bottom = 0.5
+			btn.offset_left = -140
+			btn.offset_right = 140
+			btn.offset_top = -38
+			btn.offset_bottom = 38
+			layer.add_child(btn)
+			add_child(layer)
+			var marbles_ref := marbles
+			btn.pressed.connect(func() -> void:
+				for m in marbles_ref:
+					if is_instance_valid(m):
+						m.freeze = false
+				layer.queue_free()
+			)
 
 		# Casino broadcast streamers, if --casino-video/--casino-meta CLI
 		# flags were passed. No-op when not in broadcast mode.
