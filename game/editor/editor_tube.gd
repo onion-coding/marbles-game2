@@ -45,11 +45,13 @@ func build_visual() -> void:
 	TrackBlocks.add_smooth_tube(self, "TubeInner", waypoints,
 			inner_r, pipe_mat, 0.25, section_verts, true)
 
-	# Annular end caps — flat rings connecting the outer and inner
-	# shells at the first and last waypoints. Without these the tube
-	# ends as a 1D ring (outer edge only, no visible thickness) and
-	# the wall reads as paper-thin from any angle that sees an opening.
-	_build_endpoint_annuli(radius, inner_r, pipe_mat)
+	# FLANGE rims at the first/last waypoints — a flat ring sticking
+	# OUT beyond the tube's outer wall (inner edge = tube outer wall,
+	# outer edge = tube wall + 0.2 m). Reads as a proper pipe-end
+	# fitting/border around the opening, instead of an internal
+	# annulus that's hidden by the tube body. The bore stays clear
+	# all the way through.
+	_build_endpoint_annuli(radius + 0.20, radius, pipe_mat)
 
 	# Collision: trimesh from the outer mesh, two-sided.
 	if outer != null and outer.mesh != null:

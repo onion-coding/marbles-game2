@@ -1047,8 +1047,8 @@ func _process(delta: float) -> void:
 		# TEMP screenshot capture (revert with the rest of TEMP perf code).
 		# Once racing, save one PNG every 2s so the user can review without
 		# watching the window live.
-		# Screenshots disabled for shipping. Flip to true for verification.
-		if false and _live_racing and _perf_shot_count < 6:
+		# Verification.
+		if _live_racing and _perf_shot_count < 6:
 			# Verification screenshots: snap to WIDE then LEADER so the
 			# captures include a framed full-field shot AND a marble
 			# follow-cam close-up, regardless of where the user has the
