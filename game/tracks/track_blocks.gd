@@ -541,7 +541,8 @@ static func build_ambient_particles(parent: Node, node_name: String,
 static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 		radius: float, mat: Material,
 		sample_spacing: float = 0.25, section_verts: int = 16,
-		inverted_winding: bool = false) -> MeshInstance3D:
+		inverted_winding: bool = false,
+		cap_inner_radius: float = -1.0) -> MeshInstance3D:
 	if path.size() < 2:
 		push_warning("TrackBlocks.add_smooth_tube: path needs ≥2 points (%s)" % node_name)
 		return null
@@ -658,6 +659,61 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 				st.add_index(i00)
 				st.add_index(i11)
 				st.add_index(i01)
+
+	# 8. Annular end caps (optional). When cap_inner_radius > 0, emit a
+	# flat ring at ring 0 and at ring (n_rings - 1) connecting the
+	# existing outer-radius vertices to a fresh inner-radius ring.
+	# Built using the EXACT same rights[]/ups[] frames so the cap's
+	# outer edge sits flush against the swept mesh's terminal ring —
+	# no rotation mismatch, no visible gap.
+	if cap_inner_radius > 0.0 and cap_inner_radius < radius:
+		var cap_endpoints: Array = [0, n_rings - 1]
+		for cap_ring in cap_endpoints:
+			# Add inner-ring vertices at the same frame as the outer ring.
+			var inner_base: int = st.get_aabb().size.x   # placeholder; we just need new indices
+			# Track the vertex index counter manually via additions —
+			# SurfaceTool doesn't expose a vertex count getter directly,
+			# so we record the index just before adding inner verts.
+			# (Indices: existing outer-ring verts are at cap_ring*sv .. cap_ring*sv + sv - 1.)
+			var p := samples[cap_ring]
+			var rr := rights[cap_ring]
+			var uu := ups[cap_ring]
+			# Inner-ring vertices indices start AFTER all existing vertices.
+			# We track via the cumulative count: n_rings * sv + sum of prior cap rings * sv.
+			var inner_start: int = n_rings * sv + cap_endpoints.find(cap_ring) * sv
+			for j in range(sv):
+				var pr := profile[j]
+				# Same angle around the cross-section, but scaled to
+				# cap_inner_radius instead of `radius`.
+				var scale_ratio: float = cap_inner_radius / radius
+				var v: Vector3 = p + rr * (pr.x * scale_ratio) + uu * (pr.y * scale_ratio)
+				st.set_uv(Vector2(float(j) / float(sv), 0.5))
+				st.add_vertex(v)
+			# Connect outer ring (existing verts at cap_ring*sv..) to
+			# inner ring (just-added verts at inner_start..). Triangle
+			# winding chosen so the cap's normal points outward at the
+			# tube end (along the end tangent for ring (n_rings-1),
+			# opposite tangent for ring 0). We render with CULL_DISABLED
+			# at the EditorTube level so it doesn't matter; pick either.
+			# Winding flips between start and end caps so each cap's
+			# normal points AWAY from the tube interior. At the END
+			# (cap_ring == n_rings-1) the tangent already points
+			# outward; default winding is correct. At the START
+			# (cap_ring == 0) the tangent points INTO the tube, so we
+			# reverse the winding to flip the cap's normal outward.
+			var reverse: bool = (cap_ring == 0)
+			for j in range(sv):
+				var j2: int = (j + 1) % sv
+				var o0: int = cap_ring * sv + j
+				var o1: int = cap_ring * sv + j2
+				var i0: int = inner_start + j
+				var i1: int = inner_start + j2
+				if reverse:
+					st.add_index(o0); st.add_index(i1); st.add_index(o1)
+					st.add_index(o0); st.add_index(i0); st.add_index(i1)
+				else:
+					st.add_index(o0); st.add_index(o1); st.add_index(i1)
+					st.add_index(o0); st.add_index(i1); st.add_index(i0)
 
 	st.generate_normals()
 	st.generate_tangents()

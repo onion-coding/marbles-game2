@@ -38,19 +38,18 @@ func build_visual() -> void:
 	pipe_mat.roughness = 0.30
 
 	# Inner shell sits at 78% of outer radius — a clearly visible 22%
-	# wall thickness so the tube reads as substantial, not paper-thin.
+	# wall thickness so the tube reads as substantial.
 	var inner_r: float = radius * 0.78
+	# Outer shell + end caps built in one call so the cap rings use
+	# the SAME parallel-transport frames as the swept mesh's terminal
+	# rings — no rotation mismatch, no gap between the wall and rim.
 	var outer: MeshInstance3D = TrackBlocks.add_smooth_tube(self,
-			"TubeOuter", waypoints, radius, pipe_mat, 0.25, section_verts)
+			"TubeOuter", waypoints, radius, pipe_mat, 0.25, section_verts,
+			false, inner_r)
+	# Inner shell (inverted winding so the inside lights correctly).
+	# No caps on the inner mesh — the outer's caps are the only rims.
 	TrackBlocks.add_smooth_tube(self, "TubeInner", waypoints,
 			inner_r, pipe_mat, 0.25, section_verts, true)
-
-	# Wall-thickness rim at the first/last waypoints — a flat ring
-	# between the outer wall (radius) and the inner wall (inner_r),
-	# rendered double-sided so it's visible from BOTH the outside-the-
-	# tube view AND when looking into the entrance. User: 'more on
-	# the inside ... flipped'.
-	_build_endpoint_annuli(radius, inner_r, pipe_mat)
 
 	# Collision: trimesh from the outer mesh, two-sided.
 	if outer != null and outer.mesh != null:
