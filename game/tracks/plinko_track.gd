@@ -103,66 +103,74 @@ const DIVIDER_THICK     := 0.2
 # Tubes finish at TUBE_BOT_Y = -15 (~23 % above the gap floor). Below
 # is an open free-fall zone (FREEFALL_TOP_Y..FREEFALL_BOT_Y) — TBD.
 const TUBE_DEFS: Array = [
-	# Tube 1 (back plane, z=-0.9) — enters left, swings full-width.
+	# Tube 1 (FAR BACK plane, z≈-2.5) — enters left, sweeps full-width.
+	# Z is widely spread from the other tubes so they read as four
+	# clearly-separated depth layers rather than overlapping in the
+	# camera projection. Entry/exit at z=0 so the funnel deck delivers
+	# cleanly and the lower-plinko field receives at z=0.
 	{
 		"path": [
 			Vector3(-9.0,  19.0,  0.0),
-			Vector3(-9.0,  17.0, -0.9),
-			Vector3( 9.0,  10.0, -0.9),
-			Vector3(-9.0,   2.0, -0.9),
-			Vector3( 9.0,  -6.0, -0.9),
-			Vector3(-5.0, -13.0, -0.9),
-			Vector3(-5.0, -14.5, -0.45),
+			Vector3(-9.0,  17.0, -2.5),
+			Vector3( 9.0,  12.0, -2.2),
+			Vector3(-9.0,   5.0, -2.6),
+			Vector3( 9.0,  -3.0, -2.3),
+			Vector3(-5.0, -11.0, -2.5),
+			Vector3(-5.0, -14.0, -1.0),
 			Vector3(-5.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.85,
+		"visual_radius": 0.75,
 		"colour": Color(0.40, 0.85, 1.00, 0.55),     # cyan
 	},
-	# Tube 2 (middle plane, z=0) — enters centre, opposite-phase swings.
+	# Tube 2 (BACK-MIDDLE, z≈-0.8) — enters centre, opposite-phase swings.
 	{
 		"path": [
 			Vector3( 0.0,  19.0,  0.0),
-			Vector3( 9.0,  14.0,  0.0),
-			Vector3(-9.0,   6.0,  0.0),
-			Vector3( 9.0,  -2.0,  0.0),
-			Vector3(-9.0, -10.0,  0.0),
+			Vector3( 0.0,  17.0, -0.8),
+			Vector3( 9.0,  12.0, -0.6),
+			Vector3(-9.0,   6.0, -1.0),
+			Vector3( 9.0,  -2.0, -0.7),
+			Vector3(-9.0,  -9.0, -0.9),
+			Vector3( 0.0, -14.0, -0.4),
 			Vector3( 0.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.85,
+		"visual_radius": 0.75,
 		"colour": Color(1.00, 0.85, 0.40, 0.55),     # warm gold
 	},
-	# Tube 3 (front plane, z=+0.9) — mirror of Tube 1.
+	# Tube 3 (FRONT-MIDDLE, z≈+0.8) — mirror of Tube 1, opposite swing
+	# phase from Tube 2 so the four tubes never line up in (X,Y).
 	{
 		"path": [
 			Vector3( 9.0,  19.0,  0.0),
-			Vector3( 9.0,  17.0,  0.9),
-			Vector3(-9.0,  10.0,  0.9),
-			Vector3( 9.0,   2.0,  0.9),
-			Vector3(-9.0,  -6.0,  0.9),
-			Vector3( 5.0, -13.0,  0.9),
-			Vector3( 5.0, -14.5,  0.45),
+			Vector3( 9.0,  17.0,  0.8),
+			Vector3(-9.0,  12.0,  0.6),
+			Vector3( 9.0,   6.0,  1.0),
+			Vector3(-9.0,  -2.0,  0.7),
+			Vector3( 9.0,  -9.0,  0.9),
+			Vector3( 5.0, -14.0,  0.4),
 			Vector3( 5.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.85,
+		"visual_radius": 0.75,
 		"colour": Color(1.00, 0.40, 0.95, 0.55),     # magenta
 	},
-	# Tube 4 — JACKPOT. Tiny entrance at x=+4.5 sitting on the apex of the
-	# right funnel peak (which is split with a 0.5-m hole there). Most
-	# marbles slide off the peak into T2 or T3; only a marble that hits
-	# the apex squarely drops through. Steep diagonal, very fast — low Z
-	# plane (z=+1.4) so it visually pops in front of the others.
+	# Tube 4 — JACKPOT. Tiny entrance at x=+4.5 on the apex of the right
+	# funnel peak. Now at z≈+2.5 (FAR FRONT) — so when the four tubes
+	# cross in the X/Y plane they each occupy a distinct Z layer and
+	# the wide camera reads them as four parallel weaving paths instead
+	# of an interpenetrating tangle.
 	{
 		"path": [
 			Vector3( 4.5,  19.0,  0.0),
-			Vector3( 4.5,  17.0,  1.4),
-			Vector3(-3.0, -12.0,  1.4),
-			Vector3(-3.0, -14.5,  0.7),
+			Vector3( 4.5,  17.0,  2.5),
+			Vector3(-3.0,   2.0,  2.5),
+			Vector3(-3.0, -12.0,  2.5),
+			Vector3(-3.0, -14.0,  1.0),
 			Vector3(-3.0, -15.0,  0.0),
 		],
 		"speed": 20.0,
@@ -978,16 +986,41 @@ class Tube extends Node3D:
 			var rb: RigidBody3D = key
 			var progress: float = float(_transits[rb]) + step
 			if progress >= _path_length:
-				# Release at the exit with tangent velocity of the last segment.
+				# Release at the exit with tangent velocity of the last
+				# segment, and carry a roll-spin so it keeps tumbling for
+				# a beat after leaving the tube (looks like it has momentum,
+				# not just a position-snapped pose).
 				var n: int = path.size()
 				var last_dir: Vector3 = ((path[n - 1] as Vector3) - (path[n - 2] as Vector3)).normalized()
 				rb.global_position = path[n - 1]
 				rb.freeze = false
 				rb.linear_velocity = last_dir * transit_speed
-				rb.angular_velocity = Vector3.ZERO
+				var roll_axis: Vector3 = last_dir.cross(Vector3.UP)
+				if roll_axis.length_squared() < 0.001:
+					roll_axis = last_dir.cross(Vector3.RIGHT)
+				rb.angular_velocity = roll_axis.normalized() * (transit_speed / 0.3)
 				done.append(rb)
 			else:
-				rb.global_position = _sample_path(progress)
+				var old_pos: Vector3 = rb.global_position
+				var new_pos: Vector3 = _sample_path(progress)
+				rb.global_position = new_pos
+				# Tumble during kinematic transit. Roll-without-slipping:
+				# angular displacement per step = (linear step) / radius.
+				# Spin axis = motion direction × world up (perpendicular to
+				# the path, in the marble's horizontal plane). The marble
+				# now visibly rotates as it slides through the tube rather
+				# than gliding pose-locked on rails.
+				var motion: Vector3 = new_pos - old_pos
+				var motion_len: float = motion.length()
+				if motion_len > 1e-5:
+					var tangent: Vector3 = motion / motion_len
+					var spin_axis: Vector3 = tangent.cross(Vector3.UP)
+					if spin_axis.length_squared() < 0.001:
+						spin_axis = tangent.cross(Vector3.RIGHT)
+					spin_axis = spin_axis.normalized()
+					var spin_angle: float = motion_len / 0.3   # marble radius
+					var spin_basis: Basis = Basis(spin_axis, spin_angle)
+					rb.transform.basis = spin_basis * rb.transform.basis
 				_transits[rb] = progress
 		for rb in done:
 			_transits.erase(rb)
