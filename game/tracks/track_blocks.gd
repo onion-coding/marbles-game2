@@ -716,33 +716,39 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 	var length: float = curve.get_baked_length()
 	if length < 0.001:
 		return null
+
+	# Sample the curve the EXACT same way add_smooth_tube does so the
+	# cap rings sit at the same positions and the tangents come from
+	# the same finite differences. Anything subtly different here
+	# produces a sub-millimetre seam between the swept tube end and
+	# the cap outer edge.
 	var n_rings: int = max(int(ceil(length / sample_spacing)) + 1, 4)
+	var samples: Array[Vector3] = []
+	samples.resize(n_rings)
+	for i in range(n_rings):
+		var s: float = (float(i) / float(n_rings - 1)) * length
+		samples[i] = curve.sample_baked(s, true)
 
-	# Compute the two endpoint samples + tangents.
-	var s0: Vector3 = curve.sample_baked(0.0, true)
-	var s_last: Vector3 = curve.sample_baked(length, true)
-	# Tangents via forward / backward differences at the very ends.
-	var step: float = max(sample_spacing * 0.5, 0.05)
-	var t0: Vector3 = (curve.sample_baked(step, true) - s0).normalized()
-	var t_last: Vector3 = (s_last - curve.sample_baked(length - step, true)).normalized()
+	var tangents: Array[Vector3] = []
+	tangents.resize(n_rings)
+	tangents[0] = (samples[1] - samples[0]).normalized()
+	tangents[n_rings - 1] = (samples[n_rings - 1] - samples[n_rings - 2]).normalized()
+	for i in range(1, n_rings - 1):
+		var t_mid := samples[i + 1] - samples[i - 1]
+		if t_mid.length() < 0.001:
+			t_mid = samples[i + 1] - samples[i]
+		tangents[i] = t_mid.normalized()
 
-	# Parallel-transport from start: same seed_ref selection as add_smooth_tube.
+	# Parallel-transport — same algorithm as add_smooth_tube.
 	var seed_ref := Vector3.UP
-	if absf(t0.dot(seed_ref)) > 0.95:
+	if absf(tangents[0].dot(seed_ref)) > 0.95:
 		seed_ref = Vector3.RIGHT
-	var r_curr := (seed_ref - t0 * seed_ref.dot(t0)).normalized()
-	var u_curr := t0.cross(r_curr).normalized()
+	var r_curr := (seed_ref - tangents[0] * seed_ref.dot(tangents[0])).normalized()
+	var u_curr := tangents[0].cross(r_curr).normalized()
 	var r_start := r_curr
 	var u_start := u_curr
-
-	# Walk the rings to propagate the frame to the last sample. We only
-	# need the endpoint frames; intermediate frames are discarded.
 	for i in range(1, n_rings):
-		var s: float = (float(i) / float(n_rings - 1)) * length
-		var s_prev: Vector3 = curve.sample_baked(s - step * 0.5, true)
-		var s_next: Vector3 = curve.sample_baked(s + step * 0.5, true) \
-				if i < n_rings - 1 else s_last
-		var t_i: Vector3 = (s_next - s_prev).normalized()
+		var t_i: Vector3 = tangents[i]
 		var r_new: Vector3 = r_curr - t_i * r_curr.dot(t_i)
 		if r_new.length() < 0.001:
 			r_new = Vector3.RIGHT - t_i * Vector3.RIGHT.dot(t_i)
@@ -751,6 +757,8 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 		r_curr = r_new
 	var r_end := r_curr
 	var u_end := u_curr
+	var s0: Vector3 = samples[0]
+	var s_last: Vector3 = samples[n_rings - 1]
 
 	# Build the two annular caps in one SurfaceTool.
 	var st := SurfaceTool.new()
