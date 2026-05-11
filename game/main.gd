@@ -121,14 +121,26 @@ func _ready() -> void:
 	# TEMP --demo flag: skip HUDs + IDLE bet window, run a single race, quit.
 	# Used by the curve_demo screenshot capture so the slide isn't covered by
 	# HUD panels. Reverts with the rest of the TEMP perf-logging code.
+	var editor_mode := false
 	for a in OS.get_cmdline_user_args():
 		if a == "--demo":
 			_demo_mode = true
+		elif a == "--editor":
+			editor_mode = true
 		elif a.begins_with("--marbles="):
 			var n := int(a.substr("--marbles=".length()))
 			if n > 0 and n <= SpawnRail.SLOT_COUNT:
 				MARBLE_COUNT = n
 				print("[DEMO] marble count override: %d" % n)
+	if editor_mode:
+		# Map editor mode — replaces the normal race lifecycle with the
+		# map editing scene root. Layered onto this Node3D per the
+		# memory rule (no parallel game scene with its own world).
+		print("[EDITOR] launching map editor")
+		var editor := MapEditor.new()
+		editor.name = "MapEditor"
+		add_child(editor)
+		return
 	if _demo_mode:
 		print("[DEMO] skipping HUDs and IDLE window; starting race immediately")
 		_start_race({})
