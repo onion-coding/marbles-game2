@@ -582,6 +582,16 @@ func _on_add_requested(type: String) -> void:
 		_ui.set_status("Click in the viewport to place a %s." % type)
 
 func _on_hand_mode_toggled(active: bool) -> void:
+	# If a tube is mid-draw when the user flips on the hand tool, auto-
+	# finish the tube first (same as pressing ENTER). Reaching for hand-
+	# mode strongly implies "I'm done placing, I want to inspect now."
+	# If the tube has <2 waypoints there's nothing to finalise, so just
+	# cancel it before entering hand mode.
+	if active and _tube_in_progress != null:
+		if _tube_in_progress.waypoints.size() >= 2:
+			_finish_tube_placement()
+		else:
+			_cancel_tube_placement()
 	_hand_mode = active
 	_ui.set_hand_mode(active)
 	if active:
