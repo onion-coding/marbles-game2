@@ -686,6 +686,13 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	var pipe_mat := TrackBlocks.std_mat_emit(glow, 0.15, 0.30, 0.25)
 	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	pipe_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
+	# Two-sided: the tube mesh is a single-layer hollow cylinder with
+	# outward-facing normals only. Without cull_disabled the inside is
+	# invisible (the back of a culled-back face), so looking into the
+	# entry from above sees straight through the tube. CULL_DISABLED
+	# costs ~2x fragment work on the pipe surface but the alternative
+	# (build a true inner+outer shell) doubles geometry.
+	pipe_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 1.6)
 
 	# Visible smooth swept tube (hollow cylinder, open at both ends so
