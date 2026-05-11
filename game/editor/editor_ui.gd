@@ -15,11 +15,24 @@ signal add_object_requested(type: String)
 signal save_requested
 signal load_requested
 
-const PANEL_WIDTH := 280
+const PANEL_WIDTH := 320
 
 var _palette: Panel
 var _props_box: VBoxContainer
 var _status: Label
+
+# Tracked palette buttons (type -> Button). Toggled on while that type
+# is the pending placement so the user sees which mode they're in.
+var _palette_buttons: Dictionary = {}
+var _hand_button: Button = null
+var _undo_button: Button = null
+
+# Position SpinBox refs so MapEditor can push real-time updates after a
+# drag or arrow nudge without rebuilding the whole property panel.
+var _pos_spinboxes: Array = []   # [SpinBox, SpinBox, SpinBox] for X/Y/Z
+
+signal hand_mode_toggled(active: bool)
+signal undo_requested
 
 func _ready() -> void:
 	layer = 50
@@ -60,15 +73,32 @@ func _ready() -> void:
 
 	vbox.add_child(HSeparator.new())
 
+	# Top toolbar: Hand-tool toggle + Undo + Save + Load on one row.
+	var top_row := HBoxContainer.new()
+	_hand_button = Button.new()
+	_hand_button.text = "✋"
+	_hand_button.toggle_mode = true
+	_hand_button.tooltip_text = "Hand tool — select only, never drag"
+	_hand_button.custom_minimum_size = Vector2(36, 0)
+	_hand_button.toggled.connect(func(pressed: bool): hand_mode_toggled.emit(pressed))
+	top_row.add_child(_hand_button)
+	_undo_button = Button.new()
+	_undo_button.text = "↶"
+	_undo_button.tooltip_text = "Undo (Ctrl+Z)"
+	_undo_button.custom_minimum_size = Vector2(36, 0)
+	_undo_button.pressed.connect(func(): undo_requested.emit())
+	top_row.add_child(_undo_button)
 	var save_btn := Button.new()
-	save_btn.text = "Save Map"
+	save_btn.text = "Save"
+	save_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	save_btn.pressed.connect(func(): save_requested.emit())
-	vbox.add_child(save_btn)
-
+	top_row.add_child(save_btn)
 	var load_btn := Button.new()
-	load_btn.text = "Load Map"
+	load_btn.text = "Load"
+	load_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	load_btn.pressed.connect(func(): load_requested.emit())
-	vbox.add_child(load_btn)
+	top_row.add_child(load_btn)
+	vbox.add_child(top_row)
 
 	vbox.add_child(HSeparator.new())
 
@@ -91,7 +121,13 @@ func _ready() -> void:
 		var label: String = entry[1]
 		var b := Button.new()
 		b.text = label
+		# toggle_mode = true so the user sees which placement is active
+		# (button stays visibly pressed). MapEditor calls
+		# set_active_palette(type) when placement starts/ends to keep
+		# the toggle state honest.
+		b.toggle_mode = true
 		b.pressed.connect(func(): add_object_requested.emit(t))
+		_palette_buttons[t] = b
 		vbox.add_child(b)
 
 	vbox.add_child(HSeparator.new())
@@ -136,7 +172,9 @@ func show_properties(obj) -> void:
 
 	# Position editors. Step 0.1 m — matches the in-viewport drag snap
 	# so the +/- buttons and the mouse drag agree on the same grid.
-	_add_vec3_row(obj, "Position", -100.0, 100.0, 0.1,
+	# Spinboxes are captured into _pos_spinboxes so MapEditor can push
+	# real-time updates after drag/arrow without rebuilding the panel.
+	_pos_spinboxes = _add_vec3_row(obj, "Position", -100.0, 100.0, 0.1,
 		func(): return obj.position,
 		func(v: Vector3): obj.position = v)
 
@@ -295,12 +333,13 @@ func _add_scalar_row(obj, key: String, current: float, min_v: float, max_v: floa
 	_props_box.add_child(row)
 
 func _add_vec3_row(obj, label: String, min_v: float, max_v: float, step: float,
-		getter: Callable, setter: Callable) -> void:
+		getter: Callable, setter: Callable) -> Array:
 	var head := Label.new()
 	head.text = label
 	head.add_theme_font_size_override("font_size", 12)
 	_props_box.add_child(head)
 	var axes := ["x", "y", "z"]
+	var spinboxes: Array = []
 	for i in range(3):
 		var row := HBoxContainer.new()
 		var axis_label := Label.new()
@@ -319,6 +358,40 @@ func _add_vec3_row(obj, label: String, min_v: float, max_v: float, step: float,
 			cur[idx] = val
 			setter.call(cur)
 		)
-		sb.custom_minimum_size = Vector2(140, 0)
+		sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(sb)
 		_props_box.add_child(row)
+		spinboxes.append(sb)
+	return spinboxes
+
+# --- Real-time refresh + palette state -------------------------------
+
+# MapEditor calls this after a drag tick / arrow nudge so the X/Y/Z
+# spinboxes reflect the current position immediately. Cheap: just sets
+# three float values, no panel rebuild.
+func refresh_position(pos: Vector3) -> void:
+	if _pos_spinboxes.size() != 3:
+		return
+	for i in range(3):
+		var sb: SpinBox = _pos_spinboxes[i]
+		if sb != null and is_instance_valid(sb):
+			# set_value_no_signal so this doesn't recursively re-emit
+			# back into the position setter callback.
+			sb.set_value_no_signal(pos[i])
+
+# Visually highlight the active placement button (or none, if type=="").
+func set_active_palette(type: String) -> void:
+	for key in _palette_buttons.keys():
+		var btn: Button = _palette_buttons[key]
+		if btn != null and is_instance_valid(btn):
+			btn.set_pressed_no_signal(key == type)
+
+# MapEditor toggles its hand-tool state; sync the button visual.
+func set_hand_mode(active: bool) -> void:
+	if _hand_button != null and is_instance_valid(_hand_button):
+		_hand_button.set_pressed_no_signal(active)
+
+# Enable/disable the undo button so it greys out when the stack is empty.
+func set_undo_enabled(enabled: bool) -> void:
+	if _undo_button != null and is_instance_valid(_undo_button):
+		_undo_button.disabled = not enabled

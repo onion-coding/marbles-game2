@@ -33,6 +33,17 @@ var _pending_add_type: String = ""
 # In-memory clipboard — holds the dict from the most recent Ctrl+C.
 var _clipboard: Dictionary = {}
 
+# Hand tool: when ON, LMB on the selected object re-selects rather than
+# starting a drag. Lets the user click objects without accidentally
+# nudging them. Drag is the default OFF state.
+var _hand_mode: bool = false
+
+# Undo stack of full-scene snapshots. Each snapshot is an Array of
+# to_dict() entries; restoring rebuilds the scene from the snapshot.
+# Cap at 32 to keep memory bounded.
+var _undo_stack: Array = []
+const UNDO_MAX := 32
+
 # Drag state. _drag_active is set on LMB-press over the selected object.
 # Mouse motion while active raycasts to a horizontal plane at the
 # object's Y, snaps to GRID_STEP, updates obj.position. LMB release ends.
@@ -58,8 +69,11 @@ func _ready() -> void:
 	_ui.add_object_requested.connect(_on_add_requested)
 	_ui.save_requested.connect(_on_save_requested)
 	_ui.load_requested.connect(_on_load_requested)
+	_ui.hand_mode_toggled.connect(_on_hand_mode_toggled)
+	_ui.undo_requested.connect(_do_undo)
 	add_child(_ui)
 	_ui.set_status("Ready.")
+	_ui.set_undo_enabled(false)
 	print("[MapEditor] ready — RMB: orbit/fly · MMB: pan · Scroll: zoom")
 
 func _build_environment() -> void:
@@ -162,6 +176,7 @@ func _unhandled_input(event: InputEvent) -> void:
 						_cancel_tube_placement()
 					else:
 						_pending_add_type = ""
+						_ui.set_active_palette("")
 						_select(null)
 						_ui.set_status("Cancelled.")
 				KEY_ENTER, KEY_KP_ENTER:
@@ -198,6 +213,9 @@ func _unhandled_input(event: InputEvent) -> void:
 						# Duplicate-in-place: copy + paste in one keystroke.
 						_copy_selected()
 						_paste_clipboard()
+				KEY_Z:
+					if k.ctrl_pressed:
+						_do_undo()
 
 func _handle_left_click(screen_pos: Vector2) -> void:
 	var from := _camera.project_ray_origin(screen_pos)
@@ -239,14 +257,17 @@ func _handle_left_click(screen_pos: Vector2) -> void:
 		_select(null)
 		return
 
-	# Click on an object: select it. If it was already selected, start
-	# a drag in the XZ plane so the user can move it. Grab offset =
-	# distance from cursor's plane-hit to the object's centre, so the
-	# object stays anchored to where the cursor first grabbed it.
-	if hit_obj == _selected:
+	# Click on an object: select it. If it was already selected AND
+	# hand-mode is OFF, start a drag in the XZ plane so the user can
+	# move it. Grab offset = distance from cursor's plane-hit to the
+	# object's centre, so the object stays anchored to where the cursor
+	# first grabbed it.
+	if hit_obj == _selected and not _hand_mode:
 		var grab_world: Vector3 = _ray_to_xz_plane(from, dir, _selected.position.y)
 		_drag_grab_offset = _selected.position - grab_world
 		_drag_active = true
+		# Snapshot pre-drag so the user can undo the move.
+		_push_undo()
 	else:
 		_select(hit_obj)
 
@@ -261,6 +282,8 @@ func _handle_drag(screen_pos: Vector2) -> void:
 	target.x = snappedf(target.x, GRID_STEP)
 	target.z = snappedf(target.z, GRID_STEP)
 	_selected.position = Vector3(target.x, _selected.position.y, target.z)
+	# Push the new XYZ into the property panel's SpinBoxes immediately.
+	_ui.refresh_position(_selected.position)
 
 func _ray_to_xz_plane(origin: Vector3, dir: Vector3, plane_y: float) -> Vector3:
 	# Ray-plane intersection with the horizontal plane y=plane_y. If the
@@ -309,17 +332,22 @@ func _finish_tube_placement() -> void:
 	if _tube_in_progress.waypoints.size() < 2:
 		_ui.set_status("Tube needs ≥2 waypoints. ESC to cancel.")
 		return
+	# Snapshot BEFORE registering the tube into _objects so undo
+	# removes the finished tube entirely.
+	_push_undo()
 	_objects.append(_tube_in_progress)
 	_select(_tube_in_progress)
 	_ui.set_status("Tube placed (%d waypoints)." % _tube_in_progress.waypoints.size())
 	_tube_in_progress = null
 	_pending_add_type = ""
+	_ui.set_active_palette("")
 
 func _cancel_tube_placement() -> void:
 	if _tube_in_progress != null:
 		_tube_in_progress.queue_free()
 		_tube_in_progress = null
 	_pending_add_type = ""
+	_ui.set_active_palette("")
 	_ui.set_status("Tube placement cancelled.")
 
 # --- Keyboard nudging -----------------------------------------------
@@ -336,9 +364,17 @@ func _arrow_nudge(dx: float, _dy: float, dz: float, shift_pressed: bool) -> void
 		return
 	var v := Vector3(dx, 0.0, dz) * GRID_STEP
 	if shift_pressed:
-		# Swap Z component into Y when shift is held: Up = +Y, Down = -Y.
 		v = Vector3(0.0, -dz, 0.0) * GRID_STEP
-	_selected.position += v
+	# Snapshot pre-move so Ctrl+Z reverts the nudge.
+	_push_undo()
+	# Apply the nudge AND snap the whole position to the grid so a
+	# previously off-grid position becomes on-grid after one keypress.
+	var p := _selected.position + v
+	p.x = snappedf(p.x, GRID_STEP)
+	p.y = snappedf(p.y, GRID_STEP)
+	p.z = snappedf(p.z, GRID_STEP)
+	_selected.position = p
+	_ui.refresh_position(_selected.position)
 
 # Raise/lower the last waypoint of the in-progress tube. Useful for
 # building vertical paths — click to lay a horizontal segment, press R
@@ -364,11 +400,14 @@ func _add_object(type: String, pos: Vector3) -> EditorObject:
 	if obj == null:
 		push_warning("[MapEditor] unknown object type: %s" % type)
 		return null
+	_push_undo()
 	obj.position = pos
 	add_child(obj)
 	obj.build_visual()
 	_objects.append(obj)
 	_select(obj)
+	_pending_add_type = ""
+	_ui.set_active_palette("")
 	_ui.set_status("Placed %s." % type)
 	return obj
 
@@ -407,6 +446,7 @@ func _paste_clipboard() -> void:
 	if obj == null:
 		_ui.set_status("Paste failed — unknown type %s." % type)
 		return
+	_push_undo()
 	obj.from_dict(_clipboard)
 	# Offset slightly so the paste doesn't z-fight with the original.
 	obj.position += Vector3(0.6, 0.0, 0.6)
@@ -429,6 +469,7 @@ func _select(obj) -> void:
 func _delete_selected() -> void:
 	if _selected == null:
 		return
+	_push_undo()
 	_objects.erase(_selected)
 	_selected.queue_free()
 	_selected = null
@@ -438,14 +479,81 @@ func _delete_selected() -> void:
 # --- Save / load -----------------------------------------------------
 
 func _on_add_requested(type: String) -> void:
+	# Toggle: pressing the same palette button again cancels placement.
+	if _pending_add_type == type:
+		_pending_add_type = ""
+		if _tube_in_progress != null:
+			_cancel_tube_placement()
+		_ui.set_active_palette("")
+		_ui.set_status("Placement cancelled.")
+		return
 	# Cancel any in-progress tube before starting a new placement.
 	if _tube_in_progress != null:
 		_cancel_tube_placement()
 	_pending_add_type = type
+	_ui.set_active_palette(type)
 	if type == "tube":
 		_ui.set_status("Tube: click to place each waypoint, ENTER finishes.")
 	else:
 		_ui.set_status("Click in the viewport to place a %s." % type)
+
+func _on_hand_mode_toggled(active: bool) -> void:
+	_hand_mode = active
+	_ui.set_hand_mode(active)
+	if active:
+		_ui.set_status("Hand tool: click objects to select (no drag).")
+
+# --- Undo -----------------------------------------------------------
+
+# Snapshot the full object list + selection state. Cheap (just dict
+# serialisation); cap stack size so memory stays bounded.
+func _push_undo() -> void:
+	var snap: Dictionary = {
+		"objects": [],
+		"selected_index": _objects.find(_selected) if _selected != null else -1,
+	}
+	for o in _objects:
+		if o is EditorObject:
+			snap["objects"].append((o as EditorObject).to_dict())
+	_undo_stack.append(snap)
+	while _undo_stack.size() > UNDO_MAX:
+		_undo_stack.pop_front()
+	_ui.set_undo_enabled(true)
+
+func _do_undo() -> void:
+	if _undo_stack.is_empty():
+		_ui.set_status("Nothing to undo.")
+		return
+	var snap: Dictionary = _undo_stack.pop_back()
+	# Tear down current scene state.
+	if _tube_in_progress != null:
+		_cancel_tube_placement()
+	for o in _objects:
+		if is_instance_valid(o):
+			o.queue_free()
+	_objects.clear()
+	_selected = null
+	# Restore from snapshot.
+	var arr: Array = snap.get("objects", []) as Array
+	for entry in arr:
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var t: String = String(entry.get("type", ""))
+		var obj := _instantiate_type(t)
+		if obj == null:
+			continue
+		obj.from_dict(entry)
+		add_child(obj)
+		obj.build_visual()
+		_objects.append(obj)
+	# Restore selection if the prior selection still exists.
+	var sel_idx: int = int(snap.get("selected_index", -1))
+	if sel_idx >= 0 and sel_idx < _objects.size():
+		_select(_objects[sel_idx])
+	else:
+		_ui.show_properties(null)
+	_ui.set_undo_enabled(not _undo_stack.is_empty())
+	_ui.set_status("Undo (%d left)." % _undo_stack.size())
 
 func _on_save_requested() -> void:
 	DirAccess.make_dir_recursive_absolute(MAP_DIR)
@@ -480,6 +588,9 @@ func _on_load_requested() -> void:
 	if typeof(parsed) != TYPE_DICTIONARY:
 		_ui.set_status("Map file is invalid JSON.")
 		return
+
+	# Snapshot pre-load so Ctrl+Z brings the current scene back.
+	_push_undo()
 
 	# Clear scene.
 	for o in _objects:
