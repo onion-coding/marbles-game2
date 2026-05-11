@@ -109,10 +109,14 @@ const TUBE_DEFS: Array = [
 	# enough visible space that they read as four separate depth layers,
 	# without any tube crossing the back/front frame walls.
 
-	# Tube 1 (BACK, z≈-1.4) — enters left, sweeps full-width.
+	# Tube 1 (BACK, z≈-1.4) — enters left, sweeps full-width. First segment
+	# is VERTICAL (path[0] -> path[1] both at x=-9, z=0) so a marble
+	# falling straight down from the funnel deck enters the cylinder
+	# axis-aligned instead of glancing off a tilted rim.
 	{
 		"path": [
-			Vector3(-9.0,  19.0,  0.0),
+			Vector3(-9.0,  19.5,  0.0),
+			Vector3(-9.0,  18.0,  0.0),
 			Vector3(-9.0,  17.0, -1.4),
 			Vector3( 9.0,  12.0, -1.2),
 			Vector3(-9.0,   5.0, -1.4),
@@ -129,7 +133,8 @@ const TUBE_DEFS: Array = [
 	# Tube 2 (BACK-MIDDLE, z≈-0.5) — enters centre, opposite-phase swings.
 	{
 		"path": [
-			Vector3( 0.0,  19.0,  0.0),
+			Vector3( 0.0,  19.5,  0.0),
+			Vector3( 0.0,  18.0,  0.0),
 			Vector3( 0.0,  17.0, -0.5),
 			Vector3( 9.0,  12.0, -0.4),
 			Vector3(-9.0,   6.0, -0.5),
@@ -146,7 +151,8 @@ const TUBE_DEFS: Array = [
 	# Tube 3 (FRONT-MIDDLE, z≈+0.5) — mirror of Tube 1 in X-phase.
 	{
 		"path": [
-			Vector3( 9.0,  19.0,  0.0),
+			Vector3( 9.0,  19.5,  0.0),
+			Vector3( 9.0,  18.0,  0.0),
 			Vector3( 9.0,  17.0,  0.5),
 			Vector3(-9.0,  12.0,  0.4),
 			Vector3( 9.0,   6.0,  0.5),
@@ -164,7 +170,8 @@ const TUBE_DEFS: Array = [
 	# funnel peak. Stays at z≈+1.4 (FRONT layer, opposite of T1).
 	{
 		"path": [
-			Vector3( 4.5,  19.0,  0.0),
+			Vector3( 4.5,  19.5,  0.0),
+			Vector3( 4.5,  18.0,  0.0),
 			Vector3( 4.5,  17.0,  1.4),
 			Vector3(-3.0,   2.0,  1.4),
 			Vector3(-3.0, -12.0,  1.4),
@@ -701,18 +708,13 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 		body.add_child(coll)
 		add_child(body)
 
-	# Entry and exit rings.
-	for endpoint in [path[0] as Vector3, path[path.size() - 1] as Vector3]:
-		var ring := MeshInstance3D.new()
-		ring.name = "Ring_%d_y%d" % [idx, int(endpoint.y * 10)]
-		var rm := CylinderMesh.new()
-		rm.top_radius    = visual_r * 1.2
-		rm.bottom_radius = visual_r * 1.2
-		rm.height        = 0.18
-		ring.mesh = rm
-		ring.material_override = ring_mat
-		ring.position = endpoint
-		add_child(ring)
+	# Entry/exit rings removed. They were 1.2× tube-radius cylinders sitting
+	# AT the tube entry+exit points. Mesh-only (no collider), but they
+	# visually capped the open ends, making it look like the tube had a
+	# lid — and combined with the tilted first segment they read as
+	# "blocking the entrance." Removing them leaves the tube open; the
+	# smooth swept mesh already gives the entry+exit a clean rounded look.
+	pass
 
 # ─── LOWER PLINKO — receives tube exits, leads to finish ────────────────────
 

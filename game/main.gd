@@ -513,7 +513,8 @@ func _start_race(spec: Dictionary) -> void:
 				for m in marbles_ref:
 					if is_instance_valid(m):
 						m.freeze = false
-				layer.queue_free()
+				if is_instance_valid(layer):
+					layer.queue_free()
 			)
 
 		# Casino broadcast streamers, if --casino-video/--casino-meta CLI
@@ -1034,19 +1035,19 @@ func _process(delta: float) -> void:
 		# TEMP screenshot capture (revert with the rest of TEMP perf code).
 		# Once racing, save one PNG every 2s so the user can review without
 		# watching the window live.
-		# Screenshots disabled: synchronous PNG save blocks the main thread
-		# ~150-250ms per shot, causing visible stutter the user could see.
-		# Flip the condition to `if true and ...` for verification runs.
-		if false and _live_racing and _perf_shot_count < 10:
-			# Cycle camera mode between leader-follow (close) and wide so the
-			# user gets both close-up and overall framings of the same race.
+		# Screenshots disabled for the shipping run — synchronous PNG save
+		# blocks the main thread ~150-250ms and stutters the live view the
+		# user is trying to inspect. Flip to true on a verification run.
+		if false and _live_racing and _perf_shot_count < 6:
+			# Verification screenshots: snap to WIDE then LEADER so the
+			# captures include a framed full-field shot AND a marble
+			# follow-cam close-up, regardless of where the user has the
+			# free cam parked.
 			if _director != null:
 				if _perf_shot_count == 0:
-					_director.set_mode("leader")
-				elif _perf_shot_count == 4:
 					_director.set_mode("wide")
-				elif _perf_shot_count == 8:
-					_director.set_mode("finish_line")
+				elif _perf_shot_count == 3:
+					_director.set_mode("leader")
 			var img := get_viewport().get_texture().get_image()
 			if img != null:
 				DirAccess.make_dir_recursive_absolute(_perf_shot_dir)
