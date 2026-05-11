@@ -25,10 +25,10 @@ uniform vec4  secondary_color  : source_color = vec4(1.00, 1.00, 1.00, 1.0);
 uniform int   marble_type      : hint_range(0, 3) = 1;
 uniform float swirl_seed       : hint_range(0.0, 1.0) = 0.0;
 uniform float swirl_scale      : hint_range(1.0, 20.0) = 6.0;
-uniform float rim_strength     : hint_range(0.0, 4.0) = 0.6;
-uniform float rim_power        : hint_range(0.5, 8.0) = 4.0;
+uniform float rim_strength     : hint_range(0.0, 4.0) = 0.35;
+uniform float rim_power        : hint_range(0.5, 8.0) = 5.0;
 uniform float emission_strength: hint_range(0.0, 4.0) = 0.0;
-uniform float roughness_param  : hint_range(0.0, 0.6) = 0.05;
+uniform float roughness_param  : hint_range(0.0, 0.6) = 0.25;
 uniform float specular_param   : hint_range(0.0, 1.0) = 0.55;
 
 // ─── Noise helpers ──────────────────────────────────────────────────────────
