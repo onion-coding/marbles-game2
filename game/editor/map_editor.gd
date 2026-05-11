@@ -605,6 +605,22 @@ func _push_undo() -> void:
 	_ui.set_undo_enabled(true)
 
 func _do_undo() -> void:
+	# Special case: while drawing a tube, Ctrl+Z pops the last waypoint
+	# instead of restoring a scene snapshot. Matches the user's mental
+	# model — undo during placement removes the last point, not the
+	# entire tube. Only after the tube is finalised does Ctrl+Z fall
+	# through to the regular snapshot stack.
+	if _tube_in_progress != null and _tube_in_progress.waypoints.size() > 0:
+		if _tube_in_progress.waypoints.size() == 1:
+			# Single-waypoint tube has no length yet — undo cancels it.
+			_cancel_tube_placement()
+			return
+		_tube_in_progress.waypoints.pop_back()
+		_tube_in_progress.rebuild_visual()
+		_ui.set_status("Tube wp removed (%d remaining). ENTER to finish."
+				% _tube_in_progress.waypoints.size())
+		return
+
 	if _undo_stack.is_empty():
 		_ui.set_status("Nothing to undo.")
 		return

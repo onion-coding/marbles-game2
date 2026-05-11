@@ -58,27 +58,30 @@ func build_visual() -> void:
 	_build_endpoint_caps()
 	_build_markers()
 
-# Solid colour discs at the FIRST and LAST waypoints, always visible
-# (not gated by selection). Tells the user at a glance where the tube
-# begins and ends — clarifies the 'I can't tell when the tube stops'
-# ambiguity that a smooth swept mesh has without explicit terminals.
+# Open-ring markers (torus) at the FIRST and LAST waypoints, always
+# visible (not gated by selection). Tells the user where the tube
+# begins and ends without sealing the openings — a marble dropped at
+# the entry sees a clear hole, not a blocking disc.
 func _build_endpoint_caps() -> void:
 	if waypoints.size() < 2:
 		return
 	var cap_mat := StandardMaterial3D.new()
-	cap_mat.albedo_color = Color(color.r, color.g, color.b, 0.95)
+	cap_mat.albedo_color = Color(color.r, color.g, color.b, 1.0)
 	cap_mat.emission_enabled = true
 	cap_mat.emission = color
-	cap_mat.emission_energy_multiplier = 0.30
+	cap_mat.emission_energy_multiplier = 0.45
 	for ends in [0, waypoints.size() - 1]:
 		var cap := MeshInstance3D.new()
-		cap.name = "EndCap_%d" % ends
-		var cm := CylinderMesh.new()
-		cm.top_radius = radius * 1.05
-		cm.bottom_radius = radius * 1.05
-		cm.height = 0.08
-		cm.radial_segments = 24
-		cap.mesh = cm
+		cap.name = "EndRing_%d" % ends
+		var tm := TorusMesh.new()
+		# Ring's hole = tube interior, outer rim = slightly outside the
+		# tube wall so the marker is visible as a tinted ring without
+		# obstructing the opening.
+		tm.inner_radius = radius * 0.95
+		tm.outer_radius = radius * 1.18
+		tm.ring_segments = 32
+		tm.rings = 12
+		cap.mesh = tm
 		cap.material_override = cap_mat
 		cap.position = waypoints[ends]
 		# Orient the cap perpendicular to the tube's tangent at this
