@@ -1,6 +1,10 @@
 extends Node3D
 
-const MARBLE_COUNT := 30
+const MARBLE_COUNT_DEFAULT := 30
+# TEMP --marbles=N override (revert before commit). Lets the demo run with
+# a lighter marble count to isolate the slide-geometry review from the
+# 30-marble physics-tick spike. Resolved in _ready().
+var MARBLE_COUNT: int = MARBLE_COUNT_DEFAULT
 # How many seconds the WAITING / bet-placement window is open in RGS mode.
 const RGS_BET_WINDOW_SEC := 10.0
 # How many seconds to display the winner modal before starting the next round.
@@ -75,6 +79,14 @@ const CASINO_BROADCAST_W := 854
 const CASINO_BROADCAST_H := 480
 const CASINO_BROADCAST_FPS := 30.0
 
+# TEMP perf-logging (revert before commit). Prints frame stats every 2s so we
+# can quantify the lag the user reported before changing renderer settings.
+var _perf_accum: float = 0.0
+var _perf_min_fps: float = 999.0
+var _perf_shot_count: int = 0
+var _perf_shot_dir: String = "C:/tmp/marbles-perf"
+var _demo_mode: bool = false   # --demo: HUDs hidden, race starts immediately
+
 func _ready() -> void:
 	# Casino broadcast: if --casino-video / --casino-meta were passed,
 	# pin the window/viewport size to a known resolution before anything
@@ -105,6 +117,22 @@ func _ready() -> void:
 
 	if not _get_rgs_url().is_empty():
 		push_warning("main.gd: --rgs=<url> ignored; RGS client-physics mode was retired with the M29 casino architecture (player rendering is server-side via /casino/). Falling back to interactive mode.")
+
+	# TEMP --demo flag: skip HUDs + IDLE bet window, run a single race, quit.
+	# Used by the curve_demo screenshot capture so the slide isn't covered by
+	# HUD panels. Reverts with the rest of the TEMP perf-logging code.
+	for a in OS.get_cmdline_user_args():
+		if a == "--demo":
+			_demo_mode = true
+		elif a.begins_with("--marbles="):
+			var n := int(a.substr("--marbles=".length()))
+			if n > 0 and n <= SpawnRail.SLOT_COUNT:
+				MARBLE_COUNT = n
+				print("[DEMO] marble count override: %d" % n)
+	if _demo_mode:
+		print("[DEMO] skipping HUDs and IDLE window; starting race immediately")
+		_start_race({})
+		return
 
 	_begin_interactive_session()
 
@@ -326,15 +354,18 @@ func _start_race(spec: Dictionary) -> void:
 	# Per-marble finish animation — every marble that crosses gets a confetti
 	# burst tinted with its own colour. The race-winner gets the emission
 	# boost + the headless auto-quit timer on top.
-	finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
-		var idx_str := String(marble.name).trim_prefix("Marble_")
-		if not idx_str.is_valid_int():
-			return
-		var idx := int(idx_str)
-		if idx < 0 or idx >= colors.size():
-			return
-		WinnerReveal.spawn_confetti(self, marble.global_position, colors[idx])
-	)
+	# TEMP --demo: skip per-marble confetti so the cascade of 12+ bursts at
+	# the finish doesn't strobe. Winner-only burst still fires below.
+	if not _demo_mode:
+		finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
+			var idx_str := String(marble.name).trim_prefix("Marble_")
+			if not idx_str.is_valid_int():
+				return
+			var idx := int(idx_str)
+			if idx < 0 or idx >= colors.size():
+				return
+			WinnerReveal.spawn_confetti(self, marble.global_position, colors[idx])
+		)
 	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
 		WinnerReveal.boost_winner_emission(winner, get_tree())
 		# Headless smoke-test convenience: when running with --headless and
@@ -346,29 +377,38 @@ func _start_race(spec: Dictionary) -> void:
 			var quit_timer := get_tree().create_timer(3.0)
 			quit_timer.timeout.connect(func() -> void: get_tree().quit())
 	)
-	var recorder := TickRecorder.new()
-	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
-	if not _replay_path.is_empty():
-		recorder.override_output_path(_replay_path)
-	var stream_addr := String(spec.get("live_stream_addr", "")) if not spec.is_empty() else ""
-	_live_streamer = null
-	if not stream_addr.is_empty():
-		var colon := stream_addr.find(":")
-		if colon > 0:
-			var host := stream_addr.substr(0, colon)
-			var port := int(stream_addr.substr(colon + 1))
-			var streamer := TickStreamer.new()
-			if streamer.connect_to(host, port, round_id):
-				recorder.set_streamer(streamer)
-				_live_streamer = streamer
-				print("STREAM: connected to %s:%d" % [host, port])
-			else:
-				print("STREAM: connect to %s:%d failed, continuing without live stream" % [host, port])
-	recorder.track(marbles, finish)
-	add_child(recorder)
-	_live_recorder = recorder
-	if not _status_path.is_empty():
-		recorder.finalized.connect(_on_finalized.bind(finish))
+	# TEMP --demo: skip TickRecorder entirely. With 30 marbles × 60Hz it
+	# walks every marble's global_position + quaternion every tick and
+	# allocates a Dictionary per state — measurable cost in GDScript that
+	# shows up in TIME_PHYSICS_PROCESS. Replays aren't needed for the
+	# visual demo.
+	if _demo_mode:
+		_live_recorder = null
+		_live_streamer = null
+	else:
+		var recorder := TickRecorder.new()
+		recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
+		if not _replay_path.is_empty():
+			recorder.override_output_path(_replay_path)
+		var stream_addr := String(spec.get("live_stream_addr", "")) if not spec.is_empty() else ""
+		_live_streamer = null
+		if not stream_addr.is_empty():
+			var colon := stream_addr.find(":")
+			if colon > 0:
+				var host := stream_addr.substr(0, colon)
+				var port := int(stream_addr.substr(colon + 1))
+				var streamer := TickStreamer.new()
+				if streamer.connect_to(host, port, round_id):
+					recorder.set_streamer(streamer)
+					_live_streamer = streamer
+					print("STREAM: connected to %s:%d" % [host, port])
+				else:
+					print("STREAM: connect to %s:%d failed, continuing without live stream" % [host, port])
+		recorder.track(marbles, finish)
+		add_child(recorder)
+		_live_recorder = recorder
+		if not _status_path.is_empty():
+			recorder.finalized.connect(_on_finalized.bind(finish))
 
 	var is_server_driven := not spec.is_empty() and not _status_path.is_empty()
 	if is_server_driven:
@@ -413,6 +453,11 @@ func _start_race(spec: Dictionary) -> void:
 		_hud.setup(hud_header)
 		_hud.set_track_name(TrackRegistry.name_of(track_id))
 		_hud.set_track_node(track)
+		# TEMP --demo: hide both HUD layers so the curve geometry is unobscured.
+		if _demo_mode:
+			_hud.visible = false
+			if _hud_v2 != null:
+				_hud_v2.visible = false
 		# Connect marble-follow through the director's embedded freecam.
 		if _freecam != null:
 			_hud.marble_selected.connect(_freecam.follow_marble_index)
@@ -425,6 +470,15 @@ func _start_race(spec: Dictionary) -> void:
 
 		# Start auto-cut scheduling once everything is wired.
 		_director.start_directing()
+		# TEMP --demo: strip per-marble trail particles. They were the
+		# "random particles around the balls" the user flagged; they
+		# obscure the glass shader and aren't part of the marble itself.
+		# Director default is AUTO cycling (wide/leader/finish), no pin.
+		if _demo_mode:
+			for m in marbles:
+				var t := m.get_node_or_null("Trail")
+				if t != null:
+					t.queue_free()
 
 		# Casino broadcast streamers, if --casino-video/--casino-meta CLI
 		# flags were passed. No-op when not in broadcast mode.
@@ -575,6 +629,13 @@ func _physics_process(_delta: float) -> void:
 	# the timing tower / podium / finishers / winner modal, and v2 owns the
 	# balance / bet card / round timer / position card overlay.
 	if _hud == null and _hud_v2 == null:
+		return
+	# TEMP perf: skip HUD update walks when neither HUD is visible (--demo).
+	# update_standings sorts 30 marbles by distance every 6 ticks; pointless
+	# when the result isn't drawn. Caller pays the GDScript loop cost otherwise.
+	var hud_visible: bool = (_hud != null and _hud.visible)
+	var hud_v2_visible: bool = (_hud_v2 != null and _hud_v2.visible)
+	if not hud_visible and not hud_v2_visible:
 		return
 	var rate := float(Engine.physics_ticks_per_second)
 	if _live_racing:
@@ -734,6 +795,7 @@ func _pick_interactive_track() -> int:
 					push_warning("--track=spiral: SpiralDropTrack is experimental and known to deadlock " +
 							"(marbles get stuck mid-helix, race never finishes). Use only for diagnostic.")
 					return TrackRegistry.SPIRAL_DROP
+				"curve", "curve_demo", "slide": return TrackRegistry.CURVE_DEMO
 				_:
 					push_warning("--track=%s not recognized; falling back to random themed track" % name)
 					break
@@ -913,6 +975,49 @@ func _process(delta: float) -> void:
 		_casino_frames.tick(delta)
 	if _casino_meta != null and _casino_meta.is_streaming() and _live_racing:
 		_send_casino_meta(delta)
+
+	# TEMP perf-logging (revert before commit).
+	var fps_now: float = Performance.get_monitor(Performance.TIME_FPS)
+	if fps_now > 0.0 and fps_now < _perf_min_fps:
+		_perf_min_fps = fps_now
+	_perf_accum += delta
+	if _perf_accum >= 1.0:
+		_perf_accum = 0.0
+		var process_t: float = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+		var physics_t: float = Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+		var draws: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+		var prims: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME))
+		var objs: int = int(Performance.get_monitor(Performance.OBJECT_COUNT))
+		var nodes: int = int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
+		var vp_size := get_viewport().get_visible_rect().size
+		print("[PERF] fps=%.1f min=%.1f vp=%dx%d process=%.2fms physics=%.2fms draws=%d prims=%d objs=%d nodes=%d marbles=%d racing=%s"
+			% [fps_now, _perf_min_fps, int(vp_size.x), int(vp_size.y),
+			   process_t, physics_t, draws, prims, objs, nodes,
+			   _live_marbles.size(), str(_live_racing)])
+		_perf_min_fps = 999.0
+		# TEMP screenshot capture (revert with the rest of TEMP perf code).
+		# Once racing, save one PNG every 2s so the user can review without
+		# watching the window live.
+		# Screenshots disabled by default — synchronous PNG save blocks the
+		# main thread for ~250ms each. Flip `false` to `true` to re-enable
+		# (used during the plinko smooth-tube verification, then disabled).
+		if false and _live_racing and _perf_shot_count < 8:
+			# Cycle camera mode between leader-follow (close) and wide so the
+			# user gets both close-up and overall framings of the same race.
+			if _director != null:
+				if _perf_shot_count == 0:
+					_director.set_mode("leader")
+				elif _perf_shot_count == 4:
+					_director.set_mode("wide")
+				elif _perf_shot_count == 8:
+					_director.set_mode("finish_line")
+			var img := get_viewport().get_texture().get_image()
+			if img != null:
+				DirAccess.make_dir_recursive_absolute(_perf_shot_dir)
+				var p := "%s/shot_%02d.png" % [_perf_shot_dir, _perf_shot_count]
+				img.save_png(p)
+				print("[PERF] screenshot %s" % p)
+				_perf_shot_count += 1
 
 func _maybe_setup_casino_window() -> void:
 	var addrs := _get_casino_broadcast_addrs()

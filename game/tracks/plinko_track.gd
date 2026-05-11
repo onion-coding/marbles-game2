@@ -661,33 +661,13 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 2.5)
 
-	# One CylinderMesh per segment — gives the tube a real curving pipe look.
-	# Each segment's local Y axis is aligned to the segment direction in 3-D
-	# so the cylinder follows the bends including the Z-plane shifts.
-	for seg_i in range(path.size() - 1):
-		var p0: Vector3 = path[seg_i]
-		var p1: Vector3 = path[seg_i + 1]
-		var seg_vec: Vector3 = p1 - p0
-		var seg_len: float = seg_vec.length()
-		if seg_len < 0.001:
-			continue
-		var seg_dir: Vector3 = seg_vec / seg_len
-		var pipe := MeshInstance3D.new()
-		pipe.name = "Pipe_%d" % seg_i
-		var cm := CylinderMesh.new()
-		cm.top_radius    = visual_r
-		cm.bottom_radius = visual_r
-		cm.height        = seg_len
-		pipe.mesh = cm
-		pipe.material_override = pipe_mat
-		var ref: Vector3 = Vector3.RIGHT
-		if abs(seg_dir.dot(ref)) > 0.99:
-			ref = Vector3.FORWARD
-		var x_axis: Vector3 = ref.cross(seg_dir).normalized()
-		var z_axis: Vector3 = x_axis.cross(seg_dir).normalized()
-		var basis := Basis(x_axis, seg_dir, z_axis)
-		pipe.global_transform = Transform3D(basis, (p0 + p1) * 0.5)
-		add_child(pipe)
+	# Single smooth swept tube — replaces the legacy per-segment cylinder
+	# stack. The polyline's sharp interior bends are rounded out by the
+	# Curve3D Catmull-Rom tangents, then a circular cross-section is swept
+	# along with parallel-transport frames + indexed smooth normals. The
+	# tube reads as one continuous pipe with no joint faceting.
+	TrackBlocks.add_smooth_tube(self, "Pipe_smooth_%d" % idx, path,
+			visual_r, pipe_mat, 0.25, 18)
 
 	# Entry and exit rings.
 	for endpoint in [path[0] as Vector3, path[path.size() - 1] as Vector3]:
