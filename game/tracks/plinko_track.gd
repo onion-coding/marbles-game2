@@ -686,19 +686,22 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	var pipe_mat := TrackBlocks.std_mat_emit(glow, 0.15, 0.30, 0.25)
 	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	pipe_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
-	# Two-sided: the tube mesh is a single-layer hollow cylinder with
-	# outward-facing normals only. Without cull_disabled the inside is
-	# invisible (the back of a culled-back face), so looking into the
-	# entry from above sees straight through the tube. CULL_DISABLED
-	# costs ~2x fragment work on the pipe surface but the alternative
-	# (build a true inner+outer shell) doubles geometry.
-	pipe_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 1.6)
+	# CULL_BACK: outer shell renders from outside; inner shell (built
+	# below with inverted winding) renders from inside. Each surface is
+	# correctly lit. CULL_DISABLED was producing alternating front/back
+	# lighting bands along the curve ('buggy stripes') — a true two-shell
+	# tube fixes it without the lighting weirdness.
 
-	# Visible smooth swept tube (hollow cylinder, open at both ends so
-	# marbles can fall in from the top and out from the bottom).
+	# OUTER shell (radius = visual_r). Visible from outside the tube.
 	var pipe_mesh_inst: MeshInstance3D = TrackBlocks.add_smooth_tube(self,
 			"Pipe_smooth_%d" % idx, path, visual_r, pipe_mat, 0.25, 18)
+
+	# INNER shell (radius slightly smaller + inverted winding). The
+	# normals now point inward; with CULL_BACK only the inside surface
+	# renders, so a camera (or marble) inside the tube sees a properly-lit
+	# wall instead of looking through to the other side.
+	TrackBlocks.add_smooth_tube(self, "Pipe_inner_%d" % idx, path,
+			visual_r * 0.93, pipe_mat, 0.25, 18, true)
 
 	# Physics collider — same mesh, ConcavePolygonShape3D with
 	# backface_collision so marbles inside the hollow cylinder collide
@@ -715,13 +718,60 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 		body.add_child(coll)
 		add_child(body)
 
-	# Entry/exit rings removed. They were 1.2× tube-radius cylinders sitting
-	# AT the tube entry+exit points. Mesh-only (no collider), but they
-	# visually capped the open ends, making it look like the tube had a
-	# lid — and combined with the tilted first segment they read as
-	# "blocking the entrance." Removing them leaves the tube open; the
-	# smooth swept mesh already gives the entry+exit a clean rounded look.
-	pass
+	# Entry funnel: a wide cone collider above each tube entry that
+	# directs marbles falling anywhere within the funnel-deck gap into
+	# the tube opening. Without this, marbles emerging from the funnel
+	# deck with horizontal velocity miss the small tube radius (0.45 m)
+	# and fall past — 'no ball actually goes through the tubes'.
+	#
+	# Cone: cylinder mesh + cylinder shape, but tapered (top_radius =
+	# 0.85 ≈ half the funnel-deck gap width; bottom_radius = visual_r,
+	# matching the tube opening). Sits in the gap between funnel-deck
+	# slabs and the actual tube entry, ~1 m tall.
+	if def.has("entry_size"):
+		var entry_w: float = float((def["entry_size"] as Vector3).x)
+		# Only build funnels for the main wide-entry tubes (T1/T2/T3).
+		# T4 (entry_w=0.5) is the jackpot peak-drop — narrow on purpose.
+		if entry_w >= 1.0:
+			var entry_pos: Vector3 = path[0]
+			var funnel_top_r: float = max(entry_w * 0.5, visual_r + 0.4)
+			var funnel_h: float = 1.5
+			var funnel_y: float = entry_pos.y + funnel_h * 0.5
+			var funnel_body := StaticBody3D.new()
+			funnel_body.name = "Pipe_funnel_body_%d" % idx
+			funnel_body.physics_material_override = _mat_smooth
+			# Build the funnel as a thin cone surface via cylinder mesh
+			# with different top/bottom radii. Use CSGCombiner-less
+			# approach: just a tapered cylinder with hollow interior
+			# isn't easy with primitives, so use a CYLINDER + a
+			# bottom-cap-hole = tilted cone walls.
+			var funnel_mesh_inst := MeshInstance3D.new()
+			funnel_mesh_inst.name = "Pipe_funnel_mesh_%d" % idx
+			var cm := CylinderMesh.new()
+			cm.top_radius = funnel_top_r
+			cm.bottom_radius = visual_r
+			cm.height = funnel_h
+			cm.radial_segments = 24
+			cm.cap_top = false
+			cm.cap_bottom = false
+			funnel_mesh_inst.mesh = cm
+			var funnel_mat := TrackBlocks.std_mat_emit(glow, 0.15, 0.30, 0.15)
+			funnel_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			funnel_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+			funnel_mesh_inst.material_override = funnel_mat
+			funnel_mesh_inst.position = Vector3(entry_pos.x, funnel_y, entry_pos.z)
+			funnel_body.add_child(funnel_mesh_inst)
+			# Collision: build from the cylinder mesh as a trimesh so
+			# marbles hit the slanted inside wall and roll downward into
+			# the tube opening.
+			var funnel_coll := CollisionShape3D.new()
+			funnel_coll.name = "Pipe_funnel_shape_%d" % idx
+			funnel_coll.position = Vector3(entry_pos.x, funnel_y, entry_pos.z)
+			var funnel_trimesh: ConcavePolygonShape3D = cm.create_trimesh_shape()
+			funnel_trimesh.backface_collision = true
+			funnel_coll.shape = funnel_trimesh
+			funnel_body.add_child(funnel_coll)
+			add_child(funnel_body)
 
 # ─── LOWER PLINKO — receives tube exits, leads to finish ────────────────────
 

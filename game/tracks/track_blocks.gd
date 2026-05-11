@@ -540,7 +540,8 @@ static func build_ambient_particles(parent: Node, node_name: String,
 # overlays, etc.). Adds it to `parent` as part of the call.
 static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 		radius: float, mat: Material,
-		sample_spacing: float = 0.25, section_verts: int = 16) -> MeshInstance3D:
+		sample_spacing: float = 0.25, section_verts: int = 16,
+		inverted_winding: bool = false) -> MeshInstance3D:
 	if path.size() < 2:
 		push_warning("TrackBlocks.add_smooth_tube: path needs ≥2 points (%s)" % node_name)
 		return null
@@ -639,12 +640,24 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 			var i01: int = ring * sv + j2
 			var i10: int = (ring + 1) * sv + j
 			var i11: int = (ring + 1) * sv + j2
-			st.add_index(i00)
-			st.add_index(i10)
-			st.add_index(i11)
-			st.add_index(i00)
-			st.add_index(i11)
-			st.add_index(i01)
+			if inverted_winding:
+				# Swap second and third index per triangle -> reversed
+				# triangle winding -> normals point inward. Used for the
+				# inner shell of a two-sided tube (visible from inside
+				# with CULL_BACK lighting the inward-facing surface).
+				st.add_index(i00)
+				st.add_index(i11)
+				st.add_index(i10)
+				st.add_index(i00)
+				st.add_index(i01)
+				st.add_index(i11)
+			else:
+				st.add_index(i00)
+				st.add_index(i10)
+				st.add_index(i11)
+				st.add_index(i00)
+				st.add_index(i11)
+				st.add_index(i01)
 
 	st.generate_normals()
 	st.generate_tangents()
