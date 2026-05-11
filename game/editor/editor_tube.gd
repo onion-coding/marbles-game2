@@ -36,13 +36,19 @@ func build_visual() -> void:
 	pipe_mat.metallic = 0.10
 	pipe_mat.roughness = 0.30
 
-	# Outer shell.
+	# Inner shell sits at 78% of outer radius — a clearly visible 22%
+	# wall thickness so the tube reads as substantial, not paper-thin.
+	var inner_r: float = radius * 0.78
 	var outer: MeshInstance3D = TrackBlocks.add_smooth_tube(self,
 			"TubeOuter", waypoints, radius, pipe_mat, 0.25, section_verts)
-	# Inner shell with inverted winding so the inside is visible from
-	# inside the tube without lighting bands.
 	TrackBlocks.add_smooth_tube(self, "TubeInner", waypoints,
-			radius * 0.92, pipe_mat, 0.25, section_verts, true)
+			inner_r, pipe_mat, 0.25, section_verts, true)
+
+	# Annular end caps — flat rings connecting the outer and inner
+	# shells at the first and last waypoints. Without these the tube
+	# ends as a 1D ring (outer edge only, no visible thickness) and
+	# the wall reads as paper-thin from any angle that sees an opening.
+	_build_endpoint_annuli(radius, inner_r, pipe_mat)
 
 	# Collision: trimesh from the outer mesh, two-sided.
 	if outer != null and outer.mesh != null:
@@ -61,6 +67,67 @@ func build_visual() -> void:
 	# ends are visible on their own, and the orange waypoint markers
 	# (selection-only) tell the user where the path stops.
 	_build_markers()
+
+# Flat annular caps at each tube end. Each cap is the ring you'd see
+# if you cut the tube with a perpendicular plane: outer radius =
+# tube outer wall, inner radius = inner shell. Lets the user see the
+# wall thickness as a real visible rim instead of a 1D line.
+func _build_endpoint_annuli(outer_r: float, inner_r: float, mat: Material) -> void:
+	if waypoints.size() < 2:
+		return
+	for endpoint_idx in [0, waypoints.size() - 1]:
+		var p: Vector3 = waypoints[endpoint_idx]
+		# Tangent direction at the endpoint. The annulus' normal points
+		# OUTWARD from the tube (away from the next interior waypoint).
+		var t: Vector3
+		if endpoint_idx == 0:
+			t = (waypoints[0] as Vector3) - (waypoints[1] as Vector3)
+		else:
+			var n := waypoints.size()
+			t = (waypoints[n - 1] as Vector3) - (waypoints[n - 2] as Vector3)
+		if t.length() < 0.001:
+			continue
+		t = t.normalized()
+		# Build orthonormal basis with `right` and `up` perpendicular to
+		# `t`. Pick a stable reference axis not parallel to the tangent.
+		var ref := Vector3.UP
+		if absf(t.dot(ref)) > 0.95:
+			ref = Vector3.RIGHT
+		var right: Vector3 = t.cross(ref).normalized()
+		var up: Vector3 = right.cross(t).normalized()
+
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		var n_seg: int = section_verts
+		# Emit (outer, inner) vertex pairs around the ring.
+		for j in range(n_seg):
+			var theta: float = TAU * float(j) / float(n_seg)
+			var dx: float = cos(theta)
+			var dy: float = sin(theta)
+			var outer_v: Vector3 = p + right * (dx * outer_r) + up * (dy * outer_r)
+			var inner_v: Vector3 = p + right * (dx * inner_r) + up * (dy * inner_r)
+			st.set_uv(Vector2(float(j) / float(n_seg), 0.0))
+			st.add_vertex(outer_v)
+			st.set_uv(Vector2(float(j) / float(n_seg), 1.0))
+			st.add_vertex(inner_v)
+		# Triangulate the annulus. Winding chosen so the visible normal
+		# points along `t` (outward from the tube interior).
+		for j in range(n_seg):
+			var j2: int = (j + 1) % n_seg
+			var o0: int = j * 2
+			var i0: int = j * 2 + 1
+			var o1: int = j2 * 2
+			var i1: int = j2 * 2 + 1
+			st.add_index(o0); st.add_index(i0); st.add_index(o1)
+			st.add_index(o1); st.add_index(i0); st.add_index(i1)
+		st.generate_normals()
+		st.generate_tangents()
+		var mesh: ArrayMesh = st.commit()
+		var mi := MeshInstance3D.new()
+		mi.name = "EndAnnulus_%d" % endpoint_idx
+		mi.mesh = mesh
+		mi.material_override = mat
+		add_child(mi)
 
 # Open-ring markers (torus) at the FIRST and LAST waypoints, always
 # visible (not gated by selection). Tells the user where the tube
