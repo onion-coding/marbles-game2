@@ -103,79 +103,77 @@ const DIVIDER_THICK     := 0.2
 # Tubes finish at TUBE_BOT_Y = -15 (~23 % above the gap floor). Below
 # is an open free-fall zone (FREEFALL_TOP_Y..FREEFALL_BOT_Y) — TBD.
 const TUBE_DEFS: Array = [
-	# Tube 1 (FAR BACK plane, z≈-2.5) — enters left, sweeps full-width.
-	# Z is widely spread from the other tubes so they read as four
-	# clearly-separated depth layers rather than overlapping in the
-	# camera projection. Entry/exit at z=0 so the funnel deck delivers
-	# cleanly and the lower-plinko field receives at z=0.
+	# Z-layout INSIDE the frame walls (which sit at z = ±FIELD_DEPTH/2 = ±1.75).
+	# Tube radii 0.45 + 4 tubes at z=-1.4 / -0.5 / +0.5 / +1.4 gives ~0.9 m
+	# centre-to-centre between adjacent tubes and ~0.05 m edge-to-edge —
+	# enough visible space that they read as four separate depth layers,
+	# without any tube crossing the back/front frame walls.
+
+	# Tube 1 (BACK, z≈-1.4) — enters left, sweeps full-width.
 	{
 		"path": [
 			Vector3(-9.0,  19.0,  0.0),
-			Vector3(-9.0,  17.0, -2.5),
-			Vector3( 9.0,  12.0, -2.2),
-			Vector3(-9.0,   5.0, -2.6),
-			Vector3( 9.0,  -3.0, -2.3),
-			Vector3(-5.0, -11.0, -2.5),
-			Vector3(-5.0, -14.0, -1.0),
+			Vector3(-9.0,  17.0, -1.4),
+			Vector3( 9.0,  12.0, -1.2),
+			Vector3(-9.0,   5.0, -1.4),
+			Vector3( 9.0,  -3.0, -1.3),
+			Vector3(-5.0, -11.0, -1.4),
+			Vector3(-5.0, -14.0, -0.7),
 			Vector3(-5.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.75,
+		"visual_radius": 0.45,
 		"colour": Color(0.40, 0.85, 1.00, 0.55),     # cyan
 	},
-	# Tube 2 (BACK-MIDDLE, z≈-0.8) — enters centre, opposite-phase swings.
+	# Tube 2 (BACK-MIDDLE, z≈-0.5) — enters centre, opposite-phase swings.
 	{
 		"path": [
 			Vector3( 0.0,  19.0,  0.0),
-			Vector3( 0.0,  17.0, -0.8),
-			Vector3( 9.0,  12.0, -0.6),
-			Vector3(-9.0,   6.0, -1.0),
-			Vector3( 9.0,  -2.0, -0.7),
-			Vector3(-9.0,  -9.0, -0.9),
-			Vector3( 0.0, -14.0, -0.4),
+			Vector3( 0.0,  17.0, -0.5),
+			Vector3( 9.0,  12.0, -0.4),
+			Vector3(-9.0,   6.0, -0.5),
+			Vector3( 9.0,  -2.0, -0.4),
+			Vector3(-9.0,  -9.0, -0.5),
+			Vector3( 0.0, -14.0, -0.25),
 			Vector3( 0.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.75,
+		"visual_radius": 0.45,
 		"colour": Color(1.00, 0.85, 0.40, 0.55),     # warm gold
 	},
-	# Tube 3 (FRONT-MIDDLE, z≈+0.8) — mirror of Tube 1, opposite swing
-	# phase from Tube 2 so the four tubes never line up in (X,Y).
+	# Tube 3 (FRONT-MIDDLE, z≈+0.5) — mirror of Tube 1 in X-phase.
 	{
 		"path": [
 			Vector3( 9.0,  19.0,  0.0),
-			Vector3( 9.0,  17.0,  0.8),
-			Vector3(-9.0,  12.0,  0.6),
-			Vector3( 9.0,   6.0,  1.0),
-			Vector3(-9.0,  -2.0,  0.7),
-			Vector3( 9.0,  -9.0,  0.9),
-			Vector3( 5.0, -14.0,  0.4),
+			Vector3( 9.0,  17.0,  0.5),
+			Vector3(-9.0,  12.0,  0.4),
+			Vector3( 9.0,   6.0,  0.5),
+			Vector3(-9.0,  -2.0,  0.4),
+			Vector3( 9.0,  -9.0,  0.5),
+			Vector3( 5.0, -14.0,  0.25),
 			Vector3( 5.0, -15.0,  0.0),
 		],
 		"speed": 11.0,
 		"entry_size": Vector3(1.7, 0.8, 2.9),
-		"visual_radius": 0.75,
+		"visual_radius": 0.45,
 		"colour": Color(1.00, 0.40, 0.95, 0.55),     # magenta
 	},
 	# Tube 4 — JACKPOT. Tiny entrance at x=+4.5 on the apex of the right
-	# funnel peak. Now at z≈+2.5 (FAR FRONT) — so when the four tubes
-	# cross in the X/Y plane they each occupy a distinct Z layer and
-	# the wide camera reads them as four parallel weaving paths instead
-	# of an interpenetrating tangle.
+	# funnel peak. Stays at z≈+1.4 (FRONT layer, opposite of T1).
 	{
 		"path": [
 			Vector3( 4.5,  19.0,  0.0),
-			Vector3( 4.5,  17.0,  2.5),
-			Vector3(-3.0,   2.0,  2.5),
-			Vector3(-3.0, -12.0,  2.5),
-			Vector3(-3.0, -14.0,  1.0),
+			Vector3( 4.5,  17.0,  1.4),
+			Vector3(-3.0,   2.0,  1.4),
+			Vector3(-3.0, -12.0,  1.4),
+			Vector3(-3.0, -14.0,  0.7),
 			Vector3(-3.0, -15.0,  0.0),
 		],
 		"speed": 20.0,
 		"entry_size": Vector3(0.5, 0.4, 0.6),
-		"visual_radius": 0.40,
+		"visual_radius": 0.32,
 		"colour": Color(0.55, 1.00, 0.55, 0.65),     # jackpot green
 	},
 ]
