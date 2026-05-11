@@ -44,6 +44,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		match mb.button_index:
 			MOUSE_BUTTON_RIGHT:
 				_orbiting = mb.pressed
+				if mb.pressed:
+					# Release UI focus when the user grabs the viewport
+					# so subsequent WASD keystrokes don't double-fire as
+					# text input into a focused SpinBox/LineEdit.
+					var focus_owner := get_viewport().gui_get_focus_owner()
+					if focus_owner != null:
+						focus_owner.release_focus()
 			MOUSE_BUTTON_MIDDLE:
 				_panning = mb.pressed
 			MOUSE_BUTTON_WHEEL_UP:
@@ -79,7 +86,11 @@ func _process(delta: float) -> void:
 	# Fly mode: WASD shifts _focus along the camera's local axes when RMB
 	# is held. RMB-held lets the user fly without orbiting at the same time
 	# (which would feel chaotic). E/Q raise/lower in world space.
-	if _orbiting:
+	# Defensive: also skip WASD if a UI Control has focus, even if RMB is
+	# held — the user can release RMB momentarily and the focus_owner
+	# state might lag a frame. Belt-and-braces guard against
+	# WASD-as-text-input bug.
+	if _orbiting and get_viewport().gui_get_focus_owner() == null:
 		var fly_local := Vector3.ZERO
 		if Input.is_key_pressed(KEY_W): fly_local.z -= 1.0
 		if Input.is_key_pressed(KEY_S): fly_local.z += 1.0

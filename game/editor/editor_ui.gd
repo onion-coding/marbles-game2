@@ -53,7 +53,7 @@ func _ready() -> void:
 	vbox.add_child(title)
 
 	var hint := Label.new()
-	hint.text = "RMB: orbit/fly · MMB: pan · Scroll: zoom\nESC: deselect · DEL: remove\nCtrl+C/V: copy/paste · Ctrl+D: duplicate\nCtrl+S/L: save/load"
+	hint.text = "RMB: orbit/fly · MMB: pan · Scroll: zoom\nLMB on selected: drag (0.1m snap, XZ only)\nArrows: nudge · Shift+Arrows: Y-axis\nTube draw: R/F raise/lower next point\nESC: cancel · DEL: remove\nCtrl+C/V/D: copy/paste/duplicate\nCtrl+S/L: save/load"
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.modulate = Color(1, 1, 1, 0.7)
 	vbox.add_child(hint)
@@ -150,6 +150,8 @@ func show_properties(obj) -> void:
 			_add_scalar_row(obj, key_s, float(val), bounds[0], bounds[1], bounds[2])
 		elif val is String:
 			_add_string_row(obj, key_s, String(val))
+		elif val is Array and key_s == "waypoints":
+			_add_waypoints_editor(obj, val as Array)
 
 # Heuristic slider ranges keyed on param name. Avoids handing the user a
 # slab capped at 10m when plinko's frame is 26m wide.
@@ -165,6 +167,95 @@ func _bounds_for(key: String) -> Array:
 	if key.contains("radius"):
 		return [0.05, 12.0, 0.05]
 	return [0.0, 20.0, 0.1]
+
+# Render the tube's waypoint list as a stack of X/Y/Z spinboxes with a
+# delete button per waypoint, plus an "Add Waypoint" button. Editing
+# any cell re-calls obj.apply_params() so the swept mesh rebuilds.
+func _add_waypoints_editor(obj, waypoints: Array) -> void:
+	var head := Label.new()
+	head.text = "Waypoints (%d)" % waypoints.size()
+	head.add_theme_font_size_override("font_size", 12)
+	_props_box.add_child(head)
+	for i in range(waypoints.size()):
+		var w = waypoints[i]
+		if not (w is Array) or (w as Array).size() < 3:
+			continue
+		_add_waypoint_row(obj, i, float(w[0]), float(w[1]), float(w[2]))
+	var add_btn := Button.new()
+	add_btn.text = "+ Add Waypoint"
+	add_btn.pressed.connect(func():
+		var p: Dictionary = obj.get_params()
+		var wps: Array = p.get("waypoints", []) as Array
+		# New waypoint: extend along +Z from the last one (or origin).
+		var last_x := 0.0
+		var last_y := 0.0
+		var last_z := 0.0
+		if wps.size() > 0:
+			var last = wps.back()
+			last_x = float(last[0])
+			last_y = float(last[1])
+			last_z = float(last[2]) + 2.0
+		wps.append([last_x, last_y, last_z])
+		p["waypoints"] = wps
+		obj.apply_params(p)
+		show_properties(obj)
+	)
+	_props_box.add_child(add_btn)
+
+func _add_waypoint_row(obj, idx: int, x: float, y: float, z: float) -> void:
+	var row := HBoxContainer.new()
+	var l := Label.new()
+	l.text = "wp %d" % idx
+	l.custom_minimum_size = Vector2(48, 0)
+	row.add_child(l)
+
+	var sb_x := _waypoint_spinbox(x)
+	var sb_y := _waypoint_spinbox(y)
+	var sb_z := _waypoint_spinbox(z)
+	row.add_child(sb_x)
+	row.add_child(sb_y)
+	row.add_child(sb_z)
+
+	sb_x.value_changed.connect(func(v): _set_waypoint_component(obj, idx, 0, v))
+	sb_y.value_changed.connect(func(v): _set_waypoint_component(obj, idx, 1, v))
+	sb_z.value_changed.connect(func(v): _set_waypoint_component(obj, idx, 2, v))
+
+	var del_btn := Button.new()
+	del_btn.text = "×"
+	del_btn.custom_minimum_size = Vector2(28, 0)
+	del_btn.pressed.connect(func():
+		var p: Dictionary = obj.get_params()
+		var wps: Array = (p.get("waypoints", []) as Array).duplicate()
+		if idx < wps.size():
+			wps.remove_at(idx)
+			p["waypoints"] = wps
+			obj.apply_params(p)
+			show_properties(obj)
+	)
+	row.add_child(del_btn)
+	_props_box.add_child(row)
+
+func _waypoint_spinbox(initial: float) -> SpinBox:
+	var sb := SpinBox.new()
+	sb.min_value = -100.0
+	sb.max_value =  100.0
+	sb.step = 0.1
+	sb.value = initial
+	sb.custom_minimum_size = Vector2(64, 0)
+	return sb
+
+func _set_waypoint_component(obj, idx: int, axis_idx: int, val: float) -> void:
+	var p: Dictionary = obj.get_params()
+	var wps: Array = (p.get("waypoints", []) as Array).duplicate()
+	if idx >= wps.size():
+		return
+	var w: Array = (wps[idx] as Array).duplicate()
+	if w.size() < 3:
+		return
+	w[axis_idx] = val
+	wps[idx] = w
+	p["waypoints"] = wps
+	obj.apply_params(p)
 
 func _add_string_row(obj, key: String, current: String) -> void:
 	var row := HBoxContainer.new()

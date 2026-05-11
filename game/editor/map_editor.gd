@@ -169,6 +169,18 @@ func _unhandled_input(event: InputEvent) -> void:
 						_finish_tube_placement()
 				KEY_DELETE, KEY_BACKSPACE:
 					_delete_selected()
+				KEY_R:
+					_nudge_tube_y(+1.0)
+				KEY_F:
+					_nudge_tube_y(-1.0)
+				KEY_UP:
+					_arrow_nudge(0.0, 0.0, -1.0, k.shift_pressed)
+				KEY_DOWN:
+					_arrow_nudge(0.0, 0.0, +1.0, k.shift_pressed)
+				KEY_LEFT:
+					_arrow_nudge(-1.0, 0.0, 0.0, k.shift_pressed)
+				KEY_RIGHT:
+					_arrow_nudge(+1.0, 0.0, 0.0, k.shift_pressed)
 				KEY_S:
 					if k.ctrl_pressed:
 						_on_save_requested()
@@ -309,6 +321,41 @@ func _cancel_tube_placement() -> void:
 		_tube_in_progress = null
 	_pending_add_type = ""
 	_ui.set_status("Tube placement cancelled.")
+
+# --- Keyboard nudging -----------------------------------------------
+
+# Move the selected object in world space by GRID_STEP increments,
+# Blender-style. Shift makes Up/Down nudge the Y axis instead of Z so
+# the user can build vertical layouts without leaving the keyboard.
+func _arrow_nudge(dx: float, _dy: float, dz: float, shift_pressed: bool) -> void:
+	if _selected == null:
+		return
+	# Skip nudge if any UI Control has focus — otherwise typing in a
+	# property field would accidentally move the object.
+	if get_viewport().gui_get_focus_owner() != null:
+		return
+	var v := Vector3(dx, 0.0, dz) * GRID_STEP
+	if shift_pressed:
+		# Swap Z component into Y when shift is held: Up = +Y, Down = -Y.
+		v = Vector3(0.0, -dz, 0.0) * GRID_STEP
+	_selected.position += v
+
+# Raise/lower the last waypoint of the in-progress tube. Useful for
+# building vertical paths — click to lay a horizontal segment, press R
+# to lift the end, click again for the next segment. The new height
+# carries forward as the default plane for the next click.
+func _nudge_tube_y(dy: float) -> void:
+	if _tube_in_progress == null:
+		return
+	if _tube_in_progress.waypoints.is_empty():
+		return
+	var last_idx: int = _tube_in_progress.waypoints.size() - 1
+	var wp: Vector3 = _tube_in_progress.waypoints[last_idx]
+	wp.y += dy
+	_tube_in_progress.waypoints[last_idx] = wp
+	_tube_in_progress.rebuild_visual()
+	_ui.set_status("Tube wp %d Y = %.1f. Click for next waypoint or ENTER to finish." %
+		[last_idx, _tube_in_progress.global_position.y + wp.y])
 
 # --- Object management ----------------------------------------------
 
