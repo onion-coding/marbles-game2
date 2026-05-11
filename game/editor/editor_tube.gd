@@ -45,13 +45,12 @@ func build_visual() -> void:
 	TrackBlocks.add_smooth_tube(self, "TubeInner", waypoints,
 			inner_r, pipe_mat, 0.25, section_verts, true)
 
-	# FLANGE rims at the first/last waypoints — a flat ring sticking
-	# OUT beyond the tube's outer wall (inner edge = tube outer wall,
-	# outer edge = tube wall + 0.2 m). Reads as a proper pipe-end
-	# fitting/border around the opening, instead of an internal
-	# annulus that's hidden by the tube body. The bore stays clear
-	# all the way through.
-	_build_endpoint_annuli(radius + 0.20, radius, pipe_mat)
+	# Wall-thickness rim at the first/last waypoints — a flat ring
+	# between the outer wall (radius) and the inner wall (inner_r),
+	# rendered double-sided so it's visible from BOTH the outside-the-
+	# tube view AND when looking into the entrance. User: 'more on
+	# the inside ... flipped'.
+	_build_endpoint_annuli(radius, inner_r, pipe_mat)
 
 	# Collision: trimesh from the outer mesh, two-sided.
 	if outer != null and outer.mesh != null:
@@ -129,7 +128,17 @@ func _build_endpoint_annuli(outer_r: float, inner_r: float, mat: Material) -> vo
 		var mi := MeshInstance3D.new()
 		mi.name = "EndAnnulus_%d" % endpoint_idx
 		mi.mesh = mesh
-		mi.material_override = mat
+		# Double-sided so the rim shows from BOTH the front of the
+		# entrance and from inside-the-tube view, regardless of which
+		# way the triangle winding ended up facing.
+		var rim_mat := StandardMaterial3D.new()
+		if mat is StandardMaterial3D:
+			var src := mat as StandardMaterial3D
+			rim_mat.albedo_color = src.albedo_color
+			rim_mat.metallic = src.metallic
+			rim_mat.roughness = src.roughness
+		rim_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		mi.material_override = rim_mat
 		add_child(mi)
 
 		# No disk over the bore — user wants the hole left clear; just
