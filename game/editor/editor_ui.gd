@@ -53,7 +53,7 @@ func _ready() -> void:
 	vbox.add_child(title)
 
 	var hint := Label.new()
-	hint.text = "RMB: orbit/fly  ·  MMB: pan  ·  Scroll: zoom\nESC: deselect  ·  DEL: remove"
+	hint.text = "RMB: orbit/fly · MMB: pan · Scroll: zoom\nESC: deselect · DEL: remove\nCtrl+C/V: copy/paste · Ctrl+D: duplicate\nCtrl+S/L: save/load"
 	hint.add_theme_font_size_override("font_size", 11)
 	hint.modulate = Color(1, 1, 1, 0.7)
 	vbox.add_child(hint)
@@ -77,18 +77,26 @@ func _ready() -> void:
 	palette_label.add_theme_font_size_override("font_size", 13)
 	vbox.add_child(palette_label)
 
-	var funnel_btn := Button.new()
-	funnel_btn.text = "+  Funnel"
-	funnel_btn.pressed.connect(func(): add_object_requested.emit("funnel"))
-	vbox.add_child(funnel_btn)
-
-	# Placeholder buttons for future Phase 2 types — disabled, surfaces
-	# what's coming so the user knows the editor's planned scope.
-	for type_name in ["Tube  (soon)", "Peg  (soon)", "Slab  (soon)", "Multiplier  (soon)"]:
+	# Object palette buttons. Each one primes that type for the next
+	# viewport click. The "Tube" type is still pending because polyline
+	# editing needs its own waypoint-drag UX (Phase 2.5).
+	var palette_types: Array = [
+		["funnel",     "+ Funnel"],
+		["peg",        "+ Peg"],
+		["slab",       "+ Slab"],
+		["multiplier", "+ Multiplier slot"],
+	]
+	for entry in palette_types:
+		var t: String = entry[0]
+		var label: String = entry[1]
 		var b := Button.new()
-		b.text = "+  " + type_name
-		b.disabled = true
+		b.text = label
+		b.pressed.connect(func(): add_object_requested.emit(t))
 		vbox.add_child(b)
+	var tube_btn := Button.new()
+	tube_btn.text = "+ Tube  (Phase 2.5)"
+	tube_btn.disabled = true
+	vbox.add_child(tube_btn)
 
 	vbox.add_child(HSeparator.new())
 
@@ -139,8 +147,44 @@ func show_properties(obj) -> void:
 	var params: Dictionary = obj.get_params()
 	for key in params.keys():
 		var val = params[key]
+		var key_s := String(key)
 		if val is float or val is int:
-			_add_scalar_row(obj, String(key), float(val), 0.0, 10.0, 0.05)
+			var bounds := _bounds_for(key_s)
+			_add_scalar_row(obj, key_s, float(val), bounds[0], bounds[1], bounds[2])
+		elif val is String:
+			_add_string_row(obj, key_s, String(val))
+
+# Heuristic slider ranges keyed on param name. Avoids handing the user a
+# slab capped at 10m when plinko's frame is 26m wide.
+func _bounds_for(key: String) -> Array:
+	if key.contains("multiplier"):
+		return [0.0, 30.0, 0.1]
+	if key.contains("tilt") or key.contains("deg") or key.contains("angle"):
+		return [-180.0, 180.0, 1.0]
+	if key.contains("size"):
+		return [0.05, 40.0, 0.1]
+	if key.contains("height"):
+		return [0.05, 30.0, 0.1]
+	if key.contains("radius"):
+		return [0.05, 12.0, 0.05]
+	return [0.0, 20.0, 0.1]
+
+func _add_string_row(obj, key: String, current: String) -> void:
+	var row := HBoxContainer.new()
+	var l := Label.new()
+	l.text = key
+	l.custom_minimum_size = Vector2(96, 0)
+	row.add_child(l)
+	var le := LineEdit.new()
+	le.text = current
+	le.custom_minimum_size = Vector2(140, 0)
+	le.text_changed.connect(func(v: String):
+		var p: Dictionary = obj.get_params()
+		p[key] = v
+		obj.apply_params(p)
+	)
+	row.add_child(le)
+	_props_box.add_child(row)
 
 func _add_scalar_row(obj, key: String, current: float, min_v: float, max_v: float, step: float) -> void:
 	var row := HBoxContainer.new()

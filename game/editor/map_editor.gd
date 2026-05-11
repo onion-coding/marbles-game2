@@ -30,6 +30,11 @@ var _objects: Array = []          # of EditorObject
 var _selected: EditorObject = null
 var _pending_add_type: String = ""
 
+# In-memory clipboard — holds the dict from the most recent Ctrl+C.
+# Persistence across editor sessions would need a separate file slot;
+# not in Phase 2 scope.
+var _clipboard: Dictionary = {}
+
 func _ready() -> void:
 	_build_environment()
 	_build_ground()
@@ -148,6 +153,17 @@ func _unhandled_input(event: InputEvent) -> void:
 				KEY_L:
 					if k.ctrl_pressed:
 						_on_load_requested()
+				KEY_C:
+					if k.ctrl_pressed:
+						_copy_selected()
+				KEY_V:
+					if k.ctrl_pressed:
+						_paste_clipboard()
+				KEY_D:
+					if k.ctrl_pressed:
+						# Duplicate-in-place: copy + paste in one keystroke.
+						_copy_selected()
+						_paste_clipboard()
 
 func _handle_left_click(screen_pos: Vector2) -> void:
 	var from := _camera.project_ray_origin(screen_pos)
@@ -182,13 +198,10 @@ func _handle_left_click(screen_pos: Vector2) -> void:
 # --- Object management ----------------------------------------------
 
 func _add_object(type: String, pos: Vector3) -> EditorObject:
-	var obj: EditorObject = null
-	match type:
-		"funnel":
-			obj = EditorFunnel.new()
-		_:
-			push_warning("[MapEditor] unknown object type: %s" % type)
-			return null
+	var obj := _instantiate_type(type)
+	if obj == null:
+		push_warning("[MapEditor] unknown object type: %s" % type)
+		return null
 	obj.position = pos
 	add_child(obj)
 	obj.build_visual()
@@ -196,6 +209,48 @@ func _add_object(type: String, pos: Vector3) -> EditorObject:
 	_select(obj)
 	_ui.set_status("Placed %s." % type)
 	return obj
+
+func _instantiate_type(type: String) -> EditorObject:
+	# Central factory so save/load, copy/paste, and the palette button
+	# all agree on which class corresponds to which JSON tag.
+	match type:
+		"funnel":
+			return EditorFunnel.new()
+		"peg":
+			return EditorPeg.new()
+		"slab":
+			return EditorSlab.new()
+		"multiplier":
+			return EditorMultiplier.new()
+		_:
+			return null
+
+# --- Clipboard -------------------------------------------------------
+
+func _copy_selected() -> void:
+	if _selected == null:
+		_ui.set_status("Nothing to copy.")
+		return
+	_clipboard = _selected.to_dict()
+	_ui.set_status("Copied %s." % _selected.get_object_type())
+
+func _paste_clipboard() -> void:
+	if _clipboard.is_empty():
+		_ui.set_status("Clipboard is empty.")
+		return
+	var type := String(_clipboard.get("type", ""))
+	var obj := _instantiate_type(type)
+	if obj == null:
+		_ui.set_status("Paste failed — unknown type %s." % type)
+		return
+	obj.from_dict(_clipboard)
+	# Offset slightly so the paste doesn't z-fight with the original.
+	obj.position += Vector3(0.6, 0.0, 0.6)
+	add_child(obj)
+	obj.build_visual()
+	_objects.append(obj)
+	_select(obj)
+	_ui.set_status("Pasted %s." % type)
 
 func _select(obj) -> void:
 	if _selected == obj:
@@ -270,13 +325,10 @@ func _on_load_requested() -> void:
 			if typeof(entry) != TYPE_DICTIONARY:
 				continue
 			var t := String(entry.get("type", ""))
-			var obj: EditorObject = null
-			match t:
-				"funnel":
-					obj = EditorFunnel.new()
-				_:
-					push_warning("[MapEditor] load: unknown type %s" % t)
-					continue
+			var obj := _instantiate_type(t)
+			if obj == null:
+				push_warning("[MapEditor] load: unknown type %s" % t)
+				continue
 			obj.from_dict(entry)
 			add_child(obj)
 			obj.build_visual()
