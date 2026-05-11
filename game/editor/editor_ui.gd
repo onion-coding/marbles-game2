@@ -15,7 +15,7 @@ signal add_object_requested(type: String)
 signal save_requested
 signal load_requested
 
-const PANEL_WIDTH := 320
+const PANEL_WIDTH := 360
 
 var _palette: Panel
 var _props_box: VBoxContainer
@@ -51,16 +51,29 @@ func _ready() -> void:
 	_palette.offset_bottom = -8
 	add_child(_palette)
 
+	# Scroll container so a tube with many waypoints (or any long
+	# property list) doesn't overflow the screen — user can scroll the
+	# whole panel content vertically. Horizontal scrolling is disabled
+	# so child controls respect the panel width.
+	var scroll := ScrollContainer.new()
+	scroll.anchor_left = 0.0
+	scroll.anchor_right = 1.0
+	scroll.anchor_top = 0.0
+	scroll.anchor_bottom = 1.0
+	scroll.offset_left = 8
+	scroll.offset_right = -8
+	scroll.offset_top = 8
+	scroll.offset_bottom = -8
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_palette.add_child(scroll)
+
 	var vbox := VBoxContainer.new()
-	vbox.anchor_left = 0.0
-	vbox.anchor_right = 1.0
-	vbox.anchor_top = 0.0
-	vbox.anchor_bottom = 1.0
-	vbox.offset_left = 10
-	vbox.offset_right = -10
-	vbox.offset_top = 10
-	vbox.offset_bottom = -10
-	_palette.add_child(vbox)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Custom min width so the vbox always fills the scroll viewport
+	# (otherwise it would shrink to its content's natural width and
+	# leave gaps on the right).
+	vbox.custom_minimum_size = Vector2(PANEL_WIDTH - 32, 0)
+	scroll.add_child(vbox)
 
 	var title := Label.new()
 	title.text = "MAP EDITOR"

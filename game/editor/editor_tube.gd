@@ -55,7 +55,11 @@ func build_visual() -> void:
 		body.add_child(coll)
 		add_child(body)
 
-	_build_endpoint_caps()
+	# Endpoint rings (torus markers at first/last waypoints) removed —
+	# they didn't align cleanly with the tube tangent and read as
+	# crumpled ribbons instead of clean rims. The swept mesh's open
+	# ends are visible on their own, and the orange waypoint markers
+	# (selection-only) tell the user where the path stops.
 	_build_markers()
 
 # Open-ring markers (torus) at the FIRST and LAST waypoints, always
