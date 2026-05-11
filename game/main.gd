@@ -470,15 +470,16 @@ func _start_race(spec: Dictionary) -> void:
 
 		# Start auto-cut scheduling once everything is wired.
 		_director.start_directing()
-		# TEMP --demo: strip per-marble trail particles. They were the
-		# "random particles around the balls" the user flagged; they
-		# obscure the glass shader and aren't part of the marble itself.
-		# Director default is AUTO cycling (wide/leader/finish), no pin.
+		# TEMP --demo: strip per-marble trail particles + pin camera to
+		# FREE mode so the user can fly around and inspect the geometry
+		# themselves. Auto-cycling broadcast cuts make it impossible to
+		# investigate specific spots ("show me the flying blocks").
 		if _demo_mode:
 			for m in marbles:
 				var t := m.get_node_or_null("Trail")
 				if t != null:
 					t.queue_free()
+			_director.set_mode("free")
 
 		# Casino broadcast streamers, if --casino-video/--casino-meta CLI
 		# flags were passed. No-op when not in broadcast mode.
@@ -998,10 +999,10 @@ func _process(delta: float) -> void:
 		# TEMP screenshot capture (revert with the rest of TEMP perf code).
 		# Once racing, save one PNG every 2s so the user can review without
 		# watching the window live.
-		# Screenshots disabled by default — synchronous PNG save blocks the
-		# main thread for ~250ms each. Flip `false` to `true` to re-enable
-		# (used during the plinko smooth-tube verification, then disabled).
-		if false and _live_racing and _perf_shot_count < 8:
+		# Screenshots disabled: synchronous PNG save blocks the main thread
+		# ~150-250ms per shot, causing visible stutter the user could see.
+		# Flip the condition to `if true and ...` for verification runs.
+		if false and _live_racing and _perf_shot_count < 10:
 			# Cycle camera mode between leader-follow (close) and wide so the
 			# user gets both close-up and overall framings of the same race.
 			if _director != null:

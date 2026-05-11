@@ -217,7 +217,18 @@ func _ready() -> void:
 	_build_tubes()
 	_build_section_lower_plinko()
 	_build_finish_and_catchment()
-	_build_decorations()
+	# Skip decorations in --demo mode: the M11 sky theme places billboards,
+	# bleachers, and neon arrays at y=60-70 and y=2 (the "flying blocks" a
+	# demo viewer sees). Real gameplay wants them; visual demos don't.
+	if not _is_demo_mode():
+		_build_decorations()
+
+# Read --demo from CLI args; matches main.gd._demo_mode wiring.
+func _is_demo_mode() -> bool:
+	for a in OS.get_cmdline_user_args():
+		if a == "--demo":
+			return true
+	return false
 
 func _init_physics_materials() -> void:
 	_mat_floor = PhysicsMaterial.new()
@@ -481,6 +492,10 @@ func _build_section3_multipliers() -> void:
 		var col: Color = _slot_colour_for(mult)
 		var mat := TrackBlocks.std_mat_emit(col, 0.0, 0.40, 0.50)
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		# Stable depth write so marbles passing through the slot zone don't
+		# flicker against the transparent box surface (same fix applied to
+		# the smooth tubes for the same reason).
+		mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
 		var size := Vector3(sw_actual - 0.4, slot_h - 0.6, FIELD_DEPTH - 0.6)
 		var zone := TrackBlocks.add_pickup_zone(self,
 			"Slot_%d_%sx" % [i + 1, _mult_label(mult)],
@@ -660,6 +675,13 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	var pipe_mat := TrackBlocks.std_mat_emit(glow, 0.20, 0.30, 1.4)
 	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 2.5)
+
+	# Stabilise depth writes so a marble alpha-blending against the tube
+	# from the inside doesn't flicker as it moves: forcing depth-write
+	# on a transparent surface costs the painter's algorithm (z-order
+	# inversions when overlapping translucent objects are present, but
+	# we don't have any here) and gains a stable per-pixel composite.
+	pipe_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
 
 	# Single smooth swept tube — replaces the legacy per-segment cylinder
 	# stack. The polyline's sharp interior bends are rounded out by the

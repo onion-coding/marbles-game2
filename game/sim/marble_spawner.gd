@@ -26,6 +26,14 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 	# feel on Plinko.
 	marble.mass = 1.0
 	marble.continuous_cd = true
+	# Disable Jolt's auto-sleep on marbles. The default sleep behaviour
+	# puts a body to sleep when its linear+angular velocity falls below
+	# a threshold for ~0.5s. That bites in plinko when a marble lands on
+	# top of a horizontal peg cylinder with near-zero velocity — it
+	# balances, sleeps, and stays stuck forever. With sleep off, floating-
+	# point noise + ongoing gravity integration always nudges balanced
+	# marbles off within a tick or two.
+	marble.can_sleep = false
 
 	var mesh_inst := MeshInstance3D.new()
 	var sphere := SphereMesh.new()
