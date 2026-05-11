@@ -139,12 +139,16 @@ func _build_endpoint_annuli(outer_r: float, inner_r: float, mat: Material) -> vo
 		# pass through the disk without touching anything.
 		_build_endpoint_disk(p, t, right, up, inner_r, mat, endpoint_idx)
 
-func _build_endpoint_disk(centre: Vector3, outward: Vector3,
+func _build_endpoint_disk(centre: Vector3, _outward: Vector3,
 		right: Vector3, up: Vector3, r: float, mat: Material, idx: int) -> void:
+	# Double-sided disk: visible from EITHER side so the user never sees
+	# the open bore through the cap regardless of camera angle. No
+	# winding sensitivity. Material below sets cull_mode = CULL_DISABLED.
+	# No collider — marbles still pass through the geometry without
+	# physical interaction.
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var n_seg: int = section_verts
-	# Centre vertex (index 0) + rim vertices (1..n_seg).
 	st.set_uv(Vector2(0.5, 0.5))
 	st.add_vertex(centre)
 	for j in range(n_seg):
@@ -152,25 +156,29 @@ func _build_endpoint_disk(centre: Vector3, outward: Vector3,
 		var p: Vector3 = centre + right * (cos(theta) * r) + up * (sin(theta) * r)
 		st.set_uv(Vector2(0.5 + cos(theta) * 0.5, 0.5 + sin(theta) * 0.5))
 		st.add_vertex(p)
-	# Triangle fan. Wind the triangles so the front face points along
-	# `outward` (= away from the tube interior). With CULL_BACK on the
-	# material, this disk is only visible from outside the tube.
 	for j in range(n_seg):
 		var j2: int = (j + 1) % n_seg
-		# Front-face vs back-face is determined by cross(b-a, c-a).
-		# We need (a=centre, b=rim_j2, c=rim_j) so cross is along
-		# `outward`. Test against the sign of dot(outward, right.cross(up)).
-		if right.cross(up).dot(outward) > 0.0:
-			st.add_index(0); st.add_index(j2 + 1); st.add_index(j + 1)
-		else:
-			st.add_index(0); st.add_index(j + 1); st.add_index(j2 + 1)
+		st.add_index(0); st.add_index(j + 1); st.add_index(j2 + 1)
 	st.generate_normals()
 	st.generate_tangents()
 	var mesh: ArrayMesh = st.commit()
+
+	# Disk-specific material with two-sided rendering so it's visible
+	# from both sides. The tube wall material is one-sided (cull_back)
+	# to avoid the lighting bands we'd get from CULL_DISABLED on a
+	# curved surface; flat disks don't have that problem.
+	var disk_mat := StandardMaterial3D.new()
+	if mat is StandardMaterial3D:
+		var src := mat as StandardMaterial3D
+		disk_mat.albedo_color = src.albedo_color
+		disk_mat.metallic = src.metallic
+		disk_mat.roughness = src.roughness
+	disk_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
 	var mi := MeshInstance3D.new()
 	mi.name = "EndDisk_%d" % idx
 	mi.mesh = mesh
-	mi.material_override = mat
+	mi.material_override = disk_mat
 	add_child(mi)
 
 # Open-ring markers (torus) at the FIRST and LAST waypoints, always
