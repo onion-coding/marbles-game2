@@ -15,11 +15,14 @@ extends EditorObject
 
 var waypoints: Array = []                # Array[Vector3] local
 var roll_degrees: Array = []             # Array[float], one per waypoint
-var radius: float = 0.9
+var radius: float = 0.6                  # matches EditorTube default
 var arc_sweep_deg: float = 210.0         # how many degrees of the cross-section
                                           # are SOLID (the rest is the open top)
 var section_verts: int = 18
 var color: Color = Color(0.55, 0.85, 1.00, 1.00)
+# Inner-wall radius ratio matches the tube's 78% — same visible wall
+# thickness. Set via radius * INNER_RATIO at build time.
+const INNER_RATIO := 0.78
 
 const MARKER_RADIUS := 0.18
 
@@ -42,7 +45,8 @@ func build_visual() -> void:
 	pipe_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var mesh_inst: MeshInstance3D = TrackBlocks.add_smooth_trough(self,
 			"TroughMesh", waypoints, roll_degrees, radius,
-			arc_sweep_deg, pipe_mat, 0.25, section_verts)
+			arc_sweep_deg, pipe_mat, 0.25, section_verts,
+			radius * INNER_RATIO)
 	if mesh_inst != null and mesh_inst.mesh != null:
 		var body := StaticBody3D.new()
 		body.name = "TroughBody"

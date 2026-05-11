@@ -635,6 +635,12 @@ func _do_undo() -> void:
 			_cancel_tube_placement()
 			return
 		_tube_in_progress.waypoints.pop_back()
+		# Keep roll_degrees length-aligned with waypoints (both Tube and
+		# Trough carry per-waypoint roll now — leaving an orphan would
+		# persist to disk through get_params).
+		var rolls_in_progress: Array = _tube_in_progress.get("roll_degrees")
+		if rolls_in_progress != null and rolls_in_progress.size() > _tube_in_progress.waypoints.size():
+			rolls_in_progress.pop_back()
 		_tube_in_progress.rebuild_visual()
 		_ui.set_status("Tube wp removed (%d remaining). ENTER to finish."
 				% _tube_in_progress.waypoints.size())

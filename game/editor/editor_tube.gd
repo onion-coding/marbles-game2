@@ -13,6 +13,7 @@ extends EditorObject
 # directly in the viewport).
 
 var waypoints: Array = []                       # Array[Vector3] LOCAL
+var roll_degrees: Array = []                    # Array[float], one per waypoint
 var radius: float = 0.6
 var section_verts: int = 18
 var color: Color = Color(0.55, 0.85, 1.00, 1.00)
@@ -41,16 +42,18 @@ func build_visual() -> void:
 	# wall thickness so the tube reads as substantial.
 	var inner_r: float = radius * 0.78
 	var outer: MeshInstance3D = TrackBlocks.add_smooth_tube(self,
-			"TubeOuter", waypoints, radius, pipe_mat, 0.25, section_verts)
+			"TubeOuter", waypoints, radius, pipe_mat, 0.25, section_verts,
+			false, -1.0, roll_degrees)
 	# Inner shell (inverted winding so the inside lights correctly).
 	TrackBlocks.add_smooth_tube(self, "TubeInner", waypoints,
-			inner_r, pipe_mat, 0.25, section_verts, true)
+			inner_r, pipe_mat, 0.25, section_verts, true, -1.0, roll_degrees)
 	# End caps in a SEPARATE mesh with CULL_DISABLED material so they're
 	# visible from any side regardless of normal direction. Uses the
 	# same Curve3D / parallel-transport math as add_smooth_tube so the
-	# cap rings align with the swept mesh's terminal rings.
+	# cap rings align with the swept mesh's terminal rings — passing
+	# roll_degrees makes the tilt-aware path match between wall and cap.
 	TrackBlocks.add_smooth_tube_caps(self, "TubeCaps", waypoints,
-			radius, inner_r, pipe_mat, 0.25, section_verts)
+			radius, inner_r, pipe_mat, 0.25, section_verts, roll_degrees)
 
 	# Collision: trimesh from the outer mesh, two-sided.
 	if outer != null and outer.mesh != null:
@@ -230,9 +233,11 @@ func set_selected(sel: bool) -> void:
 			c.visible = sel
 
 # Append a NEW waypoint (in local space, relative to obj.position).
-# Used by MapEditor during the multi-click placement flow.
+# Used by MapEditor during the multi-click placement flow. Roll defaults
+# to 0 each click — user tweaks afterwards via the property panel.
 func append_waypoint_local(local_pos: Vector3) -> void:
 	waypoints.append(local_pos)
+	roll_degrees.append(0.0)
 	rebuild_visual()
 
 func append_waypoint_world(world_pos: Vector3) -> void:
@@ -243,11 +248,15 @@ func get_params() -> Dictionary:
 	var wps: Array = []
 	for w in waypoints:
 		wps.append([float(w.x), float(w.y), float(w.z)])
+	var rolls: Array = []
+	for r in roll_degrees:
+		rolls.append(float(r))
 	return {
 		"radius": radius,
 		"section_verts": section_verts,
 		"color": [color.r, color.g, color.b, color.a],
 		"waypoints": wps,
+		"roll_degrees": rolls,
 	}
 
 func apply_params(d: Dictionary) -> void:
@@ -262,4 +271,16 @@ func apply_params(d: Dictionary) -> void:
 		for entry in w:
 			if entry is Array and entry.size() >= 3:
 				waypoints.append(Vector3(float(entry[0]), float(entry[1]), float(entry[2])))
+	var r_arr = d.get("roll_degrees", null)
+	if r_arr is Array:
+		roll_degrees.clear()
+		for entry in r_arr:
+			roll_degrees.append(float(entry))
+	# Keep roll_degrees length-aligned with waypoints (new wp gets 0,
+	# trimmed wp drops its roll). Lets old saves missing the field load
+	# cleanly with zero roll across the polyline.
+	while roll_degrees.size() < waypoints.size():
+		roll_degrees.append(0.0)
+	while roll_degrees.size() > waypoints.size():
+		roll_degrees.pop_back()
 	rebuild_visual()

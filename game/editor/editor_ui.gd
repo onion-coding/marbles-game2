@@ -229,6 +229,11 @@ func show_properties(obj) -> void:
 func _bounds_for(key: String) -> Array:
 	if key.contains("multiplier"):
 		return [0.0, 30.0, 0.1]
+	if key.contains("sweep"):
+		# Arc sweep for trough cross-section. Range goes above 180 so
+		# the user can create a near-closed channel (e.g. 280°) where
+		# the marble is almost enclosed except for a narrow top slit.
+		return [30.0, 330.0, 5.0]
 	if key.contains("tilt") or key.contains("deg") or key.contains("angle"):
 		return [-180.0, 180.0, 1.0]
 	if key.contains("size"):

@@ -542,10 +542,22 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 		radius: float, mat: Material,
 		sample_spacing: float = 0.25, section_verts: int = 16,
 		inverted_winding: bool = false,
-		cap_inner_radius: float = -1.0) -> MeshInstance3D:
+		cap_inner_radius: float = -1.0,
+		roll_degrees: Array = []) -> MeshInstance3D:
 	if path.size() < 2:
 		push_warning("TrackBlocks.add_smooth_tube: path needs ≥2 points (%s)" % node_name)
 		return null
+
+	# Roll path is opt-in: empty (or all-zero) roll_degrees keeps the
+	# original parallel-transport behaviour so existing non-tilted
+	# callers (plinko, untilted editor tubes) render bit-for-bit the
+	# same as before. Any non-zero roll flips to Curve3D.tilt-driven
+	# baked-up frames so the cross-section rotates around the tangent.
+	var has_roll: bool = false
+	for r in roll_degrees:
+		if absf(float(r)) > 0.0001:
+			has_roll = true
+			break
 
 	# 1. Polyline → Curve3D with Catmull-Rom handles.
 	var curve := Curve3D.new()
@@ -560,6 +572,11 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 		# Endpoints taper because prev/next collapse to p there.
 		var tangent: Vector3 = (next - prev) * (1.0 / 6.0)
 		curve.add_point(p, -tangent, tangent)
+		if has_roll:
+			var tilt_deg: float = 0.0
+			if i < roll_degrees.size():
+				tilt_deg = float(roll_degrees[i])
+			curve.set_point_tilt(i, deg_to_rad(tilt_deg))
 
 	# 2. Uniform-arc-length sampling.
 	var length: float = curve.get_baked_length()
@@ -584,27 +601,46 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 			t = samples[i + 1] - samples[i]
 		tangents[i] = t.normalized()
 
-	# 4. Parallel-transport frames.
+	# 4. Frames. When per-waypoint roll is in use, derive (right, up)
+	#    from the curve's tilt-aware baked up vector (matches the trough
+	#    helper so tilted tubes and tilted troughs bank consistently).
+	#    Otherwise fall back to parallel-transport for minimum twist on
+	#    non-rolled paths (preserves bit-identical output for existing
+	#    callers like the plinko pipes).
 	var rights: Array[Vector3] = []
 	var ups: Array[Vector3] = []
 	rights.resize(n_rings)
 	ups.resize(n_rings)
-	var seed_ref := Vector3.UP
-	if absf(tangents[0].dot(seed_ref)) > 0.95:
-		seed_ref = Vector3.RIGHT
-	var r0 := (seed_ref - tangents[0] * seed_ref.dot(tangents[0])).normalized()
-	var u0 := tangents[0].cross(r0).normalized()
-	rights[0] = r0
-	ups[0] = u0
-	for i in range(1, n_rings):
-		var t := tangents[i]
-		var r := rights[i - 1] - t * rights[i - 1].dot(t)
-		if r.length() < 0.001:
-			r = Vector3.RIGHT - t * Vector3.RIGHT.dot(t)
-		r = r.normalized()
-		var u := t.cross(r).normalized()
-		rights[i] = r
-		ups[i] = u
+	if has_roll:
+		for i in range(n_rings):
+			var s_i: float = (float(i) / float(n_rings - 1)) * length
+			var u_b: Vector3 = curve.sample_baked_up_vector(s_i, true)
+			var t_i: Vector3 = tangents[i]
+			var u_o: Vector3 = u_b - t_i * u_b.dot(t_i)
+			if u_o.length() < 0.001:
+				u_o = Vector3.UP - t_i * Vector3.UP.dot(t_i)
+				if u_o.length() < 0.001:
+					u_o = Vector3.RIGHT
+			u_o = u_o.normalized()
+			ups[i] = u_o
+			rights[i] = t_i.cross(u_o).normalized()
+	else:
+		var seed_ref := Vector3.UP
+		if absf(tangents[0].dot(seed_ref)) > 0.95:
+			seed_ref = Vector3.RIGHT
+		var r0 := (seed_ref - tangents[0] * seed_ref.dot(tangents[0])).normalized()
+		var u0 := tangents[0].cross(r0).normalized()
+		rights[0] = r0
+		ups[0] = u0
+		for i in range(1, n_rings):
+			var t := tangents[i]
+			var r := rights[i - 1] - t * rights[i - 1].dot(t)
+			if r.length() < 0.001:
+				r = Vector3.RIGHT - t * Vector3.RIGHT.dot(t)
+			r = r.normalized()
+			var u := t.cross(r).normalized()
+			rights[i] = r
+			ups[i] = u
 
 	# 5. Full-circle cross-section.
 	var sv: int = max(section_verts, 6)
@@ -699,7 +735,8 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 		roll_degrees: Array, radius: float, arc_sweep_deg: float,
 		mat: Material,
-		sample_spacing: float = 0.25, section_verts: int = 18) -> MeshInstance3D:
+		sample_spacing: float = 0.25, section_verts: int = 18,
+		inner_radius: float = -1.0) -> MeshInstance3D:
 	if path.size() < 2:
 		push_warning("TrackBlocks.add_smooth_trough: path needs ≥2 points (%s)" % node_name)
 		return null
@@ -786,7 +823,17 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 		var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
 		profile[j] = Vector2(cos(theta), sin(theta)) * radius
 
-	# 6. Emit indexed vertices, ring-major.
+	# 6. Inner profile if walled. Same angular sweep, smaller radius.
+	var has_inner: bool = inner_radius > 0.0 and inner_radius < radius
+	var profile_inner: Array[Vector2] = []
+	if has_inner:
+		profile_inner.resize(n_arc)
+		for j in range(n_arc):
+			var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
+			profile_inner[j] = Vector2(cos(theta), sin(theta)) * inner_radius
+
+	# 7. Emit indexed vertices, ring-major. Outer arc first (indices
+	#    0 .. n_rings*n_arc - 1), then inner arc if walled.
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for ring in range(n_rings):
@@ -802,10 +849,22 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 			)
 			st.set_uv(uv)
 			st.add_vertex(v)
+	var inner_offset: int = n_rings * n_arc
+	if has_inner:
+		for ring in range(n_rings):
+			var p := samples[ring]
+			var rr := rights[ring]
+			var uu := ups[ring]
+			for j in range(n_arc):
+				var pr := profile_inner[j]
+				var v := p + rr * pr.x + uu * pr.y
+				st.set_uv(Vector2(
+					float(j) / float(n_arc - 1),
+					float(ring) / float(n_rings - 1)
+				))
+				st.add_vertex(v)
 
-	# 7. Triangulate. The arc is NOT closed (open at the top) so we
-	#    don't wrap j to 0; indices run 0..n_arc-1 per ring with
-	#    quads only between adjacent js.
+	# 8. Outer arc triangulation. Arc is OPEN (no j wrap).
 	for ring in range(n_rings - 1):
 		for j in range(n_arc - 1):
 			var i00: int = ring * n_arc + j
@@ -814,6 +873,57 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 			var i11: int = (ring + 1) * n_arc + j + 1
 			st.add_index(i00); st.add_index(i10); st.add_index(i11)
 			st.add_index(i00); st.add_index(i11); st.add_index(i01)
+
+	if has_inner:
+		# Inner arc triangulation with REVERSED winding so the visible
+		# surface faces inward (the side a marble inside the channel
+		# would see).
+		for ring in range(n_rings - 1):
+			for j in range(n_arc - 1):
+				var i00: int = inner_offset + ring * n_arc + j
+				var i01: int = inner_offset + ring * n_arc + j + 1
+				var i10: int = inner_offset + (ring + 1) * n_arc + j
+				var i11: int = inner_offset + (ring + 1) * n_arc + j + 1
+				st.add_index(i00); st.add_index(i11); st.add_index(i10)
+				st.add_index(i00); st.add_index(i01); st.add_index(i11)
+
+		# Lip strips along the two OPEN edges of the arc (j=0 and
+		# j=n_arc-1). Each lip is a thin band connecting the outer
+		# arc edge to the inner arc edge, running along the path.
+		for ring in range(n_rings - 1):
+			var oL0: int = ring * n_arc + 0
+			var oL1: int = (ring + 1) * n_arc + 0
+			var iL0: int = inner_offset + ring * n_arc + 0
+			var iL1: int = inner_offset + (ring + 1) * n_arc + 0
+			st.add_index(oL0); st.add_index(iL0); st.add_index(iL1)
+			st.add_index(oL0); st.add_index(iL1); st.add_index(oL1)
+			var jr: int = n_arc - 1
+			var oR0: int = ring * n_arc + jr
+			var oR1: int = (ring + 1) * n_arc + jr
+			var iR0: int = inner_offset + ring * n_arc + jr
+			var iR1: int = inner_offset + (ring + 1) * n_arc + jr
+			st.add_index(oR0); st.add_index(iR1); st.add_index(iR0)
+			st.add_index(oR0); st.add_index(oR1); st.add_index(iR1)
+
+		# End caps at ring 0 and ring n_rings-1. Each cap is a thin
+		# annular band (the visible U-shape cross-section) closing
+		# the trough so the wall thickness reads as a real edge.
+		for j in range(n_arc - 1):
+			# Start cap (ring 0). Winding chosen so normal points
+			# OUTWARD along -tangent at the start.
+			var o0: int = 0 * n_arc + j
+			var o1: int = 0 * n_arc + j + 1
+			var i0: int = inner_offset + 0 * n_arc + j
+			var i1: int = inner_offset + 0 * n_arc + j + 1
+			st.add_index(o0); st.add_index(i1); st.add_index(o1)
+			st.add_index(o0); st.add_index(i0); st.add_index(i1)
+			# End cap (ring n-1). Opposite winding for +tangent normal.
+			var eo0: int = (n_rings - 1) * n_arc + j
+			var eo1: int = (n_rings - 1) * n_arc + j + 1
+			var ei0: int = inner_offset + (n_rings - 1) * n_arc + j
+			var ei1: int = inner_offset + (n_rings - 1) * n_arc + j + 1
+			st.add_index(eo0); st.add_index(eo1); st.add_index(ei1)
+			st.add_index(eo0); st.add_index(ei1); st.add_index(ei0)
 
 	st.generate_normals()
 	st.generate_tangents()
@@ -839,13 +949,23 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 # Cap is rendered double-sided so no winding direction maths.
 static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 		outer_radius: float, inner_radius: float, mat: Material,
-		sample_spacing: float = 0.25, section_verts: int = 16) -> MeshInstance3D:
+		sample_spacing: float = 0.25, section_verts: int = 16,
+		roll_degrees: Array = []) -> MeshInstance3D:
 	if path.size() < 2:
 		return null
 
-	# Replicate add_smooth_tube's Curve3D + sampling + parallel-transport
-	# frame computation so the cap rings have the exact same orientation
-	# as the swept mesh's terminal rings.
+	var has_roll: bool = false
+	for r in roll_degrees:
+		if absf(float(r)) > 0.0001:
+			has_roll = true
+			break
+
+	# Replicate add_smooth_tube's Curve3D + sampling + frame computation
+	# so the cap rings have the exact same orientation as the swept
+	# mesh's terminal rings. Tilt is mirrored when roll is requested so
+	# the cap's right/up axes match the tilted tube end ring exactly —
+	# without this, a tilted tube's cap edge would shear away from the
+	# wall at the seam.
 	var curve := Curve3D.new()
 	curve.bake_interval = max(sample_spacing * 0.5, 0.1)
 	var n_path := path.size()
@@ -855,6 +975,11 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 		var next: Vector3 = path[i + 1] if i < n_path - 1 else pp
 		var tangent: Vector3 = (next - prev) * (1.0 / 6.0)
 		curve.add_point(pp, -tangent, tangent)
+		if has_roll:
+			var tilt_deg: float = 0.0
+			if i < roll_degrees.size():
+				tilt_deg = float(roll_degrees[i])
+			curve.set_point_tilt(i, deg_to_rad(tilt_deg))
 
 	var length: float = curve.get_baked_length()
 	if length < 0.001:
@@ -882,24 +1007,53 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 			t_mid = samples[i + 1] - samples[i]
 		tangents[i] = t_mid.normalized()
 
-	# Parallel-transport — same algorithm as add_smooth_tube.
-	var seed_ref := Vector3.UP
-	if absf(tangents[0].dot(seed_ref)) > 0.95:
-		seed_ref = Vector3.RIGHT
-	var r_curr := (seed_ref - tangents[0] * seed_ref.dot(tangents[0])).normalized()
-	var u_curr := tangents[0].cross(r_curr).normalized()
-	var r_start := r_curr
-	var u_start := u_curr
-	for i in range(1, n_rings):
-		var t_i: Vector3 = tangents[i]
-		var r_new: Vector3 = r_curr - t_i * r_curr.dot(t_i)
-		if r_new.length() < 0.001:
-			r_new = Vector3.RIGHT - t_i * Vector3.RIGHT.dot(t_i)
-		r_new = r_new.normalized()
-		u_curr = t_i.cross(r_new).normalized()
-		r_curr = r_new
-	var r_end := r_curr
-	var u_end := u_curr
+	var r_start: Vector3
+	var u_start: Vector3
+	var r_end: Vector3
+	var u_end: Vector3
+	if has_roll:
+		# Pull start/end frames straight from the curve's baked tilt-aware
+		# up vector — same math used by the swept tube above when
+		# has_roll, so the cap rings sit flush against the terminal rings.
+		var s_start: float = 0.0
+		var s_finish: float = length
+		var t0: Vector3 = tangents[0]
+		var u0b: Vector3 = curve.sample_baked_up_vector(s_start, true)
+		var u0o: Vector3 = u0b - t0 * u0b.dot(t0)
+		if u0o.length() < 0.001:
+			u0o = Vector3.UP - t0 * Vector3.UP.dot(t0)
+			if u0o.length() < 0.001:
+				u0o = Vector3.RIGHT
+		u_start = u0o.normalized()
+		r_start = t0.cross(u_start).normalized()
+		var tN: Vector3 = tangents[n_rings - 1]
+		var uNb: Vector3 = curve.sample_baked_up_vector(s_finish, true)
+		var uNo: Vector3 = uNb - tN * uNb.dot(tN)
+		if uNo.length() < 0.001:
+			uNo = Vector3.UP - tN * Vector3.UP.dot(tN)
+			if uNo.length() < 0.001:
+				uNo = Vector3.RIGHT
+		u_end = uNo.normalized()
+		r_end = tN.cross(u_end).normalized()
+	else:
+		# Parallel-transport — same algorithm as add_smooth_tube.
+		var seed_ref := Vector3.UP
+		if absf(tangents[0].dot(seed_ref)) > 0.95:
+			seed_ref = Vector3.RIGHT
+		var r_curr := (seed_ref - tangents[0] * seed_ref.dot(tangents[0])).normalized()
+		var u_curr := tangents[0].cross(r_curr).normalized()
+		r_start = r_curr
+		u_start = u_curr
+		for i in range(1, n_rings):
+			var t_i: Vector3 = tangents[i]
+			var r_new: Vector3 = r_curr - t_i * r_curr.dot(t_i)
+			if r_new.length() < 0.001:
+				r_new = Vector3.RIGHT - t_i * Vector3.RIGHT.dot(t_i)
+			r_new = r_new.normalized()
+			u_curr = t_i.cross(r_new).normalized()
+			r_curr = r_new
+		r_end = r_curr
+		u_end = u_curr
 	var s0: Vector3 = samples[0]
 	var s_last: Vector3 = samples[n_rings - 1]
 
