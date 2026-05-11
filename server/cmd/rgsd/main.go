@@ -23,6 +23,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,6 +35,7 @@ import (
 	"time"
 
 	"github.com/onion-coding/marbles-game2/server/admin"
+	"github.com/onion-coding/marbles-game2/server/casino"
 	"github.com/onion-coding/marbles-game2/server/metrics"
 	"github.com/onion-coding/marbles-game2/server/middleware"
 	"github.com/onion-coding/marbles-game2/server/postgres"
@@ -73,6 +76,32 @@ func main() {
 		// Concurrency flags — see docs/deployment.md §Multi-round concurrency.
 		maxConcurrentRounds   = flag.Int("max-concurrent-rounds", 4, "max rounds executing simultaneously inside Manager (env: RGSD_MAX_CONCURRENT_ROUNDS)")
 		schedulerOverlapRounds = flag.Int("scheduler-overlap-rounds", 0, "scheduler overlap: how many rounds may be in flight at once (0 = serial default)")
+
+		// Casino frontend flags (M29). The casino route serves the
+		// player-facing browser SPA at /casino/. Architecture: server-side
+		// Godot render → ffmpeg H.264 → Pion SFU (in-process, see
+		// server/casino/sfu.go) → browsers via WebRTC. Phase 1.0 has the
+		// SFU wired with a heartbeat-only publisher; the video pipeline
+		// lights up in Phase 1.1+.
+		casinoEnabled = flag.Bool("casino-enabled", true, "serve the player-facing casino frontend at /casino/")
+		// --ffmpeg-bin: when set, rgsd spawns ffmpeg as a subprocess to
+		// generate (Phase 1.1) or encode (Phase 2+) the video stream that
+		// feeds the SFU. Empty disables the video pipeline (heartbeats
+		// over the data channel still work, useful for SFU smoke tests).
+		ffmpegBin = flag.String("ffmpeg-bin", envOr("RGSD_FFMPEG_BIN", ""), "path to ffmpeg.exe; empty disables the video pipeline (env: RGSD_FFMPEG_BIN)")
+		casinoEncoder = flag.String("casino-encoder", envOr("RGSD_CASINO_ENCODER", "h264_amf"), "video encoder for casino broadcast: h264_amf (AMD GPU, default) or libx264 (CPU). On AMF init failure rgsd falls back to libx264 and logs the cause (env: RGSD_CASINO_ENCODER)")
+		// --casino-video-tcp / --casino-meta-tcp: when set, rgsd hosts TCP
+		// listeners that the Godot subprocess connects to. Frames flow
+		// rawvideo (RGBA8) into ffmpeg stdin, which encodes H.264 onto the
+		// SFU track. Metadata (per-frame HUD coords, minimap, names) is
+		// line-delimited JSON broadcast to every WebRTC data channel.
+		// Empty falls back to ffmpeg's lavfi testsrc2 source (Phase 1.1
+		// smoke), useful before Godot is wired.
+		videoTCP = flag.String("casino-video-tcp", envOr("RGSD_CASINO_VIDEO_TCP", ""), "TCP listen addr for raw video frames from Godot, e.g. 127.0.0.1:8088 (env: RGSD_CASINO_VIDEO_TCP); empty = lavfi testsrc2 fallback")
+		metaTCP  = flag.String("casino-meta-tcp", envOr("RGSD_CASINO_META_TCP", ""), "TCP listen addr for line-delimited JSON metadata from Godot, e.g. 127.0.0.1:8087 (env: RGSD_CASINO_META_TCP); empty disables")
+		videoW   = flag.Int("casino-video-width", envIntOr("RGSD_CASINO_VIDEO_WIDTH", 854), "width of raw video frames Godot publishes (env: RGSD_CASINO_VIDEO_WIDTH)")
+		videoH   = flag.Int("casino-video-height", envIntOr("RGSD_CASINO_VIDEO_HEIGHT", 480), "height of raw video frames Godot publishes (env: RGSD_CASINO_VIDEO_HEIGHT)")
+		videoFPS = flag.Int("casino-video-fps", envIntOr("RGSD_CASINO_VIDEO_FPS", 30), "framerate of raw video Godot publishes (env: RGSD_CASINO_VIDEO_FPS)")
 	)
 	flag.Parse()
 
@@ -238,6 +267,170 @@ func main() {
 	rootMux.Handle("/v1/", chain(apiMux))
 	rootMux.Handle("/metrics", metrics.Handler())
 
+	// ── Casino frontend: Pion SFU + browser viewer (M29 Phase 1.0) ──────
+	// One server-side SFU shared across all viewers; subscribers join via
+	// POST /casino/api/offer (SDP exchange). The video track is published
+	// by an in-process source (heartbeat-only in Phase 1.0; ffmpeg-fed
+	// H.264 from Phase 1.1+). No HMAC: this is the player-facing surface,
+	// gated by the casino aggregator's own auth in production.
+	var casinoSFU *casino.SFU
+	var casinoCancel context.CancelFunc
+	if *casinoEnabled {
+		// SFU codec follows the encoder choice. libvpx → VP8; libx264 /
+		// h264_amf → H.264. Both browsers support both; VP8's RTP path
+		// is simpler and avoids the H.264 FU-A fragmentation tar pit.
+		sfuCfg := casino.SFUConfig{}
+		if *casinoEncoder == "libvpx" {
+			sfuCfg.VideoCodec = "video/VP8"
+		}
+		var err error
+		casinoSFU, err = casino.NewSFU(sfuCfg)
+		if err != nil {
+			logger.Error("rgsd: casino.NewSFU", "err", err)
+			os.Exit(1)
+		}
+		casinoHandler, err := casino.NewHandler(casino.Config{
+			SFU:    casinoSFU,
+			Logger: logger,
+		})
+		if err != nil {
+			logger.Error("rgsd: casino.NewHandler", "err", err)
+			os.Exit(1)
+		}
+		rootMux.Handle("/casino/", casinoHandler)
+
+		hbCtx, hbCancel := context.WithCancel(context.Background())
+		casinoCancel = hbCancel
+		hb := casino.NewHeartbeatPublisher(casinoSFU, 500*time.Millisecond, logger)
+		go func() { _ = hb.Start(hbCtx) }()
+
+		// Video pipeline. Three modes:
+		//   1. --casino-video-tcp set + --ffmpeg-bin set: rgsd hosts a
+		//      TCP listener for Godot raw frames, pipes them into ffmpeg's
+		//      stdin. Encode → SFU. (Phase 2+ — production target.)
+		//   2. --ffmpeg-bin set, no TCP: ffmpeg's lavfi testsrc2 generates
+		//      a colour pattern. (Phase 1.1 smoke; useful when Godot's
+		//      not running.)
+		//   3. Neither: SFU plumbing only, no video. Heartbeats still flow.
+		switch {
+		case *ffmpegBin != "" && *videoTCP != "":
+			frameLn, err := casino.NewFrameListener(*videoTCP, logger)
+			if err != nil {
+				logger.Error("rgsd: casino frame listener", "err", err)
+				os.Exit(1)
+			}
+			logger.Info("rgsd: casino raw-video TCP listening", "addr", frameLn.Addr(),
+				"size", fmt.Sprintf("%dx%d", *videoW, *videoH), "fps", *videoFPS)
+
+			// Wait for Godot in a goroutine; once connected, read the
+			// 16-byte self-reported size header (MARB + u32 W + u32 H +
+			// u32 FPS) and spawn ffmpeg with those exact dimensions. The
+			// CLI --casino-video-width/-height/-fps act as a fallback if
+			// the header is malformed.
+			// Probe the requested encoder up-front (before any Godot
+			// connection) so we can fall back to libx264 cleanly without
+			// dropping a real publisher mid-stream. The probe spawns
+			// ffmpeg with the candidate encoder fed by a 1-second lavfi
+			// testsrc; if it exits 0 or runs without error, the encoder
+			// is good. AMF driver/permission issues fail here.
+			effectiveEncoder := *casinoEncoder
+			if effectiveEncoder == "h264_amf" {
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 4*time.Second)
+				perr := casino.ProbeFFmpegEncoder(probeCtx, *ffmpegBin, "h264_amf")
+				probeCancel()
+				if perr != nil {
+					logger.Error("rgsd: casino encoder h264_amf probe failed; falling back to libx264", "err", perr)
+					effectiveEncoder = "libx264"
+				} else {
+					logger.Info("rgsd: casino encoder h264_amf probe ok")
+				}
+			}
+
+			// Drive a publisher per Godot reconnection. FrameListener.Run
+			// blocks until ctx done; each accepted connection invokes the
+			// callback synchronously and the loop accepts the next
+			// publisher only after the callback returns.
+			go func() {
+				err := frameLn.Run(hbCtx, func(conn io.ReadCloser) {
+					w, h, fps, herr := casino.ReadFrameHeader(conn)
+					if herr != nil {
+						logger.Warn("rgsd: casino header read failed; falling back to CLI defaults",
+							"err", herr, "w", *videoW, "h", *videoH, "fps", *videoFPS)
+						w, h, fps = *videoW, *videoH, *videoFPS
+					} else {
+						logger.Info("rgsd: casino header received", "w", w, "h", h, "fps", fps)
+					}
+					pub, perr := casino.NewFFmpegPublisher(casinoSFU, casino.FFmpegPublisherConfig{
+						Bin:          *ffmpegBin,
+						RawVideo:     conn,
+						RawWidth:     w,
+						RawHeight:    h,
+						RawPixFmt:    "rgba",
+						FPS:          fps,
+						EncodePreset: "ultrafast",
+						Encoder:      effectiveEncoder,
+						Logger:       logger,
+					})
+					if perr != nil {
+						logger.Error("rgsd: casino ffmpeg (raw mode) init", "err", perr)
+						return
+					}
+					logger.Info("rgsd: casino encoder live", "encoder", effectiveEncoder, "w", w, "h", h, "fps", fps)
+					if err := pub.Start(hbCtx); err != nil && !errors.Is(err, context.Canceled) {
+						logger.Error("rgsd: casino ffmpeg (raw mode) exited", "err", err)
+					}
+				})
+				if err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("rgsd: casino frame listener Run exited", "err", err)
+				}
+			}()
+		case *ffmpegBin != "":
+			pub, err := casino.NewFFmpegPublisher(casinoSFU, casino.FFmpegPublisherConfig{
+				Bin: *ffmpegBin,
+				SourceArgs: []string{
+					"-f", "lavfi",
+					"-i", fmt.Sprintf("testsrc2=size=%dx%d:rate=%d", *videoW, *videoH, *videoFPS),
+				},
+				FPS:          *videoFPS,
+				EncodePreset: "ultrafast",
+				Logger:       logger,
+			})
+			if err != nil {
+				logger.Error("rgsd: casino ffmpeg publisher init", "err", err)
+				os.Exit(1)
+			}
+			go func() {
+				if err := pub.Start(hbCtx); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("rgsd: casino ffmpeg publisher exited", "err", err)
+				}
+			}()
+			logger.Info("rgsd: casino video pipeline = lavfi testsrc2 (smoke mode)")
+		default:
+			logger.Info("rgsd: casino video pipeline disabled (no --ffmpeg-bin)")
+		}
+
+		// Metadata side-channel: optional. When set, accept one Godot
+		// connection and broadcast its line-JSON onto every subscriber's
+		// data channel.
+		if *metaTCP != "" {
+			metaLn, err := casino.NewMetaListener(*metaTCP, casinoSFU, logger)
+			if err != nil {
+				logger.Error("rgsd: casino meta listener", "err", err)
+				os.Exit(1)
+			}
+			logger.Info("rgsd: casino meta TCP listening", "addr", metaLn.Addr())
+			go func() {
+				if err := metaLn.Run(hbCtx); err != nil && !errors.Is(err, context.Canceled) {
+					logger.Error("rgsd: casino meta listener exited", "err", err)
+				}
+			}()
+		}
+
+		logger.Info("rgsd: casino enabled at /casino/ (Phase 1.0/1.1 SFU + optional video)")
+	} else {
+		logger.Info("rgsd: casino disabled (--casino-enabled=false)")
+	}
+
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           rootMux,
@@ -313,6 +506,12 @@ func main() {
 		_ = srv.Shutdown(ctx)
 		_ = adminSrv.Shutdown(ctx)
 		_ = auditLog.Close()
+		if casinoCancel != nil {
+			casinoCancel()
+		}
+		if casinoSFU != nil {
+			_ = casinoSFU.Close()
+		}
 	}()
 
 	logger.Info("rgsd: listening", "addr", *addr, "auth", *hmacSecret != "")
