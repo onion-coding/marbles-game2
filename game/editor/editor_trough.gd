@@ -15,9 +15,13 @@ extends EditorObject
 
 var waypoints: Array = []                # Array[Vector3] local
 var roll_degrees: Array = []             # Array[float], one per waypoint
+var scale_multipliers: Array = []        # Array[float], one per waypoint (default 1.0)
+var sweeps_deg: Array = []               # Array[float], one per waypoint (default arc_sweep_deg)
 var radius: float = 0.6                  # matches EditorTube default
 var arc_sweep_deg: float = 210.0         # how many degrees of the cross-section
                                           # are SOLID (the rest is the open top)
+                                          # — used as the default for waypoints
+                                          # missing an entry in sweeps_deg.
 var section_verts: int = 18
 var color: Color = Color(0.55, 0.85, 1.00, 1.00)
 # Inner-wall radius ratio matches the tube's 78% — same visible wall
@@ -46,7 +50,7 @@ func build_visual() -> void:
 	var mesh_inst: MeshInstance3D = TrackBlocks.add_smooth_trough(self,
 			"TroughMesh", waypoints, roll_degrees, radius,
 			arc_sweep_deg, pipe_mat, 0.25, section_verts,
-			radius * INNER_RATIO)
+			radius * INNER_RATIO, scale_multipliers, sweeps_deg)
 	if mesh_inst != null and mesh_inst.mesh != null:
 		var body := StaticBody3D.new()
 		body.name = "TroughBody"
@@ -83,11 +87,14 @@ func set_selected(sel: bool) -> void:
 			c.visible = sel
 
 # MapEditor's multi-click placement appends waypoints one-by-one. Same
-# interface as EditorTube; roll defaults to 0 each click — user tweaks
-# afterwards via the property panel.
+# interface as EditorTube; roll/scale/sweep default per click (roll=0,
+# scale=1.0, sweep=current arc_sweep_deg) — user tweaks afterwards via
+# the property panel.
 func append_waypoint_local(local_pos: Vector3) -> void:
 	waypoints.append(local_pos)
 	roll_degrees.append(0.0)
+	scale_multipliers.append(1.0)
+	sweeps_deg.append(arc_sweep_deg)
 	rebuild_visual()
 
 func append_waypoint_world(world_pos: Vector3) -> void:
@@ -100,6 +107,12 @@ func get_params() -> Dictionary:
 	var rolls: Array = []
 	for r in roll_degrees:
 		rolls.append(float(r))
+	var scales: Array = []
+	for s in scale_multipliers:
+		scales.append(float(s))
+	var sweeps: Array = []
+	for sw in sweeps_deg:
+		sweeps.append(float(sw))
 	return {
 		"radius": radius,
 		"arc_sweep_deg": arc_sweep_deg,
@@ -107,11 +120,15 @@ func get_params() -> Dictionary:
 		"color": [color.r, color.g, color.b, color.a],
 		"waypoints": wps,
 		"roll_degrees": rolls,
+		"scale_multipliers": scales,
+		"sweeps_deg": sweeps,
 	}
 
 func apply_params(d: Dictionary) -> void:
 	radius = float(d.get("radius", radius))
-	arc_sweep_deg = clampf(float(d.get("arc_sweep_deg", arc_sweep_deg)), 30.0, 330.0)
+	# arc_sweep_deg now ranges up to 360° so a Trough can be fully
+	# enclosed at a waypoint (acts like a closed tube section there).
+	arc_sweep_deg = clampf(float(d.get("arc_sweep_deg", arc_sweep_deg)), 30.0, 360.0)
 	section_verts = int(d.get("section_verts", section_verts))
 	var c = d.get("color", null)
 	if c is Array and c.size() >= 4:
@@ -127,10 +144,29 @@ func apply_params(d: Dictionary) -> void:
 		roll_degrees.clear()
 		for entry in r_arr:
 			roll_degrees.append(float(entry))
-	# Keep roll_degrees length-aligned with waypoints (new wp gets 0,
-	# trimmed wp drops its roll).
+	var s_arr = d.get("scale_multipliers", null)
+	if s_arr is Array:
+		scale_multipliers.clear()
+		for entry in s_arr:
+			scale_multipliers.append(float(entry))
+	var sw_arr = d.get("sweeps_deg", null)
+	if sw_arr is Array:
+		sweeps_deg.clear()
+		for entry in sw_arr:
+			sweeps_deg.append(float(entry))
+	# Keep per-waypoint arrays length-aligned with waypoints. New entries
+	# pick up sensible defaults (roll 0, scale 1.0, sweep = global default)
+	# so old saves missing these fields load cleanly.
 	while roll_degrees.size() < waypoints.size():
 		roll_degrees.append(0.0)
 	while roll_degrees.size() > waypoints.size():
 		roll_degrees.pop_back()
+	while scale_multipliers.size() < waypoints.size():
+		scale_multipliers.append(1.0)
+	while scale_multipliers.size() > waypoints.size():
+		scale_multipliers.pop_back()
+	while sweeps_deg.size() < waypoints.size():
+		sweeps_deg.append(arc_sweep_deg)
+	while sweeps_deg.size() > waypoints.size():
+		sweeps_deg.pop_back()
 	rebuild_visual()

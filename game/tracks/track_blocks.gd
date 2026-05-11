@@ -543,7 +543,8 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 		sample_spacing: float = 0.25, section_verts: int = 16,
 		inverted_winding: bool = false,
 		cap_inner_radius: float = -1.0,
-		roll_degrees: Array = []) -> MeshInstance3D:
+		roll_degrees: Array = [],
+		scale_multipliers: Array = []) -> MeshInstance3D:
 	if path.size() < 2:
 		push_warning("TrackBlocks.add_smooth_tube: path needs ≥2 points (%s)" % node_name)
 		return null
@@ -642,13 +643,21 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 			rights[i] = r
 			ups[i] = u
 
-	# 5. Full-circle cross-section.
+	# 5. Full-circle cross-section. Profile is unit-radius; per-ring
+	#    scale multiplies it at emit time so the tube can taper from
+	#    one waypoint radius to the next without rebuilding the loop.
 	var sv: int = max(section_verts, 6)
 	var profile: Array[Vector2] = []
 	profile.resize(sv)
 	for j in range(sv):
 		var theta: float = TAU * float(j) / float(sv)
 		profile[j] = Vector2(cos(theta), sin(theta)) * radius
+
+	# Per-ring scale factor. Empty / all-1.0 scale_multipliers keeps the
+	# constant-radius behaviour bit-for-bit; otherwise rings interpolate
+	# their multiplier piecewise-linearly between waypoint values.
+	var scale_per_ring: Array[float] = _per_ring_floats(curve, path, length,
+			n_rings, scale_multipliers, 1.0)
 
 	# 6. Emit indexed vertices, ring-major.
 	var st := SurfaceTool.new()
@@ -657,9 +666,10 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 		var p := samples[ring]
 		var rr := rights[ring]
 		var uu := ups[ring]
+		var sc: float = scale_per_ring[ring]
 		for j in range(sv):
 			var pr := profile[j]
-			var v := p + rr * pr.x + uu * pr.y
+			var v := p + rr * (pr.x * sc) + uu * (pr.y * sc)
 			var uv := Vector2(
 				float(j) / float(sv),
 				float(ring) / float(n_rings - 1) * (length / max(radius * TAU, 0.01))
@@ -736,7 +746,9 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 		roll_degrees: Array, radius: float, arc_sweep_deg: float,
 		mat: Material,
 		sample_spacing: float = 0.25, section_verts: int = 18,
-		inner_radius: float = -1.0) -> MeshInstance3D:
+		inner_radius: float = -1.0,
+		scale_multipliers: Array = [],
+		sweeps_deg: Array = []) -> MeshInstance3D:
 	if path.size() < 2:
 		push_warning("TrackBlocks.add_smooth_trough: path needs ≥2 points (%s)" % node_name)
 		return null
@@ -808,41 +820,39 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 		rights[i] = r
 		ups[i] = u
 
-	# 5. Cross-section profile = arc on the (right, up) plane, centred
-	#    at the BOTTOM of the cross-section (angle 3π/2 in standard
-	#    polar form). Arc spans arc_sweep_deg degrees, leaving the
-	#    rest open at the top. With 210° default we get a generous
-	#    'high lipped half-pipe' — bigger than a half-circle so marbles
-	#    don't fly out on hard banks.
-	var sweep_rad := deg_to_rad(arc_sweep_deg)
-	var start_angle: float = 1.5 * PI - sweep_rad * 0.5
+	# 5. Per-ring cross-section parameters. Both the scale multiplier
+	#    and the arc sweep can vary smoothly along the path — empty
+	#    arrays fall back to the scalar radius / arc_sweep_deg so
+	#    existing constant-profile callers keep their old shape.
+	#    Arc is centred at the BOTTOM of the cross-section (angle 3π/2
+	#    in standard polar form); arc_sweep spans the SOLID portion,
+	#    the remainder is the open top.
 	var n_arc: int = section_verts + 1
-	var profile: Array[Vector2] = []
-	profile.resize(n_arc)
-	for j in range(n_arc):
-		var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
-		profile[j] = Vector2(cos(theta), sin(theta)) * radius
-
-	# 6. Inner profile if walled. Same angular sweep, smaller radius.
 	var has_inner: bool = inner_radius > 0.0 and inner_radius < radius
-	var profile_inner: Array[Vector2] = []
-	if has_inner:
-		profile_inner.resize(n_arc)
-		for j in range(n_arc):
-			var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
-			profile_inner[j] = Vector2(cos(theta), sin(theta)) * inner_radius
+	var scale_per_ring: Array[float] = _per_ring_floats(curve, path, length,
+			n_rings, scale_multipliers, 1.0)
+	var sweep_per_ring: Array[float] = _per_ring_floats(curve, path, length,
+			n_rings, sweeps_deg, arc_sweep_deg)
 
-	# 7. Emit indexed vertices, ring-major. Outer arc first (indices
-	#    0 .. n_rings*n_arc - 1), then inner arc if walled.
+	# 6./7. Emit indexed vertices, ring-major. Profile is rebuilt per
+	#       ring so the arc opens/closes and the radius tapers smoothly
+	#       along the path. Outer arc first (indices 0..n_rings*n_arc-1),
+	#       then inner arc if walled.
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for ring in range(n_rings):
 		var p := samples[ring]
 		var rr := rights[ring]
 		var uu := ups[ring]
+		var sc: float = scale_per_ring[ring]
+		var sweep_rad: float = deg_to_rad(sweep_per_ring[ring])
+		var start_angle: float = 1.5 * PI - sweep_rad * 0.5
+		var r_outer: float = radius * sc
 		for j in range(n_arc):
-			var pr := profile[j]
-			var v := p + rr * pr.x + uu * pr.y
+			var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
+			var dx: float = cos(theta) * r_outer
+			var dy: float = sin(theta) * r_outer
+			var v: Vector3 = p + rr * dx + uu * dy
 			var uv := Vector2(
 				float(j) / float(n_arc - 1),
 				float(ring) / float(n_rings - 1)
@@ -855,9 +865,15 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 			var p := samples[ring]
 			var rr := rights[ring]
 			var uu := ups[ring]
+			var sc: float = scale_per_ring[ring]
+			var sweep_rad: float = deg_to_rad(sweep_per_ring[ring])
+			var start_angle: float = 1.5 * PI - sweep_rad * 0.5
+			var r_inner: float = inner_radius * sc
 			for j in range(n_arc):
-				var pr := profile_inner[j]
-				var v := p + rr * pr.x + uu * pr.y
+				var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
+				var dx: float = cos(theta) * r_inner
+				var dy: float = sin(theta) * r_inner
+				var v: Vector3 = p + rr * dx + uu * dy
 				st.set_uv(Vector2(
 					float(j) / float(n_arc - 1),
 					float(ring) / float(n_rings - 1)
@@ -950,7 +966,8 @@ static func add_smooth_trough(parent: Node, node_name: String, path: Array,
 static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 		outer_radius: float, inner_radius: float, mat: Material,
 		sample_spacing: float = 0.25, section_verts: int = 16,
-		roll_degrees: Array = []) -> MeshInstance3D:
+		roll_degrees: Array = [],
+		scale_multipliers: Array = []) -> MeshInstance3D:
 	if path.size() < 2:
 		return null
 
@@ -1061,9 +1078,16 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 
+	# Endpoint scale factors so the cap rings match a tapered tube end
+	# (otherwise a scale-3 endpoint would have its cap collapse back to
+	# the tube's base radius, leaving a visible step at the seam).
+	var scale_start: float = _per_offset_float(curve, path, length,
+			0.0, scale_multipliers, 1.0)
+	var scale_end: float = _per_offset_float(curve, path, length,
+			length, scale_multipliers, 1.0)
 	var endpoints: Array = [
-		{"centre": s0,     "right": r_start, "up": u_start},
-		{"centre": s_last, "right": r_end,   "up": u_end},
+		{"centre": s0,     "right": r_start, "up": u_start, "scale": scale_start},
+		{"centre": s_last, "right": r_end,   "up": u_end,   "scale": scale_end},
 	]
 	# Manual vertex counter: SurfaceTool doesn't expose vertex count
 	# directly in Godot 4. Each ring adds section_verts verts.
@@ -1072,12 +1096,15 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 		var p_c: Vector3 = ep["centre"]
 		var rr: Vector3 = ep["right"]
 		var uu: Vector3 = ep["up"]
+		var sc: float = float(ep["scale"])
+		var outer_r_ep: float = outer_radius * sc
+		var inner_r_ep: float = inner_radius * sc
 		var outer_start: int = vert_counter
 		# Outer ring
 		for j in range(section_verts):
 			var theta: float = TAU * float(j) / float(section_verts)
-			var v: Vector3 = p_c + rr * (cos(theta) * outer_radius) \
-					+ uu * (sin(theta) * outer_radius)
+			var v: Vector3 = p_c + rr * (cos(theta) * outer_r_ep) \
+					+ uu * (sin(theta) * outer_r_ep)
 			st.set_uv(Vector2(float(j) / float(section_verts), 0.0))
 			st.add_vertex(v)
 		vert_counter += section_verts
@@ -1085,8 +1112,8 @@ static func add_smooth_tube_caps(parent: Node, node_name: String, path: Array,
 		# Inner ring
 		for j in range(section_verts):
 			var theta: float = TAU * float(j) / float(section_verts)
-			var v: Vector3 = p_c + rr * (cos(theta) * inner_radius) \
-					+ uu * (sin(theta) * inner_radius)
+			var v: Vector3 = p_c + rr * (cos(theta) * inner_r_ep) \
+					+ uu * (sin(theta) * inner_r_ep)
 			st.set_uv(Vector2(float(j) / float(section_verts), 1.0))
 			st.add_vertex(v)
 		vert_counter += section_verts
@@ -1129,3 +1156,73 @@ static func _surface_vertex_count(_st: SurfaceTool) -> int:
 	# indices based on a manual cumulative counter. This helper exists
 	# so future maintainers don't trip on the missing API.
 	return 0
+
+# Smoothly interpolate a per-waypoint Array[float] into per-ring values.
+# Used to taper radius (scale_multipliers) and vary cross-section sweep
+# (sweeps_deg) along the swept mesh without forcing the user to hand-
+# author a value at every interior ring. Each ring's value is a linear
+# interpolation between the two surrounding waypoints' values, weighted
+# by where the ring sits in arc-length between them.
+#
+# `values` may be SHORTER than `path` — missing entries fall back to
+# `default_val` (so legacy callers can pass an empty array and keep
+# their previous constant-radius / constant-sweep behaviour).
+static func _per_ring_floats(curve: Curve3D, path: Array, length: float,
+		n_rings: int, values: Array, default_val: float) -> Array[float]:
+	var n_path: int = path.size()
+	var wp_offsets: Array[float] = []
+	wp_offsets.resize(n_path)
+	wp_offsets[0] = 0.0
+	wp_offsets[n_path - 1] = length
+	for i in range(1, n_path - 1):
+		var pp: Vector3 = path[i]
+		wp_offsets[i] = curve.get_closest_offset(pp)
+	# Defensively enforce monotone — get_closest_offset can wobble on
+	# self-near-intersecting paths and a non-monotone wp_offsets array
+	# would make the segment search misbehave.
+	for i in range(1, n_path):
+		if wp_offsets[i] < wp_offsets[i - 1]:
+			wp_offsets[i] = wp_offsets[i - 1]
+	var out: Array[float] = []
+	out.resize(n_rings)
+	var seg: int = 0
+	for i in range(n_rings):
+		var s_ring: float = (float(i) / float(n_rings - 1)) * length
+		while seg < n_path - 2 and s_ring > wp_offsets[seg + 1]:
+			seg += 1
+		while seg > 0 and s_ring < wp_offsets[seg]:
+			seg -= 1
+		var span: float = max(wp_offsets[seg + 1] - wp_offsets[seg], 0.0001)
+		var t: float = clampf((s_ring - wp_offsets[seg]) / span, 0.0, 1.0)
+		var va: float = float(values[seg]) if seg < values.size() else default_val
+		var vb: float = float(values[seg + 1]) if seg + 1 < values.size() else default_val
+		out[i] = lerp(va, vb, t)
+	return out
+
+# Single-point lookup for a per-waypoint Array[float] at one specific
+# baked offset along the curve. Used by add_smooth_tube_caps to size
+# the start/end cap rings to match the tube's tapered terminal radii.
+static func _per_offset_float(curve: Curve3D, path: Array, length: float,
+		offset: float, values: Array, default_val: float) -> float:
+	if values.is_empty():
+		return default_val
+	var n_path: int = path.size()
+	if n_path < 2:
+		return default_val
+	var wp_offsets: Array[float] = []
+	wp_offsets.resize(n_path)
+	wp_offsets[0] = 0.0
+	wp_offsets[n_path - 1] = length
+	for i in range(1, n_path - 1):
+		wp_offsets[i] = curve.get_closest_offset(path[i])
+	for i in range(1, n_path):
+		if wp_offsets[i] < wp_offsets[i - 1]:
+			wp_offsets[i] = wp_offsets[i - 1]
+	var seg: int = 0
+	while seg < n_path - 2 and offset > wp_offsets[seg + 1]:
+		seg += 1
+	var span: float = max(wp_offsets[seg + 1] - wp_offsets[seg], 0.0001)
+	var t: float = clampf((offset - wp_offsets[seg]) / span, 0.0, 1.0)
+	var va: float = float(values[seg]) if seg < values.size() else default_val
+	var vb: float = float(values[seg + 1]) if seg + 1 < values.size() else default_val
+	return lerp(va, vb, t)

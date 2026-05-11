@@ -214,12 +214,22 @@ func show_properties(obj) -> void:
 			_add_string_row(obj, key_s, String(val))
 		elif val is Array and key_s == "waypoints":
 			_add_waypoints_editor(obj, val as Array)
-			# If the object also has parallel roll_degrees (Trough), the
-			# waypoints editor renders the per-waypoint roll slider too.
+			# Per-waypoint property sliders render alongside the polyline
+			# editor so the user sees them grouped. Roll (Tube/Trough),
+			# scale (Tube/Trough), and per-waypoint sweep (Trough only)
+			# all key off the same waypoint indices.
 			var rolls = params.get("roll_degrees", null)
 			if rolls is Array:
 				_add_roll_editor(obj, rolls as Array)
-		elif val is Array and key_s == "roll_degrees":
+			var scales = params.get("scale_multipliers", null)
+			if scales is Array:
+				_add_scale_editor(obj, scales as Array)
+			var sweeps = params.get("sweeps_deg", null)
+			if sweeps is Array:
+				_add_sweeps_editor(obj, sweeps as Array)
+		elif val is Array and (key_s == "roll_degrees"
+				or key_s == "scale_multipliers"
+				or key_s == "sweeps_deg"):
 			# Already rendered by the waypoints handler above; skip the
 			# default Array case so we don't show it twice.
 			pass
@@ -230,10 +240,10 @@ func _bounds_for(key: String) -> Array:
 	if key.contains("multiplier"):
 		return [0.0, 30.0, 0.1]
 	if key.contains("sweep"):
-		# Arc sweep for trough cross-section. Range goes above 180 so
-		# the user can create a near-closed channel (e.g. 280°) where
-		# the marble is almost enclosed except for a narrow top slit.
-		return [30.0, 330.0, 5.0]
+		# Arc sweep for trough cross-section. Range goes all the way to
+		# 360° so a waypoint can be fully enclosed (closed-tube section)
+		# while neighbouring waypoints stay open.
+		return [30.0, 360.0, 5.0]
 	if key.contains("tilt") or key.contains("deg") or key.contains("angle"):
 		return [-180.0, 180.0, 1.0]
 	if key.contains("size"):
@@ -311,12 +321,12 @@ func _add_waypoint_row(obj, idx: int, x: float, y: float, z: float) -> void:
 	row.add_child(del_btn)
 	_props_box.add_child(row)
 
-# Per-waypoint roll slider for Trough objects. One row per waypoint
+# Per-waypoint roll slider for Tube/Trough. One row per waypoint
 # 'wp N roll [SpinBox]'. Editing pushes the new value back into the
-# Trough's roll_degrees array via apply_params.
+# object's roll_degrees array via apply_params.
 func _add_roll_editor(obj, rolls: Array) -> void:
 	var head := Label.new()
-	head.text = "Waypoint roll (banks the slide ±180°)"
+	head.text = "Waypoint roll (banks ±180°)"
 	head.add_theme_font_size_override("font_size", 12)
 	_props_box.add_child(head)
 	for i in range(rolls.size()):
@@ -339,6 +349,73 @@ func _add_roll_editor(obj, rolls: Array) -> void:
 				rolls_cur.append(0.0)
 			rolls_cur[idx] = v
 			p["roll_degrees"] = rolls_cur
+			obj.apply_params(p)
+		)
+		row.add_child(sb)
+		_props_box.add_child(row)
+
+# Per-waypoint radius-scale slider for Tube/Trough. Lets the cross-section
+# taper smoothly between waypoints (1.0 = base radius, 3.0 = 3×). Value
+# pushes back into the object's scale_multipliers array.
+func _add_scale_editor(obj, scales: Array) -> void:
+	var head := Label.new()
+	head.text = "Waypoint scale (taper ×0.1–×5)"
+	head.add_theme_font_size_override("font_size", 12)
+	_props_box.add_child(head)
+	for i in range(scales.size()):
+		var row := HBoxContainer.new()
+		var l := Label.new()
+		l.text = "wp %d scale" % i
+		l.custom_minimum_size = Vector2(96, 0)
+		row.add_child(l)
+		var sb := SpinBox.new()
+		sb.min_value = 0.1
+		sb.max_value = 5.0
+		sb.step = 0.1
+		sb.value = float(scales[i])
+		sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var idx := i
+		sb.value_changed.connect(func(v: float):
+			var p: Dictionary = obj.get_params()
+			var scales_cur: Array = (p.get("scale_multipliers", []) as Array).duplicate()
+			while scales_cur.size() <= idx:
+				scales_cur.append(1.0)
+			scales_cur[idx] = v
+			p["scale_multipliers"] = scales_cur
+			obj.apply_params(p)
+		)
+		row.add_child(sb)
+		_props_box.add_child(row)
+
+# Per-waypoint arc-sweep slider for Trough. Lets the opening close/open
+# smoothly between waypoints — e.g. open half-pipe at wp0 (180°),
+# fully enclosed at wp1 (360°). Sweep interpolates ring-by-ring so the
+# shape morphs continuously along the path.
+func _add_sweeps_editor(obj, sweeps: Array) -> void:
+	var head := Label.new()
+	head.text = "Waypoint sweep (open arc 30°–360°)"
+	head.add_theme_font_size_override("font_size", 12)
+	_props_box.add_child(head)
+	for i in range(sweeps.size()):
+		var row := HBoxContainer.new()
+		var l := Label.new()
+		l.text = "wp %d sweep" % i
+		l.custom_minimum_size = Vector2(96, 0)
+		row.add_child(l)
+		var sb := SpinBox.new()
+		sb.min_value = 30.0
+		sb.max_value = 360.0
+		sb.step = 5.0
+		sb.value = float(sweeps[i])
+		sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var idx := i
+		sb.value_changed.connect(func(v: float):
+			var p: Dictionary = obj.get_params()
+			var sw_cur: Array = (p.get("sweeps_deg", []) as Array).duplicate()
+			while sw_cur.size() <= idx:
+				sw_cur.append(v)
+			sw_cur[idx] = v
+			p["sweeps_deg"] = sw_cur
 			obj.apply_params(p)
 		)
 		row.add_child(sb)
