@@ -77,11 +77,11 @@ func _ready() -> void:
 	palette_label.add_theme_font_size_override("font_size", 13)
 	vbox.add_child(palette_label)
 
-	# Object palette buttons. Each one primes that type for the next
-	# viewport click. The "Tube" type is still pending because polyline
-	# editing needs its own waypoint-drag UX (Phase 2.5).
+	# Object palette. Tube uses a multi-click placement flow: each LMB
+	# adds a waypoint, ENTER finishes, ESC cancels.
 	var palette_types: Array = [
 		["funnel",     "+ Funnel"],
+		["tube",       "+ Tube  (multi-click, ENTER to finish)"],
 		["peg",        "+ Peg"],
 		["slab",       "+ Slab"],
 		["multiplier", "+ Multiplier slot"],
@@ -93,10 +93,6 @@ func _ready() -> void:
 		b.text = label
 		b.pressed.connect(func(): add_object_requested.emit(t))
 		vbox.add_child(b)
-	var tube_btn := Button.new()
-	tube_btn.text = "+ Tube  (Phase 2.5)"
-	tube_btn.disabled = true
-	vbox.add_child(tube_btn)
 
 	vbox.add_child(HSeparator.new())
 
@@ -138,8 +134,9 @@ func show_properties(obj) -> void:
 	type_label.add_theme_font_size_override("font_size", 14)
 	_props_box.add_child(type_label)
 
-	# Position editors (X / Y / Z).
-	_add_vec3_row(obj, "Position", -50.0, 50.0, 0.1,
+	# Position editors. Step 0.1 m — matches the in-viewport drag snap
+	# so the +/- buttons and the mouse drag agree on the same grid.
+	_add_vec3_row(obj, "Position", -100.0, 100.0, 0.1,
 		func(): return obj.position,
 		func(v: Vector3): obj.position = v)
 

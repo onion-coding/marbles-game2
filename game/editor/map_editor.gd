@@ -31,9 +31,19 @@ var _selected: EditorObject = null
 var _pending_add_type: String = ""
 
 # In-memory clipboard — holds the dict from the most recent Ctrl+C.
-# Persistence across editor sessions would need a separate file slot;
-# not in Phase 2 scope.
 var _clipboard: Dictionary = {}
+
+# Drag state. _drag_active is set on LMB-press over the selected object.
+# Mouse motion while active raycasts to a horizontal plane at the
+# object's Y, snaps to GRID_STEP, updates obj.position. LMB release ends.
+const GRID_STEP := 0.1
+var _drag_active: bool = false
+var _drag_grab_offset: Vector3 = Vector3.ZERO   # local offset from cursor hit to obj.position
+
+# In-progress tube placement. Each click during this mode appends a
+# waypoint to the active EditorTube and rebuilds its visual. Enter
+# finalises; ESC cancels (and frees the partial tube).
+var _tube_in_progress: EditorTube = null
 
 func _ready() -> void:
 	_build_environment()
@@ -135,16 +145,28 @@ func _build_grid_lines() -> MeshInstance3D:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
-			_handle_left_click(mb.position)
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_handle_left_click(mb.position)
+			else:
+				_drag_active = false
+	elif event is InputEventMouseMotion:
+		if _drag_active and _selected != null:
+			_handle_drag(event.position)
 	elif event is InputEventKey:
 		var k := event as InputEventKey
 		if k.pressed and not k.echo:
 			match k.keycode:
 				KEY_ESCAPE:
-					_pending_add_type = ""
-					_select(null)
-					_ui.set_status("Cancelled.")
+					if _tube_in_progress != null:
+						_cancel_tube_placement()
+					else:
+						_pending_add_type = ""
+						_select(null)
+						_ui.set_status("Cancelled.")
+				KEY_ENTER, KEY_KP_ENTER:
+					if _tube_in_progress != null:
+						_finish_tube_placement()
 				KEY_DELETE, KEY_BACKSPACE:
 					_delete_selected()
 				KEY_S:
@@ -173,11 +195,16 @@ func _handle_left_click(screen_pos: Vector2) -> void:
 	var query := PhysicsRayQueryParameters3D.create(from, to)
 	var hit := space.intersect_ray(query)
 
+	# Tube multi-click placement: each click appends a waypoint to the
+	# tube currently being drawn. ENTER finalises, ESC cancels.
+	if _pending_add_type == "tube":
+		_handle_tube_click(screen_pos, from, dir, hit)
+		return
+
 	if _pending_add_type != "":
 		var pos: Vector3
 		if hit.has("position"):
 			pos = hit["position"]
-			# Lift the new object so it sits on the surface, not buried.
 			pos.y += 1.0
 		else:
 			pos = from + dir * 12.0
@@ -185,15 +212,103 @@ func _handle_left_click(screen_pos: Vector2) -> void:
 		_pending_add_type = ""
 		return
 
+	# Hit detection: walk up the parent chain so a click on a child mesh
+	# (the inner shell of a tube, e.g.) still finds the EditorObject.
+	var hit_obj: EditorObject = null
 	if hit.has("collider"):
 		var node: Node = hit["collider"]
 		while node != null:
 			if node is EditorObject:
-				_select(node as EditorObject)
-				return
+				hit_obj = node as EditorObject
+				break
 			node = node.get_parent()
 
-	_select(null)
+	if hit_obj == null:
+		_select(null)
+		return
+
+	# Click on an object: select it. If it was already selected, start
+	# a drag in the XZ plane so the user can move it. Grab offset =
+	# distance from cursor's plane-hit to the object's centre, so the
+	# object stays anchored to where the cursor first grabbed it.
+	if hit_obj == _selected:
+		var grab_world: Vector3 = _ray_to_xz_plane(from, dir, _selected.position.y)
+		_drag_grab_offset = _selected.position - grab_world
+		_drag_active = true
+	else:
+		_select(hit_obj)
+
+func _handle_drag(screen_pos: Vector2) -> void:
+	if _selected == null:
+		return
+	var from := _camera.project_ray_origin(screen_pos)
+	var dir := _camera.project_ray_normal(screen_pos)
+	var target := _ray_to_xz_plane(from, dir, _selected.position.y) + _drag_grab_offset
+	# Snap to GRID_STEP on X and Z only — Y stays put so the user uses
+	# the +/- buttons (or spinbox) for vertical changes.
+	target.x = snappedf(target.x, GRID_STEP)
+	target.z = snappedf(target.z, GRID_STEP)
+	_selected.position = Vector3(target.x, _selected.position.y, target.z)
+
+func _ray_to_xz_plane(origin: Vector3, dir: Vector3, plane_y: float) -> Vector3:
+	# Ray-plane intersection with the horizontal plane y=plane_y. If the
+	# ray is parallel (dir.y ≈ 0), fall back to a point in front of the
+	# camera at the original Y so the drag doesn't snap to infinity.
+	if absf(dir.y) < 0.0001:
+		return origin + dir * 10.0
+	var t: float = (plane_y - origin.y) / dir.y
+	if t < 0.0:
+		# Plane is behind the camera — return origin so position doesn't jump.
+		return Vector3(origin.x, plane_y, origin.z)
+	return origin + dir * t
+
+# --- Tube multi-click placement -------------------------------------
+
+func _handle_tube_click(_screen_pos: Vector2, from: Vector3, dir: Vector3, hit: Dictionary) -> void:
+	# First click: create the tube and place its origin at the hit point.
+	# Subsequent clicks: append a waypoint in WORLD space (the tube
+	# object converts to its local frame).
+	var world_pos: Vector3
+	if hit.has("position"):
+		world_pos = hit["position"]
+		world_pos.y += 0.05
+	else:
+		# No physical hit — place at the previous waypoint's Y, or
+		# 10 m forward of the camera if there's no previous waypoint.
+		var plane_y: float = 2.0
+		if _tube_in_progress != null and _tube_in_progress.waypoints.size() > 0:
+			plane_y = _tube_in_progress.global_position.y + _tube_in_progress.waypoints.back().y
+		world_pos = _ray_to_xz_plane(from, dir, plane_y)
+
+	if _tube_in_progress == null:
+		_tube_in_progress = EditorTube.new()
+		_tube_in_progress.position = world_pos
+		add_child(_tube_in_progress)
+		# First waypoint at the local origin.
+		_tube_in_progress.append_waypoint_local(Vector3.ZERO)
+		_ui.set_status("Tube: click to add more waypoints, ENTER to finish, ESC to cancel.")
+	else:
+		_tube_in_progress.append_waypoint_world(world_pos)
+		_ui.set_status("Tube has %d waypoints. ENTER to finish." % _tube_in_progress.waypoints.size())
+
+func _finish_tube_placement() -> void:
+	if _tube_in_progress == null:
+		return
+	if _tube_in_progress.waypoints.size() < 2:
+		_ui.set_status("Tube needs ≥2 waypoints. ESC to cancel.")
+		return
+	_objects.append(_tube_in_progress)
+	_select(_tube_in_progress)
+	_ui.set_status("Tube placed (%d waypoints)." % _tube_in_progress.waypoints.size())
+	_tube_in_progress = null
+	_pending_add_type = ""
+
+func _cancel_tube_placement() -> void:
+	if _tube_in_progress != null:
+		_tube_in_progress.queue_free()
+		_tube_in_progress = null
+	_pending_add_type = ""
+	_ui.set_status("Tube placement cancelled.")
 
 # --- Object management ----------------------------------------------
 
@@ -222,6 +337,8 @@ func _instantiate_type(type: String) -> EditorObject:
 			return EditorSlab.new()
 		"multiplier":
 			return EditorMultiplier.new()
+		"tube":
+			return EditorTube.new()
 		_:
 			return null
 
@@ -274,8 +391,14 @@ func _delete_selected() -> void:
 # --- Save / load -----------------------------------------------------
 
 func _on_add_requested(type: String) -> void:
+	# Cancel any in-progress tube before starting a new placement.
+	if _tube_in_progress != null:
+		_cancel_tube_placement()
 	_pending_add_type = type
-	_ui.set_status("Click in the viewport to place a %s." % type)
+	if type == "tube":
+		_ui.set_status("Tube: click to place each waypoint, ENTER finishes.")
+	else:
+		_ui.set_status("Click in the viewport to place a %s." % type)
 
 func _on_save_requested() -> void:
 	DirAccess.make_dir_recursive_absolute(MAP_DIR)
