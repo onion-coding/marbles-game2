@@ -26,14 +26,6 @@ static func _make_marble(rail: SpawnRail, drop_order: int, slot: int, color: Col
 	# feel on Plinko.
 	marble.mass = 1.0
 	marble.continuous_cd = true
-	# Disable Jolt's auto-sleep on marbles. The default sleep behaviour
-	# puts a body to sleep when its linear+angular velocity falls below
-	# a threshold for ~0.5s. That bites in plinko when a marble lands on
-	# top of a horizontal peg cylinder with near-zero velocity — it
-	# balances, sleeps, and stays stuck forever. With sleep off, floating-
-	# point noise + ongoing gravity integration always nudges balanced
-	# marbles off within a tick or two.
-	marble.can_sleep = false
 
 	var mesh_inst := MeshInstance3D.new()
 	var sphere := SphereMesh.new()
@@ -92,16 +84,19 @@ static func make_glass_material(color: Color, swirl_seed: int) -> Material:
 	# multiple times with different colours.
 	var variant: int = swirl_seed % 4
 	mat.set_shader_parameter("marble_type", variant)
-	# Secondary colour: small HUE shift only (analogous, not complementary).
-	# Earlier complementary palette (hue + 0.5) made each marble look like
-	# two different marbles when rotating — pink on one side, cyan on the
-	# other — which the user perceived as "flickering between colours".
-	# Analogous secondaries keep each marble a single visual identity:
-	# every variant shows shade variation, not colour-swap variation.
+	# Secondary colour for two-tone variants. Derive from primary via a hue
+	# shift so the two colours read as related, not random. HSV rotate +0.5
+	# (complementary) for swirl/banded, +0.15 (analogous) for cat's-eye, and
+	# white-ish for clearie centre highlight.
 	var hsv := _color_to_hsv(color)
-	var second_hue: float = fmod(hsv.x + 0.06, 1.0)    # ~22° hue shift, always analogous
-	var second_sat: float = clampf(hsv.y * 0.92, 0.3, 1.0)
-	var second_val: float = clampf(hsv.z * 1.18, 0.3, 1.0)
+	var second_hue: float
+	match variant:
+		0:  second_hue = fmod(hsv.x + 0.15, 1.0)    # cat's-eye
+		1:  second_hue = fmod(hsv.x + 0.50, 1.0)    # swirl
+		2:  second_hue = fmod(hsv.x + 0.50, 1.0)    # banded
+		_:  second_hue = hsv.x                       # clearie (same hue, brighter)
+	var second_sat: float = clampf(hsv.y * 0.85, 0.2, 1.0)
+	var second_val: float = clampf(hsv.z + 0.15, 0.3, 1.0)
 	var second_color: Color = Color.from_hsv(second_hue, second_sat, second_val)
 	mat.set_shader_parameter("secondary_color",
 		Vector4(second_color.r, second_color.g, second_color.b, 1.0))
