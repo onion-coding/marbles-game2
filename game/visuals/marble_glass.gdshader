@@ -91,7 +91,10 @@ vec4 catseye(vec3 local_pos, vec3 base, vec3 second) {
 	mat2 rot = mat2(vec2(cos(ang), -sin(ang)), vec2(sin(ang), cos(ang)));
 	vec2 xy = rot * local_pos.xz;
 	float d = abs(xy.y);                 // distance from vane plane in rotated frame
-	float vane = 1.0 - smoothstep(0.05, 0.18, d);
+	// Wider smoothstep (was 0.05..0.18) so the vane boundary is a soft
+	// gradient, not a sharp edge — sharp edges on a rotating sphere
+	// alias temporally.
+	float vane = 1.0 - smoothstep(0.05, 0.30, d);
 	float center_brighten = 1.0 - smoothstep(0.0, 0.25, length(local_pos));
 	vec3 col = mix(base * 0.9, second * 1.2, vane);
 	col += second * center_brighten * 0.4;
@@ -99,15 +102,21 @@ vec4 catseye(vec3 local_pos, vec3 base, vec3 second) {
 	return vec4(col, opacity);
 }
 
-// Swirl: two colours mixed via Voronoi noise (the v1 look, polished).
+// Swirl: low-frequency two-tone blend along a marble-local axis. The
+// previous version sampled Voronoi noise in local space — which produced
+// temporal aliasing as the marble rotated (every frame, each screen pixel
+// sampled a different Voronoi cell → visible flicker on motion). Replaced
+// with a smooth two-axis dot-product gradient: low frequency, no
+// discontinuities, no aliasing on rotation.
 vec4 swirl(vec3 local_pos, vec3 base, vec3 second) {
-	vec3 uv = local_pos * swirl_scale + vec3(swirl_seed * 31.4, swirl_seed * 17.7, swirl_seed * 5.2);
-	float v1 = voronoi3(uv);
-	float v2 = voronoi3(uv * 2.3 + 7.7);
-	float core = mix(v1, v2, 0.4);
-	vec3 col = mix(base, second, smoothstep(0.15, 0.85, core));
-	// Slight self-highlight where the swirl is densest (low voronoi distance).
-	col += second * (1.0 - smoothstep(0.0, 0.35, core)) * 0.25;
+	float ang_a = swirl_seed * 6.2831853;
+	float ang_b = ang_a + 1.7;
+	vec3 axis_a = normalize(vec3(cos(ang_a), 0.4, sin(ang_a)));
+	vec3 axis_b = normalize(vec3(cos(ang_b), -0.3, sin(ang_b)));
+	float t1 = dot(normalize(local_pos + vec3(0.001)), axis_a) * 0.5 + 0.5;
+	float t2 = dot(normalize(local_pos + vec3(0.001)), axis_b) * 0.5 + 0.5;
+	float t = mix(t1, t2, 0.5);
+	vec3 col = mix(base, second, smoothstep(0.25, 0.75, t));
 	return vec4(col, 1.0);
 }
 
@@ -120,9 +129,12 @@ vec4 banded(vec3 local_pos, vec3 base, vec3 second) {
 	vec2 xz = rot * local_pos.xz;
 	// Pretend a "latitude" off the rotated horizontal plane.
 	float latitude = atan(local_pos.y, length(xz));      // [-pi/2, pi/2]
-	float n_bands = 6.0;
+	// Fewer bands (was 6.0) + wider transition (was -0.15..0.15) so the
+	// stripe boundaries are gentle gradients, not crisp edges. Sharp
+	// stripes on a rotating sphere alias temporally → looks like flicker.
+	float n_bands = 4.0;
 	float stripe = sin(latitude * n_bands);
-	float t = smoothstep(-0.15, 0.15, stripe);
+	float t = smoothstep(-0.55, 0.55, stripe);
 	vec3 col = mix(base, second, t);
 	return vec4(col, 1.0);
 }
@@ -175,8 +187,10 @@ void fragment() {
 	ROUGHNESS = roughness_param;
 	SPECULAR  = specular_param;
 
-	// Emission: only enough to make bloom paint a trail, not enough to blow
-	// out the highlight. The rim glows slightly so even slow marbles still
-	// have presence at distance.
-	EMISSION = base * emission_strength * 0.7 + rim_tint * 0.25 * rim;
+	// Emission: zero. Any non-zero rim emission was crossing the bloom
+	// HDR threshold (1.0) as marbles rotated under the sun, producing
+	// pulsing bloom that read as flicker. Bloom on marbles now comes
+	// purely from specular highlight intensity, which the rougher shader
+	// keeps below threshold.
+	EMISSION = vec3(0.0);
 }
