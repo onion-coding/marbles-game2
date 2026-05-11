@@ -173,7 +173,7 @@ const TUBE_DEFS: Array = [
 		],
 		"speed": 20.0,
 		"entry_size": Vector3(0.5, 0.4, 0.6),
-		"visual_radius": 0.32,
+		"visual_radius": 0.42,                        # ≥ marble radius 0.30 + clearance
 		"colour": Color(0.55, 1.00, 0.55, 0.65),     # jackpot green
 	},
 ]
@@ -671,34 +671,35 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	var glow: Color = def["colour"]
 	var visual_r: float = float(def["visual_radius"])
 
-	var tube := Tube.new()
-	tube.name = "Tube_%d" % idx
-	tube.path = path
-	tube.transit_speed = float(def["speed"])
-	tube.entry_size = def["entry_size"]
-	root.add_child(tube)
-
-	# Low tube emission (was 1.4 — strong enough to repaint marbles inside).
-	# 0.25 keeps the tube visibly tinted/glowing so it reads as coloured
-	# glass, but a marble passing through still shows its own colour.
+	# Real physics tube: build the visible swept mesh AND a matching
+	# ConcavePolygonShape3D trimesh collider from the same vertices so
+	# marbles physically roll through the inside surface. The old Tube
+	# Area3D+kinematic-transport class is no longer instantiated — pipe
+	# motion is now gravity + friction + walls, not a position snap.
 	var pipe_mat := TrackBlocks.std_mat_emit(glow, 0.15, 0.30, 0.25)
 	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	pipe_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
 	var ring_mat := TrackBlocks.std_mat_emit(glow, 0.30, 0.20, 1.6)
 
-	# Stabilise depth writes so a marble alpha-blending against the tube
-	# from the inside doesn't flicker as it moves: forcing depth-write
-	# on a transparent surface costs the painter's algorithm (z-order
-	# inversions when overlapping translucent objects are present, but
-	# we don't have any here) and gains a stable per-pixel composite.
-	pipe_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
+	# Visible smooth swept tube (hollow cylinder, open at both ends so
+	# marbles can fall in from the top and out from the bottom).
+	var pipe_mesh_inst: MeshInstance3D = TrackBlocks.add_smooth_tube(self,
+			"Pipe_smooth_%d" % idx, path, visual_r, pipe_mat, 0.25, 18)
 
-	# Single smooth swept tube — replaces the legacy per-segment cylinder
-	# stack. The polyline's sharp interior bends are rounded out by the
-	# Curve3D Catmull-Rom tangents, then a circular cross-section is swept
-	# along with parallel-transport frames + indexed smooth normals. The
-	# tube reads as one continuous pipe with no joint faceting.
-	TrackBlocks.add_smooth_tube(self, "Pipe_smooth_%d" % idx, path,
-			visual_r, pipe_mat, 0.25, 18)
+	# Physics collider — same mesh, ConcavePolygonShape3D with
+	# backface_collision so marbles inside the hollow cylinder collide
+	# with the inner surface (which from the trimesh's POV is the back
+	# face). CCD on marbles prevents tunneling through this thin shell.
+	if pipe_mesh_inst != null and pipe_mesh_inst.mesh != null:
+		var body := StaticBody3D.new()
+		body.name = "Pipe_body_%d" % idx
+		body.physics_material_override = _mat_smooth
+		var coll := CollisionShape3D.new()
+		var trimesh: ConcavePolygonShape3D = pipe_mesh_inst.mesh.create_trimesh_shape()
+		trimesh.backface_collision = true
+		coll.shape = trimesh
+		body.add_child(coll)
+		add_child(body)
 
 	# Entry and exit rings.
 	for endpoint in [path[0] as Vector3, path[path.size() - 1] as Vector3]:
