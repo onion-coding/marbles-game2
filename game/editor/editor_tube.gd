@@ -139,34 +139,33 @@ func _build_endpoint_annuli(outer_r: float, inner_r: float, mat: Material) -> vo
 		# pass through the disk without touching anything.
 		_build_endpoint_disk(p, t, right, up, inner_r, mat, endpoint_idx)
 
-func _build_endpoint_disk(centre: Vector3, _outward: Vector3,
-		right: Vector3, up: Vector3, r: float, mat: Material, idx: int) -> void:
-	# Double-sided disk: visible from EITHER side so the user never sees
-	# the open bore through the cap regardless of camera angle. No
-	# winding sensitivity. Material below sets cull_mode = CULL_DISABLED.
-	# No collider — marbles still pass through the geometry without
-	# physical interaction.
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var n_seg: int = section_verts
-	st.set_uv(Vector2(0.5, 0.5))
-	st.add_vertex(centre)
-	for j in range(n_seg):
-		var theta: float = TAU * float(j) / float(n_seg)
-		var p: Vector3 = centre + right * (cos(theta) * r) + up * (sin(theta) * r)
-		st.set_uv(Vector2(0.5 + cos(theta) * 0.5, 0.5 + sin(theta) * 0.5))
-		st.add_vertex(p)
-	for j in range(n_seg):
-		var j2: int = (j + 1) % n_seg
-		st.add_index(0); st.add_index(j + 1); st.add_index(j2 + 1)
-	st.generate_normals()
-	st.generate_tangents()
-	var mesh: ArrayMesh = st.commit()
+func _build_endpoint_disk(centre: Vector3, outward: Vector3,
+		_right: Vector3, _up: Vector3, r: float, mat: Material, idx: int) -> void:
+	# Use a built-in CylinderMesh as a thin "puck" — solves the
+	# hand-rolled triangle-fan issues (winding direction, depth
+	# fighting with the inner shell at the same plane). The puck has
+	# both end caps on, height 0.04m, oriented so its local +Y points
+	# along the tube tangent. Offset 0.02m OUTWARD along the tangent so
+	# the puck sits just outside the tube body's last sample ring and
+	# never z-fights with it.
+	var puck := MeshInstance3D.new()
+	puck.name = "EndPuck_%d" % idx
+	var cm := CylinderMesh.new()
+	cm.top_radius = r
+	cm.bottom_radius = r
+	cm.height = 0.04
+	cm.cap_top = true
+	cm.cap_bottom = true
+	cm.radial_segments = max(section_verts, 18)
+	puck.mesh = cm
 
-	# Disk-specific material with two-sided rendering so it's visible
-	# from both sides. The tube wall material is one-sided (cull_back)
-	# to avoid the lighting bands we'd get from CULL_DISABLED on a
-	# curved surface; flat disks don't have that problem.
+	# Orient: cylinder's local +Y axis along the tube tangent. Reuse
+	# the _basis_with_up helper at the top of this file.
+	puck.basis = _basis_with_up(outward)
+	puck.position = centre + outward.normalized() * 0.02
+
+	# Disk material: copy the tube colour but render double-sided so
+	# the puck looks correct from any camera angle.
 	var disk_mat := StandardMaterial3D.new()
 	if mat is StandardMaterial3D:
 		var src := mat as StandardMaterial3D
@@ -174,12 +173,8 @@ func _build_endpoint_disk(centre: Vector3, _outward: Vector3,
 		disk_mat.metallic = src.metallic
 		disk_mat.roughness = src.roughness
 	disk_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-
-	var mi := MeshInstance3D.new()
-	mi.name = "EndDisk_%d" % idx
-	mi.mesh = mesh
-	mi.material_override = disk_mat
-	add_child(mi)
+	puck.material_override = disk_mat
+	add_child(puck)
 
 # Open-ring markers (torus) at the FIRST and LAST waypoints, always
 # visible (not gated by selection). Tells the user where the tube
