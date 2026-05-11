@@ -15,7 +15,7 @@ extends EditorObject
 var waypoints: Array = []                       # Array[Vector3] LOCAL
 var radius: float = 0.6
 var section_verts: int = 18
-var color: Color = Color(0.55, 0.85, 1.00, 0.78)
+var color: Color = Color(0.55, 0.85, 1.00, 1.00)
 
 const MARKER_RADIUS := 0.18
 
@@ -29,10 +29,11 @@ func build_visual() -> void:
 		_build_markers()
 		return
 
+	# Opaque material — the user explicitly rejected the translucent
+	# look ('its transparent now I hate that'). Default rendering
+	# pipeline, no alpha, no special depth-draw modes.
 	var pipe_mat := StandardMaterial3D.new()
-	pipe_mat.albedo_color = color
-	pipe_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	pipe_mat.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
+	pipe_mat.albedo_color = Color(color.r, color.g, color.b, 1.0)
 	pipe_mat.metallic = 0.10
 	pipe_mat.roughness = 0.30
 
@@ -128,6 +129,49 @@ func _build_endpoint_annuli(outer_r: float, inner_r: float, mat: Material) -> vo
 		mi.mesh = mesh
 		mi.material_override = mat
 		add_child(mi)
+
+		# One-sided disk covering the inner opening. Visible from
+		# OUTSIDE the tube (the side away from the tube body) so the
+		# end reads as visually sealed; backface-culled from INSIDE,
+		# so a marble looking down the bore (and the player's camera
+		# inside the cylinder during fly-through) sees right through.
+		# This is a render-only mesh: no collider, no physics. Marbles
+		# pass through the disk without touching anything.
+		_build_endpoint_disk(p, t, right, up, inner_r, mat, endpoint_idx)
+
+func _build_endpoint_disk(centre: Vector3, outward: Vector3,
+		right: Vector3, up: Vector3, r: float, mat: Material, idx: int) -> void:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var n_seg: int = section_verts
+	# Centre vertex (index 0) + rim vertices (1..n_seg).
+	st.set_uv(Vector2(0.5, 0.5))
+	st.add_vertex(centre)
+	for j in range(n_seg):
+		var theta: float = TAU * float(j) / float(n_seg)
+		var p: Vector3 = centre + right * (cos(theta) * r) + up * (sin(theta) * r)
+		st.set_uv(Vector2(0.5 + cos(theta) * 0.5, 0.5 + sin(theta) * 0.5))
+		st.add_vertex(p)
+	# Triangle fan. Wind the triangles so the front face points along
+	# `outward` (= away from the tube interior). With CULL_BACK on the
+	# material, this disk is only visible from outside the tube.
+	for j in range(n_seg):
+		var j2: int = (j + 1) % n_seg
+		# Front-face vs back-face is determined by cross(b-a, c-a).
+		# We need (a=centre, b=rim_j2, c=rim_j) so cross is along
+		# `outward`. Test against the sign of dot(outward, right.cross(up)).
+		if right.cross(up).dot(outward) > 0.0:
+			st.add_index(0); st.add_index(j2 + 1); st.add_index(j + 1)
+		else:
+			st.add_index(0); st.add_index(j + 1); st.add_index(j2 + 1)
+	st.generate_normals()
+	st.generate_tangents()
+	var mesh: ArrayMesh = st.commit()
+	var mi := MeshInstance3D.new()
+	mi.name = "EndDisk_%d" % idx
+	mi.mesh = mesh
+	mi.material_override = mat
+	add_child(mi)
 
 # Open-ring markers (torus) at the FIRST and LAST waypoints, always
 # visible (not gated by selection). Tells the user where the tube
