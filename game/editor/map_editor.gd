@@ -66,10 +66,12 @@ var _axis_drag_pos0: Vector3 = Vector3.ZERO
 # selected.
 var _gizmo: EditorGizmo = null
 
-# In-progress tube placement. Each click during this mode appends a
-# waypoint to the active EditorTube and rebuilds its visual. Enter
-# finalises; ESC cancels (and frees the partial tube).
-var _tube_in_progress: EditorTube = null
+# In-progress polyline placement (tube or trough). Each click during
+# this mode appends a waypoint to the active object. Enter finalises;
+# ESC cancels (and frees the partial object). Typed as EditorObject
+# so the same code path serves both EditorTube and EditorTrough — they
+# share the append_waypoint_world / waypoints / rebuild_visual API.
+var _tube_in_progress: EditorObject = null
 
 func _ready() -> void:
 	_build_environment()
@@ -261,9 +263,9 @@ func _handle_left_click(screen_pos: Vector2) -> void:
 	query.collision_mask = 1
 	var hit := space.intersect_ray(query)
 
-	# Tube multi-click placement: each click appends a waypoint to the
-	# tube currently being drawn. ENTER finalises, ESC cancels.
-	if _pending_add_type == "tube":
+	# Tube / trough multi-click placement: each click appends a waypoint
+	# to the polyline currently being drawn. ENTER finalises, ESC cancels.
+	if _pending_add_type == "tube" or _pending_add_type == "trough":
 		_handle_tube_click(screen_pos, from, dir, hit)
 		return
 
@@ -383,15 +385,20 @@ func _handle_tube_click(_screen_pos: Vector2, from: Vector3, dir: Vector3, hit: 
 		world_pos = _ray_to_xz_plane(from, dir, plane_y)
 
 	if _tube_in_progress == null:
-		_tube_in_progress = EditorTube.new()
+		# Instantiate the polyline object matching the pending type
+		# (tube or trough). Both share the same waypoint API.
+		_tube_in_progress = _instantiate_type(_pending_add_type)
+		if _tube_in_progress == null:
+			return
 		_tube_in_progress.position = world_pos
 		add_child(_tube_in_progress)
-		# First waypoint at the local origin.
-		_tube_in_progress.append_waypoint_local(Vector3.ZERO)
-		_ui.set_status("Tube: click to add more waypoints, ENTER to finish, ESC to cancel.")
+		_tube_in_progress.call("append_waypoint_local", Vector3.ZERO)
+		_ui.set_status("%s: click to add more waypoints, ENTER to finish, ESC to cancel."
+				% _pending_add_type.capitalize())
 	else:
-		_tube_in_progress.append_waypoint_world(world_pos)
-		_ui.set_status("Tube has %d waypoints. ENTER to finish." % _tube_in_progress.waypoints.size())
+		_tube_in_progress.call("append_waypoint_world", world_pos)
+		_ui.set_status("%s has %d waypoints. ENTER to finish."
+				% [_pending_add_type.capitalize(), _tube_in_progress.waypoints.size()])
 
 func _finish_tube_placement() -> void:
 	if _tube_in_progress == null:
@@ -493,6 +500,8 @@ func _instantiate_type(type: String) -> EditorObject:
 			return EditorMultiplier.new()
 		"tube":
 			return EditorTube.new()
+		"trough":
+			return EditorTrough.new()
 		_:
 			return null
 
@@ -576,8 +585,8 @@ func _on_add_requested(type: String) -> void:
 		_cancel_tube_placement()
 	_pending_add_type = type
 	_ui.set_active_palette(type)
-	if type == "tube":
-		_ui.set_status("Tube: click to place each waypoint, ENTER finishes.")
+	if type == "tube" or type == "trough":
+		_ui.set_status("%s: click to place each waypoint, ENTER finishes." % type.capitalize())
 	else:
 		_ui.set_status("Click in the viewport to place a %s." % type)
 

@@ -127,6 +127,7 @@ func _ready() -> void:
 	var palette_types: Array = [
 		["funnel",     "+ Funnel"],
 		["tube",       "+ Tube  (multi-click, ENTER to finish)"],
+		["trough",     "+ Trough / slide  (open half-pipe, multi-click)"],
 		["peg",        "+ Peg"],
 		["slab",       "+ Slab"],
 		["multiplier", "+ Multiplier slot"],
@@ -213,6 +214,15 @@ func show_properties(obj) -> void:
 			_add_string_row(obj, key_s, String(val))
 		elif val is Array and key_s == "waypoints":
 			_add_waypoints_editor(obj, val as Array)
+			# If the object also has parallel roll_degrees (Trough), the
+			# waypoints editor renders the per-waypoint roll slider too.
+			var rolls = params.get("roll_degrees", null)
+			if rolls is Array:
+				_add_roll_editor(obj, rolls as Array)
+		elif val is Array and key_s == "roll_degrees":
+			# Already rendered by the waypoints handler above; skip the
+			# default Array case so we don't show it twice.
+			pass
 
 # Heuristic slider ranges keyed on param name. Avoids handing the user a
 # slab capped at 10m when plinko's frame is 26m wide.
@@ -295,6 +305,39 @@ func _add_waypoint_row(obj, idx: int, x: float, y: float, z: float) -> void:
 	)
 	row.add_child(del_btn)
 	_props_box.add_child(row)
+
+# Per-waypoint roll slider for Trough objects. One row per waypoint
+# 'wp N roll [SpinBox]'. Editing pushes the new value back into the
+# Trough's roll_degrees array via apply_params.
+func _add_roll_editor(obj, rolls: Array) -> void:
+	var head := Label.new()
+	head.text = "Waypoint roll (banks the slide ±180°)"
+	head.add_theme_font_size_override("font_size", 12)
+	_props_box.add_child(head)
+	for i in range(rolls.size()):
+		var row := HBoxContainer.new()
+		var l := Label.new()
+		l.text = "wp %d roll" % i
+		l.custom_minimum_size = Vector2(96, 0)
+		row.add_child(l)
+		var sb := SpinBox.new()
+		sb.min_value = -180.0
+		sb.max_value = 180.0
+		sb.step = 5.0
+		sb.value = float(rolls[i])
+		sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var idx := i
+		sb.value_changed.connect(func(v: float):
+			var p: Dictionary = obj.get_params()
+			var rolls_cur: Array = (p.get("roll_degrees", []) as Array).duplicate()
+			while rolls_cur.size() <= idx:
+				rolls_cur.append(0.0)
+			rolls_cur[idx] = v
+			p["roll_degrees"] = rolls_cur
+			obj.apply_params(p)
+		)
+		row.add_child(sb)
+		_props_box.add_child(row)
 
 func _waypoint_spinbox(initial: float) -> SpinBox:
 	var sb := SpinBox.new()

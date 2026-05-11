@@ -683,6 +683,149 @@ static func add_smooth_tube(parent: Node, node_name: String, path: Array,
 	parent.add_child(mi)
 	return mi
 
+# Sweep a PARTIAL-ARC cross-section along a polyline path with per-
+# waypoint roll. Used for open-topped slides / troughs / half-pipes —
+# anywhere the marble should ride on a curved surface that's open at
+# the top. Roll lets the user bank the slide around turns.
+#
+# path           : Array[Vector3] of waypoints (at least 2)
+# roll_degrees   : Array[float], one per waypoint, rotation around the
+#                  curve tangent in degrees. 0 = opening straight up.
+#                  Empty array == all zero. Roll interpolates smoothly
+#                  between waypoints via Curve3D.set_point_tilt.
+# radius         : cross-section radius
+# arc_sweep_deg  : how many degrees of the cross-section are SOLID
+#                  (default 210; the remaining ~150° is the open top)
+static func add_smooth_trough(parent: Node, node_name: String, path: Array,
+		roll_degrees: Array, radius: float, arc_sweep_deg: float,
+		mat: Material,
+		sample_spacing: float = 0.25, section_verts: int = 18) -> MeshInstance3D:
+	if path.size() < 2:
+		push_warning("TrackBlocks.add_smooth_trough: path needs ≥2 points (%s)" % node_name)
+		return null
+
+	# 1. Build the Curve3D with Catmull-Rom-derived Bezier handles AND
+	#    per-waypoint tilt for the roll. Curve3D's baked up vector
+	#    interpolates tilt smoothly so each ring between waypoints
+	#    inherits a continuously-twisting frame.
+	var curve := Curve3D.new()
+	curve.bake_interval = max(sample_spacing * 0.5, 0.1)
+	var n_path: int = path.size()
+	for i in range(n_path):
+		var p: Vector3 = path[i]
+		var prev: Vector3 = path[i - 1] if i > 0 else p
+		var next: Vector3 = path[i + 1] if i < n_path - 1 else p
+		var tangent: Vector3 = (next - prev) * (1.0 / 6.0)
+		curve.add_point(p, -tangent, tangent)
+		var tilt_deg: float = 0.0
+		if i < roll_degrees.size():
+			tilt_deg = float(roll_degrees[i])
+		curve.set_point_tilt(i, deg_to_rad(tilt_deg))
+
+	# 2. Uniform-arc-length sampling. Same N_rings formula as the tube
+	#    so behaviour stays consistent across editor objects.
+	var length: float = curve.get_baked_length()
+	if length < 0.001:
+		return null
+	var n_rings: int = max(int(ceil(length / sample_spacing)) + 1, 4)
+	var samples: Array[Vector3] = []
+	var ups_baked: Array[Vector3] = []
+	samples.resize(n_rings)
+	ups_baked.resize(n_rings)
+	for i in range(n_rings):
+		var s: float = (float(i) / float(n_rings - 1)) * length
+		samples[i] = curve.sample_baked(s, true)
+		# sample_baked_up_vector applies the per-point tilt — the
+		# whole point of using Curve3D's tilt.
+		ups_baked[i] = curve.sample_baked_up_vector(s, true)
+
+	# 3. Tangents via central differences (forward/backward at ends).
+	var tangents: Array[Vector3] = []
+	tangents.resize(n_rings)
+	tangents[0] = (samples[1] - samples[0]).normalized()
+	tangents[n_rings - 1] = (samples[n_rings - 1] - samples[n_rings - 2]).normalized()
+	for i in range(1, n_rings - 1):
+		var t_mid := samples[i + 1] - samples[i - 1]
+		if t_mid.length() < 0.001:
+			t_mid = samples[i + 1] - samples[i]
+		tangents[i] = t_mid.normalized()
+
+	# 4. For each ring, derive (right, up) from the curve's tilted up
+	#    vector and the tangent. Re-orthogonalise up against tangent
+	#    so the cross-section sits in the plane perpendicular to the
+	#    curve direction.
+	var rights: Array[Vector3] = []
+	var ups: Array[Vector3] = []
+	rights.resize(n_rings)
+	ups.resize(n_rings)
+	for i in range(n_rings):
+		var t := tangents[i]
+		var u := ups_baked[i]
+		u = u - t * u.dot(t)
+		if u.length() < 0.001:
+			u = Vector3.UP - t * Vector3.UP.dot(t)
+			if u.length() < 0.001:
+				u = Vector3.RIGHT
+		u = u.normalized()
+		var r := t.cross(u).normalized()
+		rights[i] = r
+		ups[i] = u
+
+	# 5. Cross-section profile = arc on the (right, up) plane, centred
+	#    at the BOTTOM of the cross-section (angle 3π/2 in standard
+	#    polar form). Arc spans arc_sweep_deg degrees, leaving the
+	#    rest open at the top. With 210° default we get a generous
+	#    'high lipped half-pipe' — bigger than a half-circle so marbles
+	#    don't fly out on hard banks.
+	var sweep_rad := deg_to_rad(arc_sweep_deg)
+	var start_angle: float = 1.5 * PI - sweep_rad * 0.5
+	var n_arc: int = section_verts + 1
+	var profile: Array[Vector2] = []
+	profile.resize(n_arc)
+	for j in range(n_arc):
+		var theta: float = start_angle + sweep_rad * float(j) / float(section_verts)
+		profile[j] = Vector2(cos(theta), sin(theta)) * radius
+
+	# 6. Emit indexed vertices, ring-major.
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for ring in range(n_rings):
+		var p := samples[ring]
+		var rr := rights[ring]
+		var uu := ups[ring]
+		for j in range(n_arc):
+			var pr := profile[j]
+			var v := p + rr * pr.x + uu * pr.y
+			var uv := Vector2(
+				float(j) / float(n_arc - 1),
+				float(ring) / float(n_rings - 1)
+			)
+			st.set_uv(uv)
+			st.add_vertex(v)
+
+	# 7. Triangulate. The arc is NOT closed (open at the top) so we
+	#    don't wrap j to 0; indices run 0..n_arc-1 per ring with
+	#    quads only between adjacent js.
+	for ring in range(n_rings - 1):
+		for j in range(n_arc - 1):
+			var i00: int = ring * n_arc + j
+			var i01: int = ring * n_arc + j + 1
+			var i10: int = (ring + 1) * n_arc + j
+			var i11: int = (ring + 1) * n_arc + j + 1
+			st.add_index(i00); st.add_index(i10); st.add_index(i11)
+			st.add_index(i00); st.add_index(i11); st.add_index(i01)
+
+	st.generate_normals()
+	st.generate_tangents()
+	var mesh: ArrayMesh = st.commit()
+
+	var mi := MeshInstance3D.new()
+	mi.name = node_name
+	mi.mesh = mesh
+	mi.material_override = mat
+	parent.add_child(mi)
+	return mi
+
 # Build annular end caps for a swept tube. Same path / sample-spacing /
 # section_verts as add_smooth_tube so the cap rings sit at the exact
 # same positions as the swept mesh's terminal rings (perfect alignment,
