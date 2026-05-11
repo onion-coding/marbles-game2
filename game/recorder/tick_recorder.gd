@@ -48,6 +48,7 @@ func set_round_context(
 	slots: Array,
 	colors: Array = [],
 	track_id: int = 0,
+	slot_count: int = -1,
 ) -> void:
 	_round_id = round_id
 	_server_seed = server_seed
@@ -55,7 +56,10 @@ func set_round_context(
 	_client_seeds = client_seeds
 	_slots = slots
 	_colors = colors
-	_slot_count = SpawnRail.SLOT_COUNT
+	# slot_count comes from rail.slot_count() now (per-track). Default to
+	# the legacy constant for backward-compat with callers that don't pass
+	# it explicitly (e.g. test harnesses).
+	_slot_count = slot_count if slot_count > 0 else SpawnRail.SLOT_COUNT
 	_track_id = track_id
 
 func track(marble_list: Array[RigidBody3D], line: FinishLine) -> void:

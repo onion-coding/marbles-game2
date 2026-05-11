@@ -71,10 +71,10 @@ const FRAME_BOT_Y    := CATCH_Y - 1.0
 
 # ─── Spawn grid ─────────────────────────────────────────────────────────────
 
-const SPAWN_COLS    := 8
-const SPAWN_ROWS    := 4
-const SPAWN_DX      := 1.5
-const SPAWN_DZ      := 0.7
+const SPAWN_COLS    := 10
+const SPAWN_ROWS    := 6
+const SPAWN_DX      := 1.4    # 10 cols × 1.4 = 14m wide (fits FIELD_W = 26 with margin)
+const SPAWN_DZ      := 0.55   # 6 rows × 0.55 = 3.3m deep (just under FIELD_DEPTH = 3.5)
 
 # ─── Multiplier slots ───────────────────────────────────────────────────────
 

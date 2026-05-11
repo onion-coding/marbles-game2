@@ -343,7 +343,7 @@ func _start_race(spec: Dictionary) -> void:
 
 	print("COMMIT: round_id=%d server_seed_hash=%s" % [round_id, FairSeed.to_hex(server_seed_hash)])
 
-	var slots  := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, SpawnRail.SLOT_COUNT)
+	var slots  := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, rail.slot_count())
 	var colors := FairSeed.derive_marble_colors(server_seed, round_id, client_seeds)
 	var marbles := MarbleSpawner.spawn(self, rail, slots, colors)
 
@@ -387,7 +387,7 @@ func _start_race(spec: Dictionary) -> void:
 		_live_streamer = null
 	else:
 		var recorder := TickRecorder.new()
-		recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id)
+		recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds, slots, colors, track_id, rail.slot_count())
 		if not _replay_path.is_empty():
 			recorder.override_output_path(_replay_path)
 		var stream_addr := String(spec.get("live_stream_addr", "")) if not spec.is_empty() else ""
