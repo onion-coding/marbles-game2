@@ -122,6 +122,7 @@ func _ready() -> void:
 	# Used by the curve_demo screenshot capture so the slide isn't covered by
 	# HUD panels. Reverts with the rest of the TEMP perf-logging code.
 	var editor_mode := false
+	var map_path := ""
 	for a in OS.get_cmdline_user_args():
 		if a == "--demo":
 			_demo_mode = true
@@ -132,6 +133,8 @@ func _ready() -> void:
 			if n > 0 and n <= SpawnRail.SLOT_COUNT:
 				MARBLE_COUNT = n
 				print("[DEMO] marble count override: %d" % n)
+		elif a.begins_with("--map="):
+			map_path = a.substr("--map=".length()).strip_edges()
 	if editor_mode:
 		# Map editor mode — replaces the normal race lifecycle with the
 		# map editing scene root. Layered onto this Node3D per the
@@ -140,6 +143,14 @@ func _ready() -> void:
 		var editor := MapEditor.new()
 		editor.name = "MapEditor"
 		add_child(editor)
+		return
+	if not map_path.is_empty():
+		# Custom-map mode: load the editor-saved JSON and run a race on it.
+		# CustomTrack also reads --map= itself in _ready(), so we just need
+		# to route _start_race to pick CUSTOM and not override the track
+		# selection.  Pass an empty spec so _start_race uses local seed.
+		print("[CUSTOM MAP] %s" % map_path)
+		_start_race_custom_map(map_path)
 		return
 	if _demo_mode:
 		print("[DEMO] skipping HUDs and IDLE window; starting race immediately")
@@ -810,6 +821,115 @@ func _get_rgs_url() -> String:
 				url = url.left(url.length() - 1)
 			return url
 	return ""
+
+# Run a race on a custom editor map. Behaves like _start_race({}) but
+# creates a CustomTrack instead of a random casino track, and sets its
+# map path before add_child so _ready() has it available.
+func _start_race_custom_map(path: String) -> void:
+	var round_id := int(Time.get_unix_time_from_system())
+	var server_seed := FairSeed.generate_server_seed()
+	var client_seeds: Array = []
+	for _i in range(MARBLE_COUNT):
+		client_seeds.append("")
+
+	var track := CustomTrack.new()
+	track.set_map_path(path)
+	track.configure(round_id, server_seed)
+	add_child(track)
+	_live_track = track
+	_build_environment(track)
+	var rail := SpawnRail.new(track)
+
+	var server_seed_hash := FairSeed.hash_server_seed(server_seed)
+	_round_id = round_id
+	_server_seed_hash = server_seed_hash
+
+	print("COMMIT: round_id=%d server_seed_hash=%s [custom map]" % [round_id, FairSeed.to_hex(server_seed_hash)])
+
+	var slots  := FairSeed.derive_spawn_slots(server_seed, round_id, client_seeds, rail.slot_count())
+	var colors := FairSeed.derive_marble_colors(server_seed, round_id, client_seeds)
+	var marbles := MarbleSpawner.spawn(self, rail, slots, colors)
+
+	var finish := FinishLine.new()
+	finish.track = track
+	add_child(finish)
+	_live_finish = finish
+
+	finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
+		var idx_str := String(marble.name).trim_prefix("Marble_")
+		if not idx_str.is_valid_int():
+			return
+		var idx := int(idx_str)
+		if idx < 0 or idx >= colors.size():
+			return
+		WinnerReveal.spawn_confetti(self, marble.global_position, colors[idx])
+	)
+	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
+		WinnerReveal.boost_winner_emission(winner, get_tree())
+		if DisplayServer.get_name() == "headless":
+			var quit_timer := get_tree().create_timer(3.0)
+			quit_timer.timeout.connect(func() -> void: get_tree().quit())
+	)
+
+	var recorder := TickRecorder.new()
+	recorder.set_round_context(round_id, server_seed, server_seed_hash, client_seeds,
+			slots, colors, TrackRegistry.CUSTOM, rail.slot_count())
+	add_child(recorder)
+	recorder.track(marbles, finish)
+	_live_recorder = recorder
+
+	_director = BroadcastDirector.new()
+	add_child(_director)
+	_director.setup(track, marbles, track.finish_area_transform().origin)
+	_freecam = _director.freecam
+
+	_live_racing = true
+	_live_tick = 0
+	_live_marbles = marbles
+	_live_marble_colors = colors
+	_live_finish_pos = track.finish_area_transform().origin
+
+	var hud_header: Array = []
+	for i in range(marbles.size()):
+		var c: Color = colors[i]
+		var rgba: int = (int(c.r * 255) << 24) | (int(c.g * 255) << 16) | \
+				(int(c.b * 255) << 8) | 0xFF
+		hud_header.append({"name": "Marble_%02d" % i, "rgba": rgba})
+	if _hud == null:
+		_hud = HUD.new()
+		add_child(_hud)
+	_hud.setup(hud_header)
+	_hud.set_track_name("Custom Map")
+	_hud.set_track_node(track)
+	if _freecam != null:
+		_hud.marble_selected.connect(_freecam.follow_marble_index)
+		_freecam.following_changed.connect(_hud.set_following)
+	if not _hud.camera_mode_requested.is_connected(_director.set_mode):
+		_hud.camera_mode_requested.connect(_director.set_mode)
+	_director.start_directing()
+
+	finish.marble_crossed.connect(func(marble: RigidBody3D, _tick: int) -> void:
+		if _hud == null:
+			return
+		var nm := String(marble.name)
+		var trimmed := nm.trim_prefix("Marble_")
+		if not trimmed.is_valid_int():
+			return
+		var idx: int = int(trimmed)
+		if idx < 0 or idx >= colors.size():
+			return
+		_hud.add_finisher(idx, colors[idx], nm)
+	)
+	finish.race_finished.connect(func(winner: RigidBody3D, _tick: int) -> void:
+		var winner_name: String = String(winner.name)
+		var winner_idx: int = int(winner_name.trim_prefix("Marble_"))
+		_live_racing = false
+		_winner_idx_at_finish = winner_idx
+		_race_visually_finished = true
+		if _director != null:
+			_director.notify_race_finished()
+		_hud.start_finish_settle(POST_FINISH_SETTLE_SEC, winner_name, colors[winner_idx])
+	)
 
 # Pick a track for interactive mode. Honors --track=<name> if present,
 # otherwise picks one of the 6 themed tracks at random (ramp legacy excluded).

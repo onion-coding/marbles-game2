@@ -28,6 +28,10 @@ const SPIRAL_DROP := 8
 # the curved surface has no box-faceting and lights cleanly. Not in
 # SELECTABLE — invoked explicitly via --track=curve_demo.
 const CURVE_DEMO := 9
+# Custom map loaded from a JSON file saved by the map editor.
+# Not in SELECTABLE — invoked via --map=<path> or TrackRegistry.instance(CUSTOM)
+# after set_map_path() has been called on the returned instance.
+const CUSTOM := 10
 
 # Track IDs currently available for selection by roundd / random pick.
 # Six M11 themed tracks (forest/volcano/ice/cavern/sky/stadium). The legacy
@@ -44,7 +48,7 @@ static func is_valid_id(id: int) -> bool:
 	# Any ID ever shipped is valid for decode. Only SELECTABLE are picked
 	# by the server for new rounds.
 	match id:
-		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM, SERPENT, SPIRAL_DROP, CURVE_DEMO:
+		RAMP, ROULETTE, CRAPS, POKER, SLOTS, PLINKO, STADIUM, SERPENT, SPIRAL_DROP, CURVE_DEMO, CUSTOM:
 			return true
 		_:
 			return false
@@ -71,6 +75,12 @@ static func instance(id: int) -> Track:
 			return SpiralDropTrack.new()
 		CURVE_DEMO:
 			return CurveDemoTrack.new()
+		CUSTOM:
+			# Caller is responsible for calling set_map_path() on the returned
+			# instance before add_child().  CustomTrack also auto-reads --map=
+			# from the CLI in its own _ready() so the round-spec path works
+			# without extra plumbing in main.gd.
+			return CustomTrack.new()
 		_:
 			push_error("TrackRegistry: unknown track_id=%d — falling back to RampTrack" % id)
 			return RampTrack.new()
@@ -97,5 +107,7 @@ static func name_of(id: int) -> String:
 			return "SpiralDropTrack"
 		CURVE_DEMO:
 			return "CurveDemoTrack"
+		CUSTOM:
+			return "CustomTrack"
 		_:
 			return "unknown(%d)" % id
