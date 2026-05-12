@@ -71,6 +71,12 @@ func (h *HTTPHandler) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /v1/wallets/{player_id}/balance", h.walletBalance)
 	mux.HandleFunc("GET /v1/scheduler/status", h.schedulerStatus)
 	mux.HandleFunc("GET /v1/health", h.health)
+
+	// Responsible gambling endpoints (no-ops / 404 when RG is not enabled).
+	mux.HandleFunc("GET /v1/players/{id}/limits", h.handleRGGetLimits)
+	mux.HandleFunc("PUT /v1/players/{id}/limits", h.handleRGSetLimits)
+	mux.HandleFunc("POST /v1/players/{id}/self-exclude", h.handleRGSelfExclude)
+	mux.HandleFunc("POST /v1/players/{id}/cooling-off", h.handleRGCoolingOff)
 	return mux
 }
 
@@ -363,6 +369,8 @@ func (h *HTTPHandler) getRoundBets(w http.ResponseWriter, r *http.Request) {
 // writeRoundBetError maps PlaceBetOnRound errors to HTTP status codes.
 func writeRoundBetError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrRGLimitReached):
+		writeError(w, http.StatusForbidden, err)
 	case errors.Is(err, ErrUnknownRound):
 		writeError(w, http.StatusNotFound, err)
 	case errors.Is(err, ErrRoundAlreadyRun):
@@ -513,6 +521,8 @@ func writeSessionResponse(w http.ResponseWriter, mgr *Manager, s *Session, code 
 
 func writeBetError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrRGLimitReached):
+		writeError(w, http.StatusForbidden, err)
 	case errors.Is(err, ErrInsufficientFunds):
 		writeError(w, http.StatusPaymentRequired, err)
 	case errors.Is(err, ErrUnknownPlayer):

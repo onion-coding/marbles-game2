@@ -60,6 +60,13 @@ type ManagerConfig struct {
 	// concurrently inside RunRound / RunNextRound. 0 is treated as the
 	// documented default (4). Set to 1 to restore strict serial behaviour.
 	MaxConcurrentRounds int
+
+	// RG is the optional responsible-gambling configuration. When nil, all
+	// RG checks are skipped (backward-compatible default for dev environments).
+	// When non-nil and RG.Service is set, CheckCanBet is called before every
+	// wallet debit in PlaceBet and PlaceBetOnRound; the enforcement goroutine
+	// is also started in NewManager.
+	RG *RGConfig
 }
 
 // SimRunner is the surface rgs needs from the sim package — small enough
@@ -189,6 +196,11 @@ type Manager struct {
 	// per-round concurrency tracking (guarded by mu)
 	inFlightRounds map[uint64]*roundExecution // round_id → in-progress or completed execution
 	inFlightCount  int                        // number of rounds currently executing (not yet done)
+
+	// rgStopCh is closed by StopRGEnforcement (or when the manager is
+	// garbage-collected). The RG enforcement goroutine (if started) exits
+	// when it reads from this channel. Nil when RG is not configured.
+	rgStopCh chan struct{}
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
@@ -236,14 +248,27 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	} else {
 		store = &inMemorySessionStore{m: cache}
 	}
-	return &Manager{
+	mgr := &Manager{
 		cfg:            cfg,
 		sessions:       cache,
 		sessionStore:   store,
 		prevTrack:      -1,
 		roundBets:      map[uint64][]*RoundBet{},
 		inFlightRounds: map[uint64]*roundExecution{},
-	}, nil
+	}
+
+	// Start the RG enforcement goroutine when a service is configured.
+	if cfg.RG != nil && cfg.RG.Service != nil {
+		stopCh := make(chan struct{})
+		mgr.rgStopCh = stopCh
+		tick := cfg.RG.EnforcementTickInterval
+		if tick == 0 {
+			tick = time.Minute
+		}
+		go mgr.rgEnforcementLoop(tick, stopCh)
+	}
+
+	return mgr, nil
 }
 
 // OpenSession creates a session for `playerID`. Does NOT touch the wallet
@@ -318,6 +343,12 @@ func (m *Manager) PlaceBet(sessionID string, amount uint64, currency string) (*B
 	}
 	if amount == 0 {
 		return nil, fmt.Errorf("rgs: bet amount must be > 0")
+	}
+	// RG check before any wallet debit.
+	if m.cfg.RG != nil && m.cfg.RG.Service != nil {
+		if chk := m.cfg.RG.Service.CheckCanBet(s.PlayerID, amount, cur); !chk.Allowed {
+			return nil, fmt.Errorf("%w: %s", ErrRGLimitReached, chk.Reason)
+		}
 	}
 	betID := newID("bet_")
 	if err := m.cfg.Wallet.Debit(s.PlayerID, amount, cur, betID); err != nil {
@@ -952,6 +983,12 @@ func (m *Manager) PlaceBetOnRound(roundID uint64, playerID string, marbleIdx int
 		return nil, 0, fmt.Errorf("%w: amount %v rounds to zero in %s", ErrInvalidBetAmount, amount, cur)
 	}
 
+	// RG check before wallet debit.
+	if m.cfg.RG != nil && m.cfg.RG.Service != nil {
+		if chk := m.cfg.RG.Service.CheckCanBet(playerID, amountUnits, cur); !chk.Allowed {
+			return nil, 0, fmt.Errorf("%w: %s", ErrRGLimitReached, chk.Reason)
+		}
+	}
 	betID := newID("rbet_")
 	if err := m.cfg.Wallet.Debit(playerID, amountUnits, cur, betID); err != nil {
 		return nil, 0, fmt.Errorf("rgs: wallet debit: %w", err)
@@ -1073,6 +1110,78 @@ func (m *Manager) currency() string {
 		return m.cfg.DefaultCurrency
 	}
 	return DefaultCurrency
+}
+
+// ── Responsible-gambling hooks ───────────────────────────────────────────────
+
+// rgEnforcementLoop runs every `tick` and:
+//  1. Force-closes sessions whose SessionTimeoutMin has been exceeded.
+//  2. (placeholder) Re-enables players whose cooling-off has expired —
+//     the InMemoryRGService handles this implicitly in CheckCanBet by
+//     comparing time.Now() against CoolingOffUntil, so no explicit action
+//     is needed here; this comment documents the intent for the Postgres
+//     impl which may need an explicit UPDATE.
+func (m *Manager) rgEnforcementLoop(tick time.Duration, stopCh chan struct{}) {
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopCh:
+			return
+		case now := <-ticker.C:
+			m.runRGEnforcementTick(now)
+		}
+	}
+}
+
+// runRGEnforcementTick performs a single enforcement pass. Exported only for
+// testing (pass a synthetic now value to control time).
+func (m *Manager) runRGEnforcementTick(now time.Time) {
+	if m.cfg.RG == nil || m.cfg.RG.Service == nil {
+		return
+	}
+	exceeded := m.cfg.RG.Service.ActiveSessionsExceedingTimeout(now)
+	for _, playerID := range exceeded {
+		m.forceClosePlayerSessions(playerID)
+	}
+}
+
+// forceClosePlayerSessions closes every open (OPEN or SETTLED) session for
+// the given player. BET/RACING sessions cannot be closed mid-flight — those
+// are logged and left for the next tick.
+func (m *Manager) forceClosePlayerSessions(playerID string) {
+	m.mu.Lock()
+	var toClose []*Session
+	for _, s := range m.sessions {
+		if s.PlayerID == playerID {
+			toClose = append(toClose, s)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, s := range toClose {
+		if err := m.CloseSession(s.ID); err != nil {
+			// BET/RACING sessions cannot be closed right now; the next tick
+			// will retry once the round settles.
+			fmt.Fprintf(os.Stderr, "rgs: rg enforcement: could not force-close session %q for player %q: %v\n",
+				s.ID, playerID, err)
+			continue
+		}
+		// Notify RGService that this session ended.
+		m.cfg.RG.Service.RecordSession(playerID, s.OpenedAt, time.Now())
+		fmt.Fprintf(os.Stderr, "rgs: rg enforcement: force-closed session %q for player %q (session_timeout)\n",
+			s.ID, playerID)
+	}
+}
+
+// StopRGEnforcement stops the enforcement goroutine (if running). Callers
+// that own the Manager's lifecycle (e.g. the daemon shutdown handler) should
+// call this before exiting to avoid a goroutine leak.
+func (m *Manager) StopRGEnforcement() {
+	if m.rgStopCh != nil {
+		close(m.rgStopCh)
+		m.rgStopCh = nil
+	}
 }
 
 // ── Admin hooks ──────────────────────────────────────────────────────────────

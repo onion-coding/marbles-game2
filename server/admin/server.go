@@ -120,6 +120,10 @@ func NewHandler(cfg Config) (*Handler, error) {
 	mux.HandleFunc("GET /admin/audit", h.auth(h.listAudit))
 	mux.HandleFunc("GET /admin/health", h.health) // no auth — for monitoring
 
+	// Responsible-gambling operator overrides (no-ops when RGService is nil).
+	mux.HandleFunc("POST /admin/players/{id}/rg-override", h.auth(h.rgOverride))
+	mux.HandleFunc("POST /admin/players/{id}/force-exclude", h.auth(h.rgForceExclude))
+
 	h.mux = mux
 	return h, nil
 }

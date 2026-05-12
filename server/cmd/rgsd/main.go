@@ -77,6 +77,11 @@ func main() {
 		maxConcurrentRounds   = flag.Int("max-concurrent-rounds", 4, "max rounds executing simultaneously inside Manager (env: RGSD_MAX_CONCURRENT_ROUNDS)")
 		schedulerOverlapRounds = flag.Int("scheduler-overlap-rounds", 0, "scheduler overlap: how many rounds may be in flight at once (0 = serial default)")
 
+		// Responsible-gambling flags.
+		rgEnabled                   = flag.Bool("rg-enabled", false, "enable responsible-gambling enforcement (default false for backward compat in dev environments)")
+		rgDefaultSessionTimeoutMin  = flag.Int("rg-default-session-timeout-min", 60, "default session timeout in minutes applied to new players (0 = no timeout)")
+		rgDefaultRealityCheckMin    = flag.Int("rg-default-reality-check-min", 15, "default reality-check pop-up interval in minutes (display-only, 0 = disabled)")
+
 		// Casino frontend flags (M29). The casino route serves the
 		// player-facing browser SPA at /casino/. Architecture: server-side
 		// Godot render → ffmpeg H.264 → Pion SFU (in-process, see
@@ -192,6 +197,21 @@ func main() {
 		"wall clock from RunNextRound entry to manifest persisted",
 		[]float64{1, 2, 5, 10, 20, 30, 60, 120})
 
+	var rgCfg *rgs.RGConfig
+	if *rgEnabled {
+		svc := rgs.NewInMemoryRGService()
+		rgCfg = &rgs.RGConfig{
+			Service:                  svc,
+			DefaultSessionTimeoutMin: *rgDefaultSessionTimeoutMin,
+			DefaultRealityCheckMin:   *rgDefaultRealityCheckMin,
+		}
+		logger.Info("rgsd: responsible gambling enabled",
+			"default_session_timeout_min", *rgDefaultSessionTimeoutMin,
+			"default_reality_check_min", *rgDefaultRealityCheckMin)
+	} else {
+		logger.Info("rgsd: responsible gambling disabled (--rg-enabled=false)")
+	}
+
 	mgr, err := rgs.NewManager(rgs.ManagerConfig{
 		Wallet:              &countingWallet{Wallet: walletImpl, accepted: betsTotal, rejected: betErrors},
 		Store:               store,
@@ -207,6 +227,7 @@ func main() {
 		DefaultCurrency:     *defaultCurrency,
 		SupportedCurrencies: strings.Split(*supportedCurrencies, ","),
 		MaxConcurrentRounds: *maxConcurrentRounds,
+		RG:                  rgCfg,
 	})
 	if err != nil {
 		logger.Error("NewManager", "err", err)
@@ -501,6 +522,7 @@ func main() {
 		// Cancel the scheduler first so it stops minting new rounds; it
 		// will finish its current RunNextRound call before exiting.
 		schedCancel()
+		mgr.StopRGEnforcement()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
