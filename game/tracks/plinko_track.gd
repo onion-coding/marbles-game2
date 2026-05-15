@@ -59,11 +59,6 @@ const TUBE_TOP_Y     := 19.0
 const TUBE_BOT_Y     := -15.0    # tubes finish ~23% above the gap floor
 const FREEFALL_TOP_Y := -15.0    # below tubes, open zone (TBD content)
 const FREEFALL_BOT_Y := -25.5
-const S2_TOP_Y       := -25.5
-const S2_BOT_Y       := -42.5
-const DEFLECTOR_Y    := -34.0
-const SPLITTER_TOP_Y := -39.5
-const SPLITTER_BOT_Y := -42.5
 const FINISH_Y       := -45.0
 const CATCH_Y        := -50.0
 const FRAME_TOP_Y    := SPAWN_Y + 3.0
@@ -705,64 +700,110 @@ func _build_one_tube(root: Node, idx: int, def: Dictionary) -> void:
 	# the funnel-deck gap and tube mouth are close enough in width that
 	# most marbles enter cleanly without a separate funnel object.
 
-# ─── LOWER PLINKO — receives tube exits, leads to finish ────────────────────
+# ─── LOWER PLINKO — classic bell-curve dispersion ───────────────────────────
+#
+# v6 redesign — fixes B1 (marbles bunching to one side at finish).
+#
+# Replaces the old sparse 4 m peg lattice + side-biased deflectors + center
+# splitter (which funneled everything off-center) with a TIGHT 2 m hex
+# stagger and SEVEN equal-width slot dividers at the bottom.
+#
+# Geometry contract:
+#   y= -27.0    First peg row (1.5 m below the tube-exit freefall zone)
+#   y= -39.0    Last peg row  (7 rows × 2 m spacing)
+#   y= -40.0    Slot divider top
+#   y= -45.0    Finish detector mid (existing FINISH_Y, unchanged)
+#   y= -49.0    Slot divider bottom
+#   y= -50.0    Catchment floor (existing CATCH_Y, unchanged)
+#
+# Hex-stagger with 2 m peg spacing guarantees no straight-fall gap: a marble
+# centred on a row gap (between two pegs of spacing 2 m) is only 1 m laterally
+# from each, and the next row down is offset by 1 m so it always hits within
+# one row. This is the same proven pattern used in S1 (S1_HEX_DX = 2.0).
+# Reach is ±10 m to leave 1 m margin from the FIELD_W_MID/2 = 11 m frame.
+#
+# Seven uniform-width slot dividers create classic Plinko lanes at the
+# finish — bell curve emerges from peg bouncing physics, not from biased
+# deflectors. Slot multipliers stay at the TOP (mult zone) so we don't
+# double-pay; bottom slots are dispersal only.
+
+const S2_PEG_DX:        float = 2.0    # horizontal peg spacing
+const S2_PEG_ROW_DY:    float = 2.0    # vertical row spacing
+const S2_PEG_REACH:     float = 10.0   # max |x| of any peg
+const S2_PEG_TOP_Y:     float = -27.0  # first row Y
+const S2_PEG_BOT_Y:     float = -39.0  # last row Y
+const FINISH_SLOT_N:    int   = 7
+const FINISH_DIV_TOP_Y: float = -40.0
+const FINISH_DIV_BOT_Y: float = -49.0
 
 func _build_section_lower_plinko() -> void:
 	var pegs := StaticBody3D.new()
 	pegs.name = "S2_Pegs"
 	pegs.physics_material_override = _mat_peg
 	add_child(pegs)
-	var deflectors := StaticBody3D.new()
-	deflectors.name = "S2_Deflectors"
-	deflectors.physics_material_override = _mat_floor
-	add_child(deflectors)
 
 	var peg_mat := TrackBlocks.std_mat(COL_PEG, 0.10, 0.45)
-	var floor_mat := TrackBlocks.std_mat(COL_FLOOR, 0.20, 0.55)
 	var rot_zaxis := Basis(Vector3.RIGHT, deg_to_rad(90.0))
 	var peg_height: float = FIELD_DEPTH - 0.4
 
-	# Hex-staggered peg field below the gap. Rows alternate a 2.0 m offset
-	# so that each tube exit X always has at least one row of pegs ~2 m below.
-	var y: float = S2_TOP_Y - 1.5
+	var y: float = S2_PEG_TOP_Y
 	var row_idx: int = 0
-	while y >= S2_BOT_Y + 1.0:
+	while y >= S2_PEG_BOT_Y - 0.01:
 		var xs: Array = []
 		if row_idx % 2 == 0:
-			xs = [-8.0, -4.0, 0.0, 4.0, 8.0]
+			# Aligned row: ..., -8, -6, -4, -2, 0, +2, +4, +6, +8, ...
+			xs.append(0.0)
+			var n: int = int(floor(S2_PEG_REACH / S2_PEG_DX))
+			for k in range(1, n + 1):
+				var dx: float = float(k) * S2_PEG_DX
+				xs.append(-dx)
+				xs.append(dx)
 		else:
-			xs = [-10.0, -6.0, -2.0, 2.0, 6.0, 10.0]
-		for x in xs:
+			# Offset row: ..., -9, -7, -5, -3, -1, +1, +3, +5, +7, +9, ...
+			var n: int = int(floor((S2_PEG_REACH + S2_PEG_DX * 0.5) / S2_PEG_DX))
+			for k in range(n):
+				var dx: float = (float(k) + 0.5) * S2_PEG_DX
+				if dx > S2_PEG_REACH:
+					break
+				xs.append(-dx)
+				xs.append(dx)
+		for xv in xs:
 			TrackBlocks.add_cylinder(pegs, "S2_Peg_y%d_x%d"
-					% [int(y * 10), int(float(x) * 10)],
-				Transform3D(rot_zaxis, Vector3(float(x), y, 0.0)),
-				0.30, peg_height, peg_mat)
-		y -= 2.0
+					% [int(y * 10), int(float(xv) * 10)],
+				Transform3D(rot_zaxis, Vector3(float(xv), y, 0.0)),
+				PEG_RADIUS, peg_height, peg_mat)
+		y -= S2_PEG_ROW_DY
 		row_idx += 1
 
-	# Single row of catch-up deflectors — nudges stragglers back toward centre.
-	for sgn in [-1, 1]:
-		var rot: float = float(sgn) * deg_to_rad(35.0)
-		var basis := Basis(Vector3(0, 0, 1), rot)
-		var cx: float = float(sgn) * 8.0
-		TrackBlocks.add_box(deflectors,
-			"S2_Deflector_%s" % ("L" if sgn < 0 else "R"),
-			Transform3D(basis, Vector3(cx, DEFLECTOR_Y, 0.0)),
-			Vector3(5.0, 0.4, FIELD_DEPTH - 0.4),
-			floor_mat)
-
-	# Final centre splitter — last position swap before the finish line.
-	var split_basis := Basis(Vector3(0, 0, 1), deg_to_rad(2.0))
-	var split_mid: float = (SPLITTER_TOP_Y + SPLITTER_BOT_Y) * 0.5
-	var split_h: float   = SPLITTER_TOP_Y - SPLITTER_BOT_Y
-	TrackBlocks.add_box(deflectors, "S2_Splitter",
-		Transform3D(split_basis, Vector3(0.0, split_mid, 0.0)),
-		Vector3(0.4, split_h, FIELD_DEPTH - 0.4),
-		floor_mat)
-
-# ─── Finish line floor + catchment ──────────────────────────────────────────
+# ─── Finish line floor + catchment with slot dividers ──────────────────────
+#
+# Six vertical dividers split the FIELD_W_MID (22 m) finish region into 7
+# equal lanes of ~3.14 m each. Dividers extend from below the peg field down
+# through the finish detector to just above the catchment floor — marbles
+# settle in distinct lanes instead of sliding across a flat 22 m floor.
+# The PickupZone-style detector at FINISH_Y still fires for any marble
+# regardless of lane (slots are dispersal only, not gates).
 
 func _build_finish_and_catchment() -> void:
+	# Slot dividers
+	var dividers := StaticBody3D.new()
+	dividers.name = "FinishSlotDividers"
+	dividers.physics_material_override = _mat_wall
+	add_child(dividers)
+	var div_mat := TrackBlocks.std_mat(COL_DIV, 0.20, 0.55)
+	var div_h: float = FINISH_DIV_TOP_Y - FINISH_DIV_BOT_Y
+	var div_mid: float = (FINISH_DIV_TOP_Y + FINISH_DIV_BOT_Y) * 0.5
+	var lane_w: float = FIELD_W_MID / float(FINISH_SLOT_N)
+	for k in range(1, FINISH_SLOT_N):
+		var div_x: float = -FIELD_W_MID * 0.5 + float(k) * lane_w
+		TrackBlocks.add_box(dividers, "FinishDiv_%d" % k,
+			Transform3D(Basis.IDENTITY, Vector3(div_x, div_mid, 0.0)),
+			Vector3(DIVIDER_THICK, div_h, FIELD_DEPTH - 0.4),
+			div_mat)
+
+	# Catchment floor — single flat slab spanning all lanes (per-lane floor
+	# would require gap handling under dividers; one shared floor is cleaner
+	# and the dividers themselves keep marbles laterally separated).
 	var well := StaticBody3D.new()
 	well.name = "Catchment"
 	well.physics_material_override = _mat_floor
