@@ -73,6 +73,13 @@ func stop_directing() -> void:
 func set_mode(mode: String) -> void:
 	if DisplayServer.get_name() == "headless":
 		return
+	# If we're leaving FREE mode and the FreeCamera had captured the mouse
+	# for FPS look, release it — otherwise the cursor stays locked while
+	# the player is watching a broadcast camera. The user can re-engage
+	# fly-mode by switching back to free + right-click.
+	if _current_mode == MODE_FREE and mode != "free" and _freecam != null:
+		if Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
+			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	match mode:
 		"auto":
 			_current_mode = MODE_AUTO
